@@ -10312,6 +10312,7 @@ local _tagOk, _tagErr = pcall(function()
     end
 
     local pullNote, joinNote = "not run yet", "not run yet"
+    local joinOk, joinTries, announcing = false, 0, false
     SilenceAPI._syncNotes = function() return pullNote, joinNote end
 
     -- One fetch brings back both halves: who counts as a Silence user, and
@@ -10374,6 +10375,15 @@ local _tagOk, _tagErr = pcall(function()
             end
         end
 
+        -- The list came back and we are not on it, so the announce never
+        -- landed. Ask again instead of sitting invisible until the next
+        -- reload: the pull recovers on its own every 45s, the announce used
+        -- to get exactly one shot at startup and no second chance.
+        if users and selfOwns and not knownUsers[LocalPlayer.UserId]
+           and SilenceAPI._announceSelf then
+            SilenceAPI._announceSelf()
+        end
+
         tagKnownPlayers()
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
@@ -10387,16 +10397,36 @@ local _tagOk, _tagErr = pcall(function()
     -- checked locally first, which is the one thing the client may ask.
     function SilenceAPI._announceSelf()
         if SYNC_BASE == "" then joinNote = "SYNC_BASE empty" return end
+        if joinOk or announcing then return end
+        if joinTries >= 20 then
+            joinNote = "gave up after " .. joinTries .. " tries - press RESCAN"
+            return
+        end
+        announcing = true
         task.spawn(function()
-            local okJ, res = pcall(function()
-                return game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
-                    .. "&name=" .. urlEnc(LocalPlayer.Name), true)
-            end)
-            if not okJ then
-                joinNote = "HttpGet threw: " .. tostring(res):sub(1, 70)
-            else
-                joinNote = tostring(res):sub(1, 90)
+            -- Five tries with a widening gap. One failed request at startup
+            -- must not decide whether this account is ever visible to anyone.
+            for attempt = 1, 5 do
+                joinTries = joinTries + 1
+                local okJ, res = pcall(function()
+                    return game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
+                        .. "&name=" .. urlEnc(LocalPlayer.Name), true)
+                end)
+                if not okJ then
+                    joinNote = "try " .. joinTries .. ": threw " .. tostring(res):sub(1, 55)
+                elseif tostring(res):find('"ok"', 1, true) then
+                    joinOk = true
+                    joinNote = "ok (try " .. joinTries .. ")"
+                    -- the endpoint has us now, so the report can say so
+                    -- without waiting a whole poll cycle to hear it back
+                    knownUsers[LocalPlayer.UserId] = true
+                    break
+                else
+                    joinNote = "try " .. joinTries .. ": " .. tostring(res):sub(1, 55)
+                end
+                task.wait(attempt * 2)
             end
+            announcing = false
             task.wait(1)
             pcall(pullRanks)
         end)
@@ -10480,6 +10510,7 @@ local _tagOk, _tagErr = pcall(function()
 
     SilenceAPI._rescanTags = function()
         for uid in pairs(passError) do passError[uid] = nil end
+        joinOk, joinTries, announcing = false, 0, false
         if selfOwns then SilenceAPI._announceSelf() end
         pcall(pullRanks)
         tagKnownPlayers()
