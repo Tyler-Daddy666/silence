@@ -10408,9 +10408,16 @@ local _tagOk, _tagErr = pcall(function()
             -- must not decide whether this account is ever visible to anyone.
             for attempt = 1, 5 do
                 joinTries = joinTries + 1
+                -- The join URL used to be byte for byte identical on every
+                -- attempt, so the first answer stuck: one failed announce
+                -- against a worker that was still being deployed got cached
+                -- and replayed forever, and no number of retries could ever
+                -- get past it. /all never had this problem because it always
+                -- carried a random t=. Now this one does too.
                 local okJ, res = pcall(function()
                     return game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
-                        .. "&name=" .. urlEnc(LocalPlayer.Name), true)
+                        .. "&name=" .. urlEnc(LocalPlayer.Name)
+                        .. "&t=" .. tostring(math.random(1, 1000000)) .. "_" .. tostring(joinTries), true)
                 end)
                 if not okJ then
                     joinNote = "try " .. joinTries .. ": threw " .. tostring(res):sub(1, 55)
@@ -10446,7 +10453,8 @@ local _tagOk, _tagErr = pcall(function()
                 return game:HttpGet(SYNC_BASE .. "set?key=" .. urlEnc(SYNC_KEY)
                     .. "&id=" .. tostring(p.UserId)
                     .. "&rank=" .. urlEnc(rk)
-                    .. "&title=" .. urlEnc(ti), true)
+                    .. "&title=" .. urlEnc(ti)
+                    .. "&t=" .. tostring(math.random(1, 1000000)), true)
             end)
             -- the worker answers {"ok":true} or {"error":"nope"} for a bad
             -- key; either way the user should see which one it was
