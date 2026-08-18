@@ -251,7 +251,30 @@ end
 -- and repo name and both icons follow; nothing else needs editing.
 -- Must end with a slash.
 ----------------------------------------------------------------
-local ICON_BASE = "https://raw.githubusercontent.com/Tyler-daddy/silence-admin-panel/main/"
+local ICON_BASE = "https://raw.githubusercontent.com/Tyler-Daddy666/silence/main/"
+
+----------------------------------------------------------------
+-- RANK SYNC (optional)
+-- A client-side script has no way to tell another client anything: Roblox
+-- gives it no channel. So for ranks to be visible to everyone, one small
+-- endpoint has to hold them.
+--   SYNC_BASE  the worker URL, ending with a slash. Empty disables sync and
+--              everything stays local to your own machine.
+--   SYNC_KEY   write password. Only the person setting ranks needs a real
+--              one; leaving it blank still lets this client READ ranks.
+-- Reading is public, writing needs the key.
+----------------------------------------------------------------
+local SYNC_BASE = "https://silence.tag-sync.workers.dev/"
+local SYNC_KEY  = ""
+-- Never put the write key in the file you upload: the loader is public and
+-- anyone could then set ranks. Set it only on your own machine, on the line
+-- above the loader:   getgenv().SilenceSyncKey = "your-key"
+pcall(function()
+    local g = getgenv()
+    if g and type(g.SilenceSyncKey) == "string" and g.SilenceSyncKey ~= "" then
+        SYNC_KEY = g.SilenceSyncKey
+    end
+end)
 
 -- The two icon files. Name them exactly like this, both in Desktop\Silence
 -- and in the repo. Save them WHITE on transparent: the panel is black, so a
@@ -8599,11 +8622,13 @@ end))
         sub.Text = "@" .. player.Name
         sub.Font = Enum.Font.Gotham
         sub.TextSize = 9
-        sub.TextColor3 = TagSettings.sub
+        sub.TextColor3 = look.sub
         sub.TextXAlignment = align
         sub.Visible = TagSettings.showUser
 
-        if player == LocalPlayer then
+        -- ranked players carry their own particles too, not just you; the
+        -- loop idles cheaply when the look asks for none
+        do
             local pLayer = Instance.new("Frame", frame)
             pLayer.Name = "__UIParticles"
             pLayer.Size = UDim2.new(1, 0, 1, 0)
@@ -8613,12 +8638,12 @@ end))
 
             task.spawn(function()
                 while pLayer and pLayer.Parent do
-                    local kind = TagSettings.particle
+                    local kind = look.particle
                     if kind == "None" or not PARTICLE_GLYPHS[kind] then
                         task.wait(0.25)
                     else
                         local glyph = PARTICLE_GLYPHS[kind]
-                        local color = PARTICLE_TINT[kind] or TagSettings.accent
+                        local color = PARTICLE_TINT[kind] or look.accent
 
                         local pTxt = Instance.new("TextLabel", pLayer)
                         pTxt.BackgroundTransparency = 1
@@ -8653,7 +8678,7 @@ end))
                             if pTxt and pTxt.Parent then pTxt:Destroy() end
                         end)
 
-                        local rate = math.max(0.15, tonumber(TagSettings.partRate) or 1)
+                        local rate = math.max(0.15, tonumber(look.partRate) or 1)
                         task.wait((0.4 + math.random() * 0.25) / rate)
                     end
                 end
@@ -8722,14 +8747,10 @@ end))
     track(RunService.RenderStepped:Connect(function()
         local fovTan = math.tan(math.rad(Camera.FieldOfView/2))
         -- computed once per frame, not once per tag
-        local rainbowCol
-        if TagSettings.rainbow then
-            local hue = (tick() * (tonumber(TagSettings.rainbowSpeed) or 0.2)) % 1
-            rainbowCol = Color3.fromHSV(hue, 0.85, 1)
-        end
+        local now = tick()
         local pulseAt
         if TagSettings.pulse then
-            pulseAt = 1 + math.sin(tick() * 3) * 0.05
+            pulseAt = 1 + math.sin(now * 3) * 0.05
         end
         for player, bb in pairs(activeTags) do
             if bb and bb.Parent and player.Character then
@@ -8740,6 +8761,14 @@ end))
                     bb.SizeOffset = Vector2.new(0, 0)
                     bb.Size = UDim2.new(TagSettings.width * px2stud, 0,
                                         tagH() * px2stud, 0)
+                    -- the rank decides whether this one cycles, so the hue is
+                    -- worked out per tag rather than once for the whole frame
+                    local pLook = lookFor(player)
+                    local rainbowCol
+                    if pLook.rainbow then
+                        local hue = (now * (tonumber(pLook.rainbowSpeed) or 0.2)) % 1
+                        rainbowCol = Color3.fromHSV(hue, 0.85, 1)
+                    end
                     if rainbowCol or pulseAt then
                         local fr = bb:FindFirstChildOfClass("Frame")
                         if fr then
@@ -10043,11 +10072,140 @@ end))
         end
     end)
 
+    ----------------------------------------------------------------
+    -- AUTO-TAG OTHER SILENCE USERS
+    -- Pass ownership is public, so every copy of the script can ask Roblox
+    -- who else in the server owns it and draw a tag over them. Nothing was
+    -- doing that: tagUser() only ever ran for LocalPlayer and from the admin
+    -- panel's manual button, which is why two owners never saw each other.
+    --
+    -- UserOwnsGamePassAsync is a rate limited web call, so players go
+    -- through a queue one at a time rather than all at once on join.
+    ----------------------------------------------------------------
+    local scanQueue, scanning, scanFound = {}, false, 0
+
+    local function drainScanQueue()
+        if scanning then return end
+        scanning = true
+        task.spawn(function()
+            while #scanQueue > 0 do
+                local p = table.remove(scanQueue, 1)
+                if p and p.Parent and not silenceUsers[p] then
+                    if ownsScriptPass(p) then
+                        tagUser(p)
+                        scanFound = scanFound + 1
+                        print("[Silence] pass owner found: " .. p.Name)
+                    end
+                end
+                task.wait(0.35)
+            end
+            scanning = false
+        end)
+    end
+
+    local function queueScan(p)
+        -- with no pass configured ownsScriptPass answers true for everyone,
+        -- which would tag the whole server
+        if SCRIPT_PASS_ID == 0 then return end
+        if not p or p == LocalPlayer or silenceUsers[p] then return end
+        table.insert(scanQueue, p)
+        drainScanQueue()
+    end
+    SilenceAPI._queueTagScan = queueScan
+
+    task.spawn(function()
+        if SCRIPT_PASS_ID == 0 then return end
+        task.wait(2.5)   -- let the join settle before hitting the endpoint
+        for _, p in ipairs(Players:GetPlayers()) do queueScan(p) end
+        -- report once the first sweep has drained, not per player
+        while scanning or #scanQueue > 0 do task.wait(0.5) end
+        if scanFound > 0 then
+            notify("Silence", scanFound .. " other Silence user(s) in this server.", 5)
+        end
+    end)
+
+    track(Players.PlayerAdded:Connect(function(p)
+        task.wait(1)
+        queueScan(p)
+    end))
+
     track(MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, purchased)
-        if passId == SCRIPT_PASS_ID and purchased then
-            passOwnership[player.UserId] = true
+        if passId ~= SCRIPT_PASS_ID or not purchased then return end
+        passOwnership[player.UserId] = true
+        -- somebody buying it mid-session should light up straight away
+        if player == LocalPlayer then
+            refreshSelfTag()
+        elseif not silenceUsers[player] then
+            tagUser(player)
         end
     end))
+
+    ----------------------------------------------------------------
+    -- RANK SYNC CLIENT
+    -- Pull on join and every 45s, push whenever a rank or title changes.
+    -- Everything is a plain GET so it works on executors that only expose
+    -- HttpGet; the worker treats /set as a write and /all as a read.
+    ----------------------------------------------------------------
+    local function urlEnc(v)
+        return tostring(v):gsub("[^%w%-%._~]", function(ch)
+            return string.format("%%%02X", string.byte(ch))
+        end)
+    end
+
+    local function pullRanks()
+        if SYNC_BASE == "" then return end
+        local okG, body = pcall(function()
+            return game:HttpGet(SYNC_BASE .. "all?t=" .. tostring(math.random(1, 1e9)), true)
+        end)
+        if not okG or type(body) ~= "string" then return end
+        local HS = game:GetService("HttpService")
+        local okD, data = pcall(function() return HS:JSONDecode(body) end)
+        if not okD or type(data) ~= "table" then return end
+
+        local changed = {}
+        for uid, entry in pairs(data) do
+            local n = tonumber(uid)
+            if n and type(entry) == "table" then
+                local rk = entry.rank
+                local ti = entry.title
+                if rk == nil or rk == "user" or not RANKMAP[rk] then rk = nil end
+                if playerRank[n] ~= rk then playerRank[n] = rk; changed[n] = true end
+                if type(ti) == "string" and ti ~= "" then
+                    if customTitles[n] ~= ti then customTitles[n] = ti; changed[n] = true end
+                end
+            end
+        end
+        -- only redraw the tags that actually moved
+        for _, p in ipairs(Players:GetPlayers()) do
+            if changed[p.UserId] and silenceUsers[p] then
+                if p == LocalPlayer then refreshSelfTag() else createTag(p) end
+            end
+        end
+    end
+
+    function SilenceAPI._pushRank(p)
+        if SYNC_BASE == "" or SYNC_KEY == "" or not p then return end
+        local rk = playerRank[p.UserId] or "user"
+        local ti = customTitles[p.UserId] or ""
+        task.spawn(function()
+            pcall(function()
+                game:HttpGet(SYNC_BASE .. "set?key=" .. urlEnc(SYNC_KEY)
+                    .. "&id=" .. tostring(p.UserId)
+                    .. "&rank=" .. urlEnc(rk)
+                    .. "&title=" .. urlEnc(ti), true)
+            end)
+        end)
+    end
+
+    if SYNC_BASE ~= "" then
+        task.spawn(function()
+            task.wait(1.5)
+            while true do
+                pcall(pullRanks)
+                task.wait(45)
+            end
+        end)
+    end
 
     SilenceAPI._ownsScriptPass = ownsScriptPass
     SilenceAPI._setTagsHidden = function(hidden)
@@ -10175,8 +10333,8 @@ end))
 
     AdminPanel = Instance.new("Frame", Gui)
     AdminPanel.Name = "AdminPanel"
-    AdminPanel.Size = UDim2.new(0, 420, 0, 460)
-    AdminPanel.Position = UDim2.new(0.5, -210, 0.5, -230)
+    AdminPanel.Size = UDim2.new(0, 580, 0, 520)
+    AdminPanel.Position = UDim2.new(0.5, -290, 0.5, -260)
     AdminPanel.BackgroundColor3 = Theme.bg
     AdminPanel.BorderSizePixel = 0
     AdminPanel.Visible = false
@@ -10248,7 +10406,7 @@ end))
 
     local function buildRow(p)
         local row = Instance.new("Frame", apList)
-        row.Size = UDim2.new(1, 0, 0, 64)
+        row.Size = UDim2.new(1, 0, 0, 132)
         row.BackgroundColor3 = Theme.bg2
         row.BorderSizePixel = 0
         row.ZIndex = 181
@@ -10310,6 +10468,72 @@ end))
         end
         refreshTagBtn()
 
+        ------------------------------------------------------ RANK PICKER
+        -- One chip per rank, painted in that rank's own accent so the grid
+        -- reads as a legend. Picking one writes the rank, saves it, rebuilds
+        -- that player's tag, and pushes it out to the other clients.
+        local rankLbl = Instance.new("TextLabel", row)
+        rankLbl.Size = UDim2.new(1, -20, 0, 14)
+        rankLbl.Position = UDim2.new(0, 10, 0, 62)
+        rankLbl.BackgroundTransparency = 1
+        rankLbl.Text = "RANK"
+        rankLbl.Font = Enum.Font.GothamBold
+        rankLbl.TextSize = 9
+        rankLbl.TextColor3 = Theme.textDim
+        rankLbl.TextXAlignment = Enum.TextXAlignment.Left
+        rankLbl.ZIndex = 182
+
+        local rankBox = Instance.new("Frame", row)
+        rankBox.Size = UDim2.new(1, -20, 0, 52)
+        rankBox.Position = UDim2.new(0, 10, 0, 76)
+        rankBox.BackgroundTransparency = 1
+        rankBox.ZIndex = 182
+        local rlay = Instance.new("UIGridLayout", rankBox)
+        rlay.CellSize = UDim2.new(0, 96, 0, 22)
+        rlay.CellPadding = UDim2.new(0, 5, 0, 5)
+        rlay.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local chipPaint = {}
+        for i, r in ipairs(RANKS) do
+            local accent = (r.look and r.look.accent) or Color3.fromRGB(255, 255, 255)
+            local c = Instance.new("TextButton", rankBox)
+            c.BorderSizePixel = 0
+            c.BackgroundColor3 = Theme.bg
+            c.Text = r.title
+            c.Font = Enum.Font.GothamBold
+            c.TextSize = 9
+            c.TextColor3 = accent
+            c.AutoButtonColor = false
+            c.LayoutOrder = i
+            c.ZIndex = 183
+            corner(c, 5)
+            local cst = Instance.new("UIStroke", c)
+            cst.Color = accent; cst.Thickness = 1; cst.Transparency = 0.75
+
+            local function paint()
+                local on = ((playerRank[p.UserId] or "user") == r.key)
+                c.BackgroundColor3 = on and accent or Theme.bg
+                c.TextColor3       = on and Theme.bg or accent
+                cst.Transparency   = on and 0 or 0.75
+            end
+            c.MouseButton1Click:Connect(function()
+                playerRank[p.UserId] = (r.key ~= "user") and r.key or nil
+                saveRanks()
+                -- an explicit custom title would hide the rank's own title,
+                -- so picking a rank clears it and the rank name takes over
+                customTitles[p.UserId] = nil
+                saveCustomTitles()
+                titleBox.Text = ""
+                if not silenceUsers[p] then tagUser(p) else refreshPlayerTag(p) end
+                if p == LocalPlayer then refreshSelfTag(); syncEditorTitle() end
+                for _, fn in ipairs(chipPaint) do fn() end
+                if SilenceAPI._pushRank then SilenceAPI._pushRank(p) end
+                notify("Admin", p.Name .. " -> " .. r.title, 3)
+            end)
+            chipPaint[#chipPaint+1] = paint
+            paint()
+        end
+
         applyBtn.MouseButton1Click:Connect(function()
             local txt = titleBox.Text
             if txt == "" then
@@ -10323,6 +10547,7 @@ end))
                 refreshSelfTag()
                 syncEditorTitle()
             end
+            if SilenceAPI._pushRank then SilenceAPI._pushRank(p) end
             notify("Admin", "Title set for "..p.Name, 2)
         end)
 
