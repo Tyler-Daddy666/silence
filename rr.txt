@@ -8728,28 +8728,40 @@ local _tagOk, _tagErr = pcall(function()
         bb.MaxDistance = look.maxDist
         bb.Parent = head
 
+        -- Every part is named, and every optional part exists from the
+        -- start. applyLook() below then rewrites this card in place instead
+        -- of destroying it and building a new one, which is what made tags
+        -- flicker: the endpoint is polled every few seconds and is eventually
+        -- consistent, so a rebuild-on-change loop rebuilt constantly.
+        -- A gradient that is not wanted is disabled rather than absent, so
+        -- switching it on later needs no new instance.
         local frame = Instance.new("Frame", bb)
+        frame.Name = "Card"
         frame.Size = UDim2.new(1, 0, 1, 0)
         frame.BackgroundColor3 = look.bg
         frame.BackgroundTransparency = look.bgAlpha
         frame.BorderSizePixel = 0
         local fc = Instance.new("UICorner", frame)
+        fc.Name = "Round"
         fc.CornerRadius = UDim.new(0, look.radius)
 
         local border = Instance.new("UIStroke", frame)
+        border.Name = "Edge"
         border.Color = look.border
         border.Thickness = 1
         border.Transparency = 0.45
 
-        if look.gradient then
-            local gr = Instance.new("UIGradient", frame)
-            gr.Color = ColorSequence.new(look.bg, look.bg2)
-            gr.Rotation = look.gradRot
-        end
-        if look.glow > 0 then
-            addAnimatedGlow(frame, { thickness = look.glow,
-                transparency = 0.35, window = 0.18, color = look.accent })
-        end
+        local gr = Instance.new("UIGradient", frame)
+        gr.Name = "Grad"
+        gr.Color = ColorSequence.new(look.bg, look.bg2)
+        gr.Rotation = look.gradRot
+        gr.Enabled = look.gradient and true or false
+
+        local glowStroke = addAnimatedGlow(frame, {
+            thickness = math.max(0.01, tonumber(look.glow) or 0),
+            transparency = 0.35, window = 0.18, color = look.accent })
+        glowStroke.Name = "Glow"
+        glowStroke.Enabled = (tonumber(look.glow) or 0) > 0
         -- the pulse drives this rather than the billboard size, which the
         -- distance scaler further down already owns
         local pulseScale = Instance.new("UIScale", frame)
@@ -8757,6 +8769,7 @@ local _tagOk, _tagErr = pcall(function()
 
         local badgeSize = 30
         local badge = Instance.new("Frame", frame)
+        badge.Name = "Badge"
         badge.Visible = look.showBadge
         badge.Size = UDim2.new(0, badgeSize, 0, badgeSize)
         badge.Position = UDim2.new(0, 4, 0.5, -badgeSize/2)
@@ -8774,18 +8787,21 @@ local _tagOk, _tagErr = pcall(function()
         badgeGrad.Rotation = 90
 
         local bs = Instance.new("UIStroke", badge)
+        bs.Name = "BadgeEdge"
         bs.Color = look.accent
         bs.Thickness = 1.5
         bs.Transparency = 0.2
         bs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 
         local innerRing = Instance.new("Frame", badge)
+        innerRing.Name = "Ring"
         innerRing.Size = UDim2.new(1, -6, 1, -6)
         innerRing.Position = UDim2.new(0, 3, 0, 3)
         innerRing.BackgroundTransparency = 1
         innerRing.BorderSizePixel = 0
         local irc = Instance.new("UICorner", innerRing); irc.CornerRadius = UDim.new(1, 0)
         local irs = Instance.new("UIStroke", innerRing)
+        irs.Name = "RingEdge"
         irs.Color = look.accent
         irs.Thickness = 0.6
         irs.Transparency = 0.65
@@ -8805,6 +8821,7 @@ local _tagOk, _tagErr = pcall(function()
                                      or Enum.TextXAlignment.Left
 
         local title = Instance.new("TextLabel", frame)
+        title.Name = "Title"
         title.Size = UDim2.new(1, -(padL + 8), 0, 16)
         -- with the username hidden there is only one line, so it centres
         title.Position = UDim2.new(0, padL, 0, look.showUser and 5 or 9)
@@ -8821,6 +8838,7 @@ local _tagOk, _tagErr = pcall(function()
         title.TextStrokeTransparency = look.outline and 0 or 1
 
         local sub = Instance.new("TextLabel", frame)
+        sub.Name = "Sub"
         sub.Size = UDim2.new(1, -(padL + 8), 0, 13)
         sub.Position = UDim2.new(0, padL, 0, 22)
         sub.BackgroundTransparency = 1
@@ -8843,6 +8861,9 @@ local _tagOk, _tagErr = pcall(function()
 
             task.spawn(function()
                 while pLayer and pLayer.Parent do
+                    -- re-resolved each round so a style change takes effect
+                    -- without the card having to be rebuilt
+                    local look = lookFor(player)
                     local kind = look.particle
                     if kind == "None" or not PARTICLE_GLYPHS[kind] then
                         task.wait(0.25)
@@ -8911,15 +8932,108 @@ local _tagOk, _tagErr = pcall(function()
         end
 
         activeTags[player] = bb
+        return bb
+    end
+
+    -- Rewrite an existing card from the player's current look. This is the
+    -- ONLY thing that should run when a rank, a title or a published style
+    -- changes; createTag is for a card that does not exist yet or whose head
+    -- was replaced by a respawn. Everything createTag sets, this sets too, so
+    -- the two cannot drift apart.
+    -- Returns false when there is nothing to update, so callers can fall back.
+    local function applyLook(player)
+        local bb = activeTags[player]
+        if not bb or not bb.Parent then return false end
+        local frame = bb:FindFirstChild("Card")
+        if not frame then return false end
+        local look = lookFor(player)
+
+        bb.Size        = UDim2.new(0, look.width, 0, lookH(look))
+        bb.StudsOffset = Vector3.new(0, look.offsetY, 0)
+        bb.MaxDistance = look.maxDist
+
+        frame.BackgroundColor3       = look.bg
+        frame.BackgroundTransparency = look.bgAlpha
+
+        local fc = frame:FindFirstChild("Round")
+        if fc then fc.CornerRadius = UDim.new(0, look.radius) end
+        local edge = frame:FindFirstChild("Edge")
+        if edge then edge.Color = look.border end
+        local gr = frame:FindFirstChild("Grad")
+        if gr then
+            gr.Color    = ColorSequence.new(look.bg, look.bg2)
+            gr.Rotation = look.gradRot
+            gr.Enabled  = look.gradient and true or false
+        end
+        local glow = frame:FindFirstChild("Glow")
+        if glow then
+            local g = tonumber(look.glow) or 0
+            glow.Enabled   = g > 0
+            glow.Thickness = math.max(0.01, g)
+            glow.Color     = look.accent
+        end
+
+        local padL  = look.showBadge and 38 or 12
+        local align = look.centered and Enum.TextXAlignment.Center
+                                     or Enum.TextXAlignment.Left
+
+        local badge = frame:FindFirstChild("Badge")
+        if badge then
+            badge.Visible = look.showBadge and true or false
+            local be = badge:FindFirstChild("BadgeEdge")
+            if be then be.Color = look.accent end
+            local ring = badge:FindFirstChild("Ring")
+            if ring then
+                local rs = ring:FindFirstChild("RingEdge")
+                if rs then rs.Color = look.accent end
+            end
+        end
+
+        local title = frame:FindFirstChild("Title")
+        if title then
+            title.Size     = UDim2.new(1, -(padL + 8), 0, 16)
+            title.Position = UDim2.new(0, padL, 0, look.showUser and 5 or 9)
+            title.Text     = titleFor(player)
+            title.Font     = look.font
+            title.TextSize = look.titleSize
+            title.TextColor3 = look.text
+            title.TextXAlignment = align
+            title.TextStrokeColor3 = look.outlineCol
+            title.TextStrokeTransparency = look.outline and 0 or 1
+        end
+
+        local sub = frame:FindFirstChild("Sub")
+        if sub then
+            sub.Size      = UDim2.new(1, -(padL + 8), 0, 13)
+            sub.Position  = UDim2.new(0, padL, 0, 22)
+            sub.TextColor3 = look.sub
+            sub.TextXAlignment = align
+            sub.Visible   = look.showUser and true or false
+        end
+        return true
+    end
+    SilenceAPI._applyTagLook = applyLook
+
+    -- update in place if the card is there, build it only if it is not
+    local function paintTag(player)
+        if not player or not player.Character then return end
+        if State.tagsHidden then return end
+        if not applyLook(player) then createTag(player) end
     end
 
     local function refreshSelfTag()
-        if LocalPlayer.Character then createTag(LocalPlayer) end
+        if LocalPlayer.Character then paintTag(LocalPlayer) end
     end
 
+    local tagHooked = {}
     local function tagUser(player)
         silenceUsers[player] = true
-        if player.Character then createTag(player) end
+        if player.Character then paintTag(player) end
+        -- Connecting on every call meant a player who fell off the presence
+        -- list and came back collected another respawn handler each round,
+        -- and then rebuilt their card once per handler on the next death.
+        if tagHooked[player] then return end
+        tagHooked[player] = true
         track(player.CharacterAdded:Connect(function()
             task.wait(0.4)
             if silenceUsers[player] then createTag(player) end
@@ -8942,6 +9056,7 @@ local _tagOk, _tagErr = pcall(function()
     tagUser(LocalPlayer)
 
     track(Players.PlayerRemoving:Connect(function(p)
+        tagHooked[p] = nil
         silenceUsers[p] = nil; destroyTag(p)
     end))
 
@@ -10453,7 +10568,7 @@ local _tagOk, _tagErr = pcall(function()
     local adminAuthed = false
 
     local function refreshPlayerTag(p)
-        if p and p.Character and silenceUsers[p] then createTag(p) end
+        if p and p.Character and silenceUsers[p] then paintTag(p) end
     end
 
     local passOwnership, passError = {}, {}
@@ -10516,6 +10631,7 @@ local _tagOk, _tagErr = pcall(function()
     -- from being tagged while standing there without it.
     local knownUsers = {}   -- [userId] = true, online now
     local allUsers   = {}   -- [userId] = name, ever seen
+    local missCount  = {}   -- [userId] = consecutive polls without them
     local selfOwns  = false
 
     local function tagKnownPlayers()
@@ -10621,13 +10737,25 @@ local _tagOk, _tagErr = pcall(function()
                 local n = tonumber(uid)
                 if n then
                     fresh[n] = true
+                    missCount[n] = 0
                     if allUsers[n] == nil then allUsers[n] = "?" end
                 end
             end
+            -- Hysteresis. The endpoint is eventually consistent, so one
+            -- answer that leaves somebody out is not evidence that they
+            -- left - and acting on a single one was enough to drop a tag and
+            -- put it back seconds later, over and over. Three misses in a row
+            -- is evidence; one is noise.
             for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and silenceUsers[p] and not fresh[p.UserId] then
-                    silenceUsers[p] = nil
-                    destroyTag(p)
+                local uid = p.UserId
+                if p ~= LocalPlayer and silenceUsers[p] and not fresh[uid] then
+                    missCount[uid] = (missCount[uid] or 0) + 1
+                    if missCount[uid] < 3 then
+                        fresh[uid] = true
+                    else
+                        silenceUsers[p] = nil
+                        destroyTag(p)
+                    end
                 end
             end
             -- your own tag is yours to decide, never the endpoint's
@@ -10683,11 +10811,15 @@ local _tagOk, _tagErr = pcall(function()
                 if playerRank[n] ~= rk then playerRank[n] = rk; changed[n] = true end
                 if type(ti) == "string" and ti ~= "" then
                     if customTitles[n] ~= ti then customTitles[n] = ti; changed[n] = true end
-                elseif customTitles[n] ~= nil then
-                    -- "rank only" from the endpoint. Leaving an old local
-                    -- title in place is what made a rank change the colours
-                    -- but not the name: titleFor prefers a custom title, so
-                    -- a stale one kept winning forever.
+                elseif customTitles[n] ~= nil and n ~= LocalPlayer.UserId then
+                    -- "rank only" from the endpoint, so a stale local title
+                    -- has to go: titleFor prefers a custom title and an old
+                    -- one would keep winning over the rank name forever.
+                    --
+                    -- Never for your own account. Your title is something you
+                    -- type in the editor, the endpoint has no opinion on it,
+                    -- and clearing it here wiped whatever you had just typed
+                    -- on the very next poll - within five seconds.
                     customTitles[n] = nil; changed[n] = true
                 end
                 -- a rank is permanent, presence is not; only the registry
@@ -10717,7 +10849,7 @@ local _tagOk, _tagErr = pcall(function()
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
             if changed[p.UserId] and silenceUsers[p] then
-                if p == LocalPlayer then refreshSelfTag() else createTag(p) end
+                paintTag(p)
             end
         end
     end
