@@ -1015,59 +1015,40 @@ local function setVcBypass(on)
     _vcClearConns()
     if not on then return end
 
-    -- Event driven, not a metronome. The old loop called JoinVoice four
-    -- times AND flipped the microphone permission off and on every 1.5
-    -- seconds whether or not anything was wrong - and permanently cycling
-    -- the mic permission is by itself enough to make voice unusable. It now
-    -- acts when the session actually drops, at most once every 8 seconds.
-    local lastTry = 0
-    local function attempt(why)
-        local now = tick()
-        if now - lastTry < 8 then return end
-        lastTry = now
-        task.spawn(function()
-            pcall(function()
-                local us = UserSettings():GetService("UserGameSettings")
-                local cur = us.MicrophonePermission
-                us.MicrophonePermission = false
-                task.wait(0.1)
-                us.MicrophonePermission = (cur ~= nil) and cur or true
-            end)
-            for _, name in ipairs({ "VoiceChatInternal", "VoiceChatService" }) do
-                pcall(function()
-                    local svc = game:GetService(name)
-                    if svc.JoinVoice then svc:JoinVoice()
-                    elseif svc.joinVoice then svc:joinVoice() end
-                end)
-            end
-            print("[Silence] voice re-handshake (" .. tostring(why) .. ")")
-        end)
-    end
-    SilenceAPI._vcAttempt = attempt
-
-    pcall(function()
-        local svc = game:GetService("VoiceChatInternal")
-        if svc and svc.PausedVoiceConnectionEvent then
-            table.insert(vcBypassConns, svc.PausedVoiceConnectionEvent:Connect(function()
-                if State.vcBypass then attempt("paused event") end
-            end))
-        end
-    end)
-
-    -- A slow safety net for builds that raise no event at all. A dropped
-    -- session takes the local microphone device with it, so its absence is
-    -- the signal. Checked every 10s, and attempt() still holds its own
-    -- cooldown on top.
+    -- Only the timer lives here. Detecting a dead session and rebuilding one
+    -- both need the method names that were found by probing, and those live
+    -- in the Voice tab block (SilenceAPI._vcState / _vcHardReset).
+    --
+    -- Ten seconds between checks, and the reset holds its own cooldown on
+    -- top. The version this replaces re-handshaked every 1.5 seconds whether
+    -- or not anything was wrong, and cycling the microphone permission that
+    -- often is by itself enough to make voice unusable.
+    SilenceAPI._vcFails = 0
     table.insert(vcBypassConns, RunService.Heartbeat:Connect(function()
         local now = tick()
         if (SilenceAPI._vcNextPoll or 0) > now then return end
         SilenceAPI._vcNextPoll = now + 10
         if not State.vcBypass then return end
-        local hasDev = false
-        pcall(function()
-            hasDev = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput") ~= nil
-        end)
-        if not hasDev then attempt("no mic device") end
+        if not SilenceAPI._vcState or not SilenceAPI._vcHardReset then return end
+
+        local live = false
+        pcall(function() live = SilenceAPI._vcState() end)
+        if live then SilenceAPI._vcFails = 0 return end
+
+        -- Give up after five failed rebuilds instead of retrying forever.
+        -- A game with no voice chat at all looks exactly like a dead session
+        -- from here, and hammering it would be pointless noise.
+        if SilenceAPI._vcFails >= 5 then
+            if State.vcBypass then
+                State.vcBypass = false
+                _vcClearConns()
+                notify("Voice", "Gave up after 5 rebuilds - is voice on in this game?", 8)
+                for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+            end
+            return
+        end
+        SilenceAPI._vcFails = SilenceAPI._vcFails + 1
+        task.spawn(function() pcall(SilenceAPI._vcHardReset, false) end)
     end))
 end
 SilenceAPI._setVcBypass = setVcBypass
@@ -5132,6 +5113,7 @@ local TAB_CATEGORY = {
     Aimbot    = "Combat", Visual        = "Combat", Players       = "Combat",
     Misc      = "System", AntiCheat     = "System", Hotkeys       = "System",
     Config    = "System", Logs          = "System",
+    ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
 }
 -- rail order, top to bottom
 local CATEGORIES = {
@@ -5139,6 +5121,7 @@ local CATEGORIES = {
     { key="Self",   label="SELF",   icon="self"   },
     { key="Larp",   label="LARP",   icon="larp"   },
     { key="Combat", label="COMBAT", icon="combat" },
+    { key="Voice",  label="VOICE",  icon="voice"  },
     { key="System", label="SYSTEM", icon="system" },
 }
 -- order of the pills inside a group's strip
@@ -5148,12 +5131,17 @@ local TAB_LO_INSIDE = {
     Avatar = 1, Roleplay = 2, Trolling = 3,
     Aimbot = 1, Visual = 2, Players = 3,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
+    ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
 }
 SilenceAPI._catOf     = TAB_CATEGORY
 SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
 SilenceAPI._railPaint = {}   -- repaint fns for the five icon tiles
 SilenceAPI._catBadge  = {}   -- [group] = search-hit badge on its tile
 SilenceAPI._tabDesc = {
+    ["Anti Ban"]  = "Rebuild a dropped voice session",
+    Mute          = "Silence yourself or anyone, locally",
+    Mic           = "Pick which microphone Roblox uses",
+    ["Voice Log"] = "What the voice API on this build actually offers",
     IMPORTANT     = "Access pass status and purchase",
     Player        = "Movement, body, camera and quick actions",
     ["FPS Boost"] = "Strip the game down for frames",
@@ -5233,6 +5221,11 @@ local function makeRailButton(cat)
         dot(4, 11, 11)
         px(2,5, 12, 0, 1); px(2,5, 12,21, 1)
         px(5,2,  0,12, 1); px(5,2, 21,12, 1)
+    elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
+        px(8, 13, 8, 1, 4)
+        px(2, 4, 3, 10, 1); px(2, 4, 19, 10, 1)
+        px(14, 2, 3, 13, 1)
+        px(2, 4, 11, 15, 1); px(10, 2, 7, 19, 1)
     else                                -- three bars: settings
         px(22,3, 2, 4, 2); px(15,3, 2,11, 2); px(19,3, 2,18, 2)
     end
@@ -7465,66 +7458,156 @@ sectionLabel(pMisc,"UTILITY")
 toggleRow(pMisc,"Anti-AFK", function() return State.antiAfk end, setAntiAfk)
 inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=v:sub(1,1) end end)
 
-sectionLabel(pMisc,"VOICE CHAT")
-local vcWarn = Instance.new("TextLabel", pMisc)
-vcWarn.Size = UDim2.new(1, 0, 0, 28)
-vcWarn.BackgroundTransparency = 1
-vcWarn.Text = "  may not work - account-level bans only Roblox can lift"
-vcWarn.Font = Enum.Font.GothamMedium
-vcWarn.TextSize = 10
-vcWarn.TextColor3 = Theme.warn
-vcWarn.TextXAlignment = Enum.TextXAlignment.Left
-vcWarn.TextYAlignment = Enum.TextYAlignment.Center
-vcWarn.TextWrapped = true
-toggleRow(pMisc,"Auto VC Reconnect  (only when the session drops)",
-    function() return State.vcBypass end,
-    function(v)
-        setVcBypass(v)
-        if v then
-            notify("Voice", "ON - will rejoin when the session drops.", 4)
-        else
-            notify("Voice", "OFF", 2)
+----------------------------------------------------------------
+-- VOICE
+-- Its own group on the rail, four tabs across the top. Wrapped in do..end
+-- because the main chunk is at 198 of Luau's 200 locals and four page
+-- handles would not fit.
+--
+-- What this can and cannot do, stated once: it rebuilds ROBLOX'S voice
+-- session. There is no second channel and there cannot be one - Lua is given
+-- no microphone samples and cannot play raw audio, so no script carries voice
+-- itself. This fixes a session that dropped. An account Roblox has voice
+-- banned is checked server-side on join, and no client talks it out of that.
+----------------------------------------------------------------
+do
+    local pVcBan  = addTab("Anti Ban")
+    local pVcMute = addTab("Mute")
+    local pVcMic  = addTab("Mic")
+    local pVcLog  = addTab("Voice Log")
+
+    ------------------------------------------------------------ API LAYER
+    -- Names are probed, never assumed. A live probe on this build reported
+    -- VoiceChatInternal present with PublishPause and SubscribePause, but
+    -- NO JoinVoice and no PausedVoiceConnectionEvent - so the join goes
+    -- through JoinByGroupIdToken and the reconnect cannot be event driven.
+    local function svcOf(name)
+        local v
+        pcall(function() v = game:GetService(name) end)
+        return v
+    end
+    local function hasM(svc, m)
+        if not svc then return false end
+        local ok, v = pcall(function() return svc[m] end)
+        return ok and v ~= nil
+    end
+    local function callM(svc, m, ...)
+        if not hasM(svc, m) then return false end
+        local a = table.pack(...)
+        local ok = pcall(function() svc[m](svc, table.unpack(a, 1, a.n)) end)
+        return ok
+    end
+
+    local function groupId()
+        local vci = svcOf("VoiceChatInternal")
+        local gid
+        pcall(function() if hasM(vci, "GetGroupId") then gid = vci:GetGroupId() end end)
+        return gid
+    end
+
+    local function vcJoin()
+        local vci = svcOf("VoiceChatInternal")
+        local gid = groupId()
+        if gid and callM(vci, "JoinByGroupIdToken", gid, false) then
+            return "JoinByGroupIdToken"
+        end
+        if gid and callM(vci, "JoinByGroupId", gid, false) then return "JoinByGroupId" end
+        if callM(vci, "Join") then return "Join" end
+        local vcv = svcOf("VoiceChatService")
+        if callM(vcv, "JoinVoice") then return "VoiceChatService:JoinVoice" end
+        if callM(vcv, "joinVoice") then return "VoiceChatService:joinVoice" end
+        return nil
+    end
+
+    local function vcLeave()
+        local vci = svcOf("VoiceChatInternal")
+        if callM(vci, "Leave")      then return "Leave" end
+        if callM(vci, "LeaveVoice") then return "LeaveVoice" end
+        return nil
+    end
+
+    -- Two eras of API. The current one puts an AudioDeviceInput under each
+    -- Player; the older one goes through VoiceChatInternal. The probe found
+    -- only the older one here, so that path is what actually runs.
+    local function muteSelf(on)
+        local ok = false
+        pcall(function()
+            local d = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
+            if d then d.Muted = on and true or false; ok = true end
+        end)
+        if not ok then ok = callM(svcOf("VoiceChatInternal"), "PublishPause", on and true or false) end
+        return ok
+    end
+    local function mutePlayer(p, on)
+        if not p or p == LocalPlayer then return false end
+        local ok = false
+        pcall(function()
+            local d = p:FindFirstChildOfClass("AudioDeviceInput")
+            if d then d.Muted = on and true or false; ok = true end
+        end)
+        if not ok then
+            ok = callM(svcOf("VoiceChatInternal"), "SubscribePause", p.UserId, on and true or false)
+        end
+        return ok
+    end
+
+    -- Nothing on this build reports "connected" directly, so say what is
+    -- actually observable instead of inventing a green light.
+    local function voiceState()
+        local dev = false
+        pcall(function()
+            dev = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput") ~= nil
+        end)
+        if dev then return true, "connected  -  microphone device present" end
+        local gid = groupId()
+        if gid and tostring(gid) ~= "" then
+            return true, "in a voice group (" .. tostring(gid):sub(1, 18) .. ")"
+        end
+        return false, "no voice session detected"
+    end
+
+    ------------------------------------------------------------ TAB: ANTI BAN
+    sectionLabel(pVcBan, "SESSION")
+
+    local stRow = Instance.new("Frame", pVcBan)
+    stRow.Size = UDim2.new(1, 0, 0, 36)
+    stRow.BorderSizePixel = 0
+    corner(stRow, 8)
+    SilenceAPI._theme(stRow, "BackgroundColor3", "bg2")
+    stroke(stRow, Theme.bg4, 1, 0.6, "bg4")
+    SilenceAPI._registerRow(stRow, "voice status connected session")
+
+    local stDot = Instance.new("Frame", stRow)
+    stDot.Size = UDim2.new(0, 8, 0, 8); stDot.Position = UDim2.new(0, 14, 0.5, -4)
+    stDot.BorderSizePixel = 0
+    local sdc = Instance.new("UICorner", stDot); sdc.CornerRadius = UDim.new(1, 0)
+
+    local stLbl = Instance.new("TextLabel", stRow)
+    stLbl.Size = UDim2.new(1, -40, 1, 0); stLbl.Position = UDim2.new(0, 30, 0, 0)
+    stLbl.BackgroundTransparency = 1
+    stLbl.Font = Enum.Font.GothamMedium; stLbl.TextSize = 11
+    stLbl.TextXAlignment = Enum.TextXAlignment.Left
+    stLbl.Text = "voice: checking..."
+    SilenceAPI._theme(stLbl, "TextColor3", "text")
+
+    task.spawn(function()
+        while true do
+            local live, why = voiceState()
+            stLbl.Text = "voice: " .. why
+            stDot.BackgroundColor3 = live and Color3.fromRGB(90, 230, 120)
+                                          or Color3.fromRGB(240, 80, 80)
+            task.wait(1.5)
         end
     end)
-do
-    -- A full leave-then-join cycle, which is what the "anti VC ban" scripts
-    -- going around actually do. The version that used to be here only ever
-    -- pushed JOIN, and a client that still believes its session is alive
-    -- ignores a join outright - so a half-dead session survived it.
-    --
-    -- To be clear about what this can and cannot do: it rebuilds ROBLOX'S
-    -- voice session. There is no second channel and there cannot be one -
-    -- Lua gets no microphone samples and cannot play raw audio, so no script
-    -- can carry voice itself. This fixes a dropped session. An account that
-    -- Roblox has voice-banned is checked server-side on join and no client
-    -- can talk it out of that.
-    local function svcOf(name)
-        local svc
-        pcall(function() svc = game:GetService(name) end)
-        return svc
-    end
-    local function call(svc, ...)
-        if not svc then return false end
-        for _, m in ipairs({ ... }) do
-            local ok = false
-            pcall(function()
-                if type(svc[m]) == "function" then svc[m](svc); ok = true end
-            end)
-            if ok then return true end
-        end
-        return false
-    end
 
-    local function hardReset(report)
+    -- The old pulse only ever pushed JOIN, and a client that still believes
+    -- its session is alive ignores a join outright - which is why a half dead
+    -- session survived it. Leaving first is the part that was missing.
+    local function hardReset(loud)
         local steps = {}
-        local vci = svcOf("VoiceChatInternal")
-        local vcs = svcOf("VoiceChatService")
+        local left = vcLeave()
+        steps[#steps+1] = left and ("left via " .. left) or "no leave method"
 
-        steps[#steps+1] = call(vci, "Leave", "LeaveVoice", "leaveVoice")
-                          and "left session" or "no leave method"
-
-        -- the microphone permission flip is the part that forces Roblox to
-        -- redo the handshake rather than reuse what it has cached
         local micOk = false
         pcall(function()
             local us = UserSettings():GetService("UserGameSettings")
@@ -7537,15 +7620,12 @@ do
         steps[#steps+1] = micOk and "mic permission cycled" or "mic permission unavailable"
 
         task.wait(0.6)
+        local joined = vcJoin()
+        steps[#steps+1] = joined and ("rejoined via " .. joined) or "NO JOIN METHOD FOUND"
 
-        local joined = call(vci, "JoinVoice", "joinVoice")
-                       or call(vcs, "JoinVoice", "joinVoice")
-        steps[#steps+1] = joined and "rejoin called" or "no join method"
-
-        -- re-selecting the input device makes some builds actually open it
         pcall(function()
-            if type(vci.GetMicDevices) == "function"
-               and type(vci.SetMicDevice) == "function" then
+            local vci = svcOf("VoiceChatInternal")
+            if hasM(vci, "GetMicDevices") and hasM(vci, "SetMicDevice") then
                 local devs = vci:GetMicDevices()
                 if type(devs) == "table" and devs[1] then
                     vci:SetMicDevice(devs[1].Guid or devs[1].guid or devs[1])
@@ -7555,140 +7635,82 @@ do
         end)
 
         task.wait(1.2)
-        local back = false
-        pcall(function()
-            back = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput") ~= nil
-        end)
-        steps[#steps+1] = back and "MIC DEVICE IS BACK" or "still no mic device"
+        local live, why = voiceState()
+        steps[#steps+1] = live and ("OK - " .. why) or ("still down - " .. why)
 
         print("[Silence] voice hard reset:")
         for _, st in ipairs(steps) do print("  - " .. st) end
-        if report then
-            notify("Voice", table.concat(steps, " / "), 10)
-        end
-        return back
+        if loud then notify("Voice", table.concat(steps, "  /  "), 10) end
+        return live
     end
     SilenceAPI._vcHardReset = hardReset
+    SilenceAPI._vcState = function() local ok = voiceState() return ok end
 
-    buttonRow(pMisc, "Voice Hard Reset  (leave, cycle mic, rejoin)", function()
-        notify("Voice", "Resetting voice session...", 3)
+    buttonRow(pVcBan, "Voice Hard Reset  (leave, cycle mic, rejoin)", function()
+        notify("Voice", "Rebuilding voice session...", 3)
         task.spawn(function() hardReset(true) end)
     end)
 
-    -- Without this you are guessing whether anything happened. It reads the
-    -- one thing that is observable from Lua: whether your microphone device
-    -- exists, which is what a live voice session gives you.
-    local st = Instance.new("Frame", pMisc)
-    st.Size = UDim2.new(1, 0, 0, 34)
-    st.BorderSizePixel = 0
-    corner(st, 8)
-    SilenceAPI._theme(st, "BackgroundColor3", "bg2")
-    stroke(st, Theme.bg4, 1, 0.6, "bg4")
-    SilenceAPI._registerRow(st, "voice status connected microphone")
+    sectionLabel(pVcBan, "AUTOMATIC")
+    toggleRow(pVcBan, "Auto Reconnect  (watch and rebuild)",
+        function() return State.vcBypass end,
+        function(v)
+            setVcBypass(v)
+            notify("Voice", v and "ON - rebuilds the session when it drops."
+                              or "OFF", 3)
+        end)
 
-    local dot = Instance.new("Frame", st)
-    dot.Size = UDim2.new(0, 8, 0, 8); dot.Position = UDim2.new(0, 14, 0.5, -4)
-    dot.BorderSizePixel = 0
-    local dc = Instance.new("UICorner", dot); dc.CornerRadius = UDim.new(1, 0)
+    local acWarn = Instance.new("TextLabel", pVcBan)
+    acWarn.Size = UDim2.new(1, 0, 0, 60)
+    acWarn.BackgroundTransparency = 1
+    acWarn.Text = "  This rebuilds Roblox's own voice session. It fixes a session that\n"
+               .. "  dropped, which is what most 'anti VC ban' scripts actually do.\n"
+               .. "  An account-level voice ban is checked on Roblox's servers and\n"
+               .. "  cannot be lifted from here by any script."
+    acWarn.Font = Enum.Font.Gotham
+    acWarn.TextSize = 10
+    acWarn.TextColor3 = Theme.warn
+    acWarn.TextXAlignment = Enum.TextXAlignment.Left
+    acWarn.TextYAlignment = Enum.TextYAlignment.Top
+    acWarn.TextWrapped = true
 
-    local stLbl = Instance.new("TextLabel", st)
-    stLbl.Size = UDim2.new(1, -40, 1, 0); stLbl.Position = UDim2.new(0, 30, 0, 0)
-    stLbl.BackgroundTransparency = 1
-    stLbl.Font = Enum.Font.GothamMedium; stLbl.TextSize = 11
-    stLbl.TextXAlignment = Enum.TextXAlignment.Left
-    stLbl.Text = "voice: checking..."
-    SilenceAPI._theme(stLbl, "TextColor3", "text")
-
-    task.spawn(function()
-        while true do
-            local hasDev, muteState = false, nil
-            pcall(function()
-                local d = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
-                if d then hasDev = true; muteState = d.Muted end
-            end)
-            if hasDev then
-                stLbl.Text = "voice: connected" ..
-                    (muteState == true and "  -  your mic is muted" or "")
-                dot.BackgroundColor3 = Color3.fromRGB(90, 230, 120)
-            else
-                stLbl.Text = "voice: no microphone device  -  not in a voice session"
-                dot.BackgroundColor3 = Color3.fromRGB(240, 80, 80)
-            end
-            task.wait(1.5)
-        end
+    sectionLabel(pVcBan, "LAST RESORT")
+    buttonRow(pVcBan, "Rejoin Server  (full voice refresh)", function()
+        notify("Voice", "Rejoining server...", 2)
+        task.wait(0.3)
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
     end)
-end
-buttonRow(pMisc,"Rejoin Server  (force voice refresh)", function()
-    notify("VC", "Rejoining server...", 2)
-    task.wait(0.3)
-    TeleportService:Teleport(game.PlaceId, LocalPlayer)
-end)
-sectionLabel(pMisc, "VOICE MUTING")
-do
-    -- Everything here is local: it changes what YOU hear, and whether your
-    -- own microphone is sending. A client cannot mute somebody for the rest
-    -- of the server - that would be a server-side call - so nobody else is
-    -- affected by what you do on this list.
-    --
-    -- Two eras of API are tried in order. The current one exposes voice as
-    -- an AudioDeviceInput parented to each Player; the older one goes
-    -- through VoiceChatInternal. Which of them exists depends on the game
-    -- and on the Roblox build, so both are attempted and the panel reports
-    -- which one answered rather than pretending it worked.
-    local muted = {}
 
-    local function tryMuteSelf(on)
-        local done = false
-        pcall(function()
-            local dev = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
-            if dev then dev.Muted = on and true or false; done = true end
-        end)
-        if not done then
-            pcall(function()
-                local svc = game:GetService("VoiceChatInternal")
-                if svc.PublishPause then
-                    svc:PublishPause(on and true or false); done = true
-                end
-            end)
-        end
-        return done
-    end
-
-    local function tryMutePlayer(p, on)
-        if not p or p == LocalPlayer then return false end
-        local done = false
-        pcall(function()
-            local dev = p:FindFirstChildOfClass("AudioDeviceInput")
-            if dev then dev.Muted = on and true or false; done = true end
-        end)
-        if not done then
-            pcall(function()
-                local svc = game:GetService("VoiceChatInternal")
-                if svc.SubscribePause then
-                    svc:SubscribePause(p.UserId, on and true or false); done = true
-                end
-            end)
-        end
-        return done
-    end
-
-    toggleRow(pMisc, "Mute My Microphone",
+    ------------------------------------------------------------ TAB: MUTE
+    sectionLabel(pVcMute, "YOURSELF")
+    toggleRow(pVcMute, "Mute My Microphone",
         function() return State.vcSelfMuted end,
         function(v)
             State.vcSelfMuted = v
-            local ok = tryMuteSelf(v)
+            local ok = muteSelf(v)
             notify("Voice", ok and (v and "Microphone muted." or "Microphone live.")
-                              or "No voice API answered - is voice on in this game?", 4)
+                              or "No voice API answered.", 4)
         end)
 
-    local vcList = Instance.new("Frame", pMisc)
+    sectionLabel(pVcMute, "OTHER PLAYERS")
+    local muteHint = Instance.new("TextLabel", pVcMute)
+    muteHint.Size = UDim2.new(1, 0, 0, 30)
+    muteHint.BackgroundTransparency = 1
+    muteHint.Text = "  Local only: this changes what YOU hear. Nobody else is affected."
+    muteHint.Font = Enum.Font.Gotham
+    muteHint.TextSize = 10
+    muteHint.TextXAlignment = Enum.TextXAlignment.Left
+    SilenceAPI._theme(muteHint, "TextColor3", "textDim")
+
+    local muted = {}
+    local vcList = Instance.new("Frame", pVcMute)
     vcList.Size = UDim2.new(1, 0, 0, 0)
     vcList.AutomaticSize = Enum.AutomaticSize.Y
     vcList.BackgroundTransparency = 1
     local vcLay = Instance.new("UIListLayout", vcList)
     vcLay.Padding = UDim.new(0, 4)
     vcLay.SortOrder = Enum.SortOrder.LayoutOrder
-    SilenceAPI._registerRow(vcList, "voice mute list players")
+    SilenceAPI._registerRow(vcList, "voice mute players list")
 
     local function rebuildVoice()
         for _, c in ipairs(vcList:GetChildren()) do
@@ -7735,11 +7757,9 @@ do
                     bs.Transparency    = on and 0 or 0.5
                 end
                 paint()
-
                 b.MouseButton1Click:Connect(function()
                     local want = not muted[p.UserId]
-                    local ok = tryMutePlayer(p, want)
-                    if ok then
+                    if mutePlayer(p, want) then
                         muted[p.UserId] = want or nil
                         paint()
                     else
@@ -7764,64 +7784,171 @@ do
     track(Players.PlayerAdded:Connect(function() task.wait(0.5) rebuildVoice() end))
     track(Players.PlayerRemoving:Connect(function() task.wait(0.2) rebuildVoice() end))
 
-    buttonRow(pMisc, "Mute Everyone", function()
+    buttonRow(pVcMute, "Mute Everyone", function()
         local hit = 0
         for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer and tryMutePlayer(p, true) then
+            if p ~= LocalPlayer and mutePlayer(p, true) then
                 muted[p.UserId] = true; hit = hit + 1
             end
         end
         rebuildVoice()
         notify("Voice", hit .. " player(s) muted locally.", 3)
     end)
-    buttonRow(pMisc, "Unmute Everyone", function()
+    buttonRow(pVcMute, "Unmute Everyone", function()
         for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer then tryMutePlayer(p, false) end
+            if p ~= LocalPlayer then mutePlayer(p, false) end
         end
         muted = {}
         rebuildVoice()
         notify("Voice", "Everyone unmuted locally.", 3)
     end)
 
-    buttonRow(pMisc, "Check What Voice APIs Exist", function()
-        local out = {}
-        local function note(label, ok)
-            out[#out+1] = (ok and "yes  " or "no   ") .. label
+    ------------------------------------------------------------ TAB: MIC
+    sectionLabel(pVcMic, "INPUT DEVICE")
+    local micBox = Instance.new("Frame", pVcMic)
+    micBox.Size = UDim2.new(1, 0, 0, 0)
+    micBox.AutomaticSize = Enum.AutomaticSize.Y
+    micBox.BackgroundTransparency = 1
+    local micLay = Instance.new("UIListLayout", micBox)
+    micLay.Padding = UDim.new(0, 4)
+    micLay.SortOrder = Enum.SortOrder.LayoutOrder
+    SilenceAPI._registerRow(micBox, "microphone input device list")
+
+    local function rebuildMics()
+        for _, c in ipairs(micBox:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
         end
-        local devSelf = false
+        local vci = svcOf("VoiceChatInternal")
+        local devs
         pcall(function()
-            devSelf = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput") ~= nil
+            if hasM(vci, "GetMicDevices") then devs = vci:GetMicDevices() end
         end)
-        note("your AudioDeviceInput (current API)", devSelf)
+        if type(devs) ~= "table" or #devs == 0 then
+            local none = Instance.new("TextLabel", micBox)
+            none.Size = UDim2.new(1, 0, 0, 44)
+            none.BackgroundTransparency = 1
+            none.Text = "  This build exposes no microphone list."
+            none.Font = Enum.Font.Gotham
+            none.TextSize = 11
+            none.TextXAlignment = Enum.TextXAlignment.Left
+            SilenceAPI._theme(none, "TextColor3", "textDim")
+            return
+        end
+        for i, d in ipairs(devs) do
+            local label = tostring(d.Name or d.name or d)
+            local guid  = d.Guid or d.guid or d
+            local b = Instance.new("TextButton", micBox)
+            b.Size = UDim2.new(1, 0, 0, 32)
+            b.BorderSizePixel = 0
+            b.Text = "  " .. label
+            b.Font = Enum.Font.GothamMedium
+            b.TextSize = 12
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.AutoButtonColor = false
+            b.LayoutOrder = i
+            corner(b, 8)
+            SilenceAPI._theme(b, "BackgroundColor3", "bg2")
+            SilenceAPI._theme(b, "TextColor3", "text")
+            stroke(b, Theme.bg4, 1, 0.6, "bg4")
+            b.MouseButton1Click:Connect(function()
+                local ok = callM(vci, "SetMicDevice", guid)
+                notify("Voice", ok and ("Microphone: " .. label)
+                                  or "SetMicDevice is not available here.", 4)
+            end)
+        end
+    end
+    rebuildMics()
+    buttonRow(pVcMic, "Refresh Device List", rebuildMics)
+
+    ------------------------------------------------------------ TAB: VOICE LOG
+    sectionLabel(pVcLog, "WHAT THIS BUILD OFFERS")
+    local logLbl = Instance.new("TextLabel", pVcLog)
+    logLbl.Size = UDim2.new(1, 0, 0, 340)
+    logLbl.BackgroundTransparency = 1
+    logLbl.Text = "  press Probe below"
+    logLbl.Font = Enum.Font.Code
+    logLbl.TextSize = 11
+    logLbl.TextXAlignment = Enum.TextXAlignment.Left
+    logLbl.TextYAlignment = Enum.TextYAlignment.Top
+    SilenceAPI._theme(logLbl, "TextColor3", "textDim")
+
+    -- Names are not guessable, so the whole plausible surface is tested and
+    -- what answers is reported. This is how the join was found to be
+    -- JoinByGroupIdToken and not JoinVoice.
+    local VCI_NAMES = {
+        "JoinByGroupIdToken", "JoinByGroupId", "Join", "JoinVoice",
+        "Leave", "LeaveVoice",
+        "PublishPause", "SubscribePause", "SubscribePauseAll",
+        "IsPublishPaused", "IsSubscribePaused",
+        "GetGroupId", "GetChannelId",
+        "GetMicDevices", "SetMicDevice", "GetMicDevice",
+        "GetSpeakerDevices", "SetSpeakerDevice",
+        "SubscribeRenderStepped", "SubscribePauseVoiceConnectionEvents",
+        "ParticipantsStateChanged", "StateChanged",
+        "PlayerMicPermissionsChanged", "LocalPlayerMicEnabledChanged",
+        "PausedVoiceConnectionEvent",
+    }
+    local VCS_NAMES = {
+        "JoinVoice", "joinVoice", "IsVoiceEnabledForUserIdAsync",
+        "EnableDefaultVoice", "VoiceChatEnabledForPlaceOnRcc",
+    }
+
+    local function probe()
+        local out = {}
+        local vci = svcOf("VoiceChatInternal")
+        local vcv = svcOf("VoiceChatService")
+        out[#out+1] = "VoiceChatInternal service : " .. (vci and "yes" or "NO")
+        out[#out+1] = "VoiceChatService service  : " .. (vcv and "yes" or "NO")
+        local dev = false
+        pcall(function()
+            dev = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput") ~= nil
+        end)
+        out[#out+1] = "your AudioDeviceInput     : " .. (dev and "yes" or "no")
         local others = 0
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer then
                 pcall(function()
-                    if p:FindFirstChildOfClass("AudioDeviceInput") then others = others + 1 end
+                    if p:FindFirstChildOfClass("AudioDeviceInput") then
+                        others = others + 1
+                    end
                 end)
             end
         end
-        out[#out+1] = tostring(others) .. "    other players with a mic device"
-        local svc
-        pcall(function() svc = game:GetService("VoiceChatInternal") end)
-        note("VoiceChatInternal service", svc ~= nil)
-        if svc then
-            for _, m in ipairs({ "JoinVoice", "PublishPause", "SubscribePause",
-                                 "PausedVoiceConnectionEvent" }) do
-                local has = false
-                pcall(function() has = svc[m] ~= nil end)
-                note("VoiceChatInternal." .. m, has)
-            end
+        out[#out+1] = "others with a mic device  : " .. others
+        out[#out+1] = "group id                  : " .. tostring(groupId())
+        out[#out+1] = ""
+        out[#out+1] = "VoiceChatInternal:"
+        for _, m in ipairs(VCI_NAMES) do
+            out[#out+1] = "  " .. (hasM(vci, m) and "yes  " or "  .  ") .. m
         end
-        local txt = table.concat(out, "  |  ")
+        out[#out+1] = ""
+        out[#out+1] = "VoiceChatService:"
+        for _, m in ipairs(VCS_NAMES) do
+            out[#out+1] = "  " .. (hasM(vcv, m) and "yes  " or "  .  ") .. m
+        end
+        local txt = table.concat(out, "\n")
+        logLbl.Text = txt
         print("[Silence] VOICE PROBE")
-        for _, line in ipairs(out) do print("  " .. line) end
-        local copied = false
-        pcall(function() setclipboard(table.concat(out, "\n")); copied = true end)
-        notify("Voice probe", copied and "Result copied to clipboard, also in console."
-                                     or txt, 10)
+        for _, l in ipairs(out) do print("  " .. l) end
+        return txt
+    end
+
+    buttonRow(pVcLog, "Probe Voice API", function()
+        probe()
+        notify("Voice", "Probe done - see the list above.", 3)
     end)
+    buttonRow(pVcLog, "Copy Probe To Clipboard", function()
+        local txt = probe()
+        local ok = false
+        pcall(function() setclipboard(txt); ok = true end)
+        notify("Voice", ok and "Copied." or "No clipboard access in this executor.", 4)
+    end)
+
+    -- rows created after this block belong to Misc again, or the search index
+    -- would file them under the last tab opened here
+    SilenceAPI._currentTabName = "Misc"
 end
+
 
 sectionLabel(pMisc,"AUTOMATION")
 toggleRow(pMisc, "Auto-Interact  (ProximityPrompts)",
