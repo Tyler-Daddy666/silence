@@ -8400,8 +8400,13 @@ end))
 
 ----------------------------------------------------------------
 -- SILENCE USER TAG
+-- Wrapped in a pcall on purpose. This block is long, it talks to the
+-- Marketplace and to the network, and everything that comes AFTER it in the
+-- file (Logs tab, Config tab, the /silenceadmin listener) is built later.
+-- Letting it throw uncaught meant one bad line in here silently deleted
+-- three unrelated features.
 ----------------------------------------------------------------
-;(function()
+local _tagOk, _tagErr = pcall(function()
     local TAG_MARKER = "\194\160\226\136\158SILENCE\226\136\158\194\160"
     local silenceUsers = { [LocalPlayer] = true }
     local activeTags   = {}
@@ -8463,6 +8468,114 @@ end))
     -- the card loses its second line when the username is hidden, and the
     -- distance scaler further down has to agree with that
     local function tagH() return TagSettings.showUser and 42 or 34 end
+
+    ----------------------------------------------------------------
+    -- RANKS
+    -- A rank is a title plus a PARTIAL look. Anything it does not name falls
+    -- through to TagSettings via the metatable, so every tag in the server
+    -- keeps the same shape and only the colours say who is who. Layout
+    -- (width, badge, username line, height) is deliberately not overridable:
+    -- the distance scaler assumes one size for every tag.
+    --
+    -- The first entry carries no look at all, which is what lets your own tag
+    -- keep whatever you built in the editor while everyone else defaults.
+    ----------------------------------------------------------------
+    local playerRank = {}   -- [userId] = rank key
+    local RANKS = {
+        { key = "user",    title = "SILENCE USER" },
+        { key = "vip",     title = "VIP", look = {
+            bg = Color3.fromRGB(16,12,2), bg2 = Color3.fromRGB(58,44,6),
+            accent = Color3.fromRGB(255,205,70), border = Color3.fromRGB(255,205,70),
+            text = Color3.fromRGB(255,246,214), sub = Color3.fromRGB(205,180,120),
+            gradient = true, gradRot = 60, glow = 3, particle = "Money" } },
+        { key = "premium", title = "PREMIUM", look = {
+            bg = Color3.fromRGB(8,4,16), bg2 = Color3.fromRGB(38,10,64),
+            accent = Color3.fromRGB(170,90,255), border = Color3.fromRGB(170,90,255),
+            text = Color3.fromRGB(240,225,255), sub = Color3.fromRGB(160,130,200),
+            gradient = true, gradRot = 45, glow = 3, particle = "Sparkles" } },
+        { key = "og",      title = "OG", look = {
+            bg = Color3.fromRGB(2,12,12), bg2 = Color3.fromRGB(4,44,44),
+            accent = Color3.fromRGB(70,230,210), border = Color3.fromRGB(70,230,210),
+            text = Color3.fromRGB(225,255,252), sub = Color3.fromRGB(130,195,190),
+            gradient = true, gradRot = 90, glow = 2.5, particle = "Stars" } },
+        { key = "staff",   title = "STAFF", look = {
+            bg = Color3.fromRGB(2,8,18), bg2 = Color3.fromRGB(6,30,66),
+            accent = Color3.fromRGB(80,160,255), border = Color3.fromRGB(80,160,255),
+            text = Color3.fromRGB(228,240,255), sub = Color3.fromRGB(140,175,215),
+            gradient = true, gradRot = 90, glow = 2.5, particle = "None" } },
+        { key = "mod",     title = "MODERATOR", look = {
+            bg = Color3.fromRGB(4,14,6), bg2 = Color3.fromRGB(10,44,18),
+            accent = Color3.fromRGB(120,255,140), border = Color3.fromRGB(120,255,140),
+            text = Color3.fromRGB(230,255,235), sub = Color3.fromRGB(130,190,150),
+            gradient = true, gradRot = 120, glow = 3, particle = "None" } },
+        { key = "dev",     title = "DEVELOPER", look = {
+            bg = Color3.fromRGB(2,10,14), bg2 = Color3.fromRGB(4,40,52),
+            accent = Color3.fromRGB(60,240,255), border = Color3.fromRGB(60,240,255),
+            text = Color3.fromRGB(220,252,255), sub = Color3.fromRGB(120,190,205),
+            gradient = true, gradRot = 0, glow = 3.5, particle = "Bolts" } },
+        { key = "admin",   title = "ADMIN", look = {
+            bg = Color3.fromRGB(18,2,3), bg2 = Color3.fromRGB(62,4,8),
+            accent = Color3.fromRGB(255,70,70), border = Color3.fromRGB(255,70,70),
+            text = Color3.fromRGB(255,228,228), sub = Color3.fromRGB(200,130,130),
+            gradient = true, gradRot = 90, glow = 3.5,
+            outline = true, outlineCol = Color3.fromRGB(0,0,0), particle = "Bolts" } },
+        { key = "coowner", title = "CO OWNER", look = {
+            bg = Color3.fromRGB(16,6,2), bg2 = Color3.fromRGB(58,18,4),
+            accent = Color3.fromRGB(255,140,40), border = Color3.fromRGB(255,140,40),
+            text = Color3.fromRGB(255,235,215), sub = Color3.fromRGB(200,150,110),
+            gradient = true, gradRot = 90, glow = 4,
+            outline = true, outlineCol = Color3.fromRGB(0,0,0), particle = "Fire" } },
+        { key = "owner",   title = "OWNER", look = {
+            bg = Color3.fromRGB(20,0,0), bg2 = Color3.fromRGB(70,6,10),
+            accent = Color3.fromRGB(255,60,80), border = Color3.fromRGB(255,60,80),
+            text = Color3.fromRGB(255,235,240), sub = Color3.fromRGB(220,160,175),
+            gradient = true, gradRot = 90, glow = 4.5,
+            outline = true, outlineCol = Color3.fromRGB(0,0,0), particle = "Blood" } },
+        { key = "founder", title = "FOUNDER", look = {
+            bg = Color3.fromRGB(6,6,6), bg2 = Color3.fromRGB(26,26,26),
+            accent = Color3.fromRGB(255,255,255), border = Color3.fromRGB(255,255,255),
+            text = Color3.fromRGB(255,255,255), sub = Color3.fromRGB(200,200,200),
+            gradient = false, glow = 5, rainbow = true, rainbowSpeed = 0.35,
+            outline = true, outlineCol = Color3.fromRGB(0,0,0), particle = "Sparkles" } },
+    }
+    local RANKMAP = {}
+    for _, r in ipairs(RANKS) do
+        if r.look then setmetatable(r.look, { __index = TagSettings }) end
+        RANKMAP[r.key] = r
+    end
+
+    -- no rank, or the plain one: your own tag follows the editor and
+    -- everybody else follows the current defaults
+    local function lookFor(player)
+        local r = RANKMAP[playerRank[player.UserId] or ""]
+        return (r and r.look) or TagSettings
+    end
+    local function titleFor(player)
+        local t = customTitles[player.UserId]
+        if t and t ~= "" then return t end
+        local r = RANKMAP[playerRank[player.UserId] or ""]
+        return (r and r.title) or "SILENCE USER"
+    end
+
+    local RANKS_FILE = "silence_ranks.json"
+    local function saveRanks()
+        local HS = game:GetService("HttpService")
+        local data = {}
+        for uid, k in pairs(playerRank) do data[tostring(uid)] = k end
+        pcall(function() writefile(RANKS_FILE, HS:JSONEncode(data)) end)
+    end
+    local function loadRanks()
+        local HS = game:GetService("HttpService")
+        local ok, content = pcall(function() return readfile(RANKS_FILE) end)
+        if not ok or not content or content == "" then return end
+        local ok2, data = pcall(function() return HS:JSONDecode(content) end)
+        if not ok2 or type(data) ~= "table" then return end
+        for uid, k in pairs(data) do
+            local n = tonumber(uid)
+            if n and RANKMAP[k] then playerRank[n] = k end
+        end
+    end
+    loadRanks()
 
     -- ASCII only on purpose: Gotham has no symbol characters, and anything
     -- it cannot draw comes out as an empty box.
@@ -8543,27 +8656,31 @@ end))
         bb.MaxDistance = TagSettings.maxDist
         bb.Parent = head
 
+        -- colours, font and effects come from this player's rank; the
+        -- geometry below stays global so the distance scaler stays valid
+        local look = lookFor(player)
+
         local frame = Instance.new("Frame", bb)
         frame.Size = UDim2.new(1, 0, 1, 0)
-        frame.BackgroundColor3 = TagSettings.bg
-        frame.BackgroundTransparency = TagSettings.bgAlpha
+        frame.BackgroundColor3 = look.bg
+        frame.BackgroundTransparency = look.bgAlpha
         frame.BorderSizePixel = 0
         local fc = Instance.new("UICorner", frame)
         fc.CornerRadius = UDim.new(0, TagSettings.radius)
 
         local border = Instance.new("UIStroke", frame)
-        border.Color = TagSettings.border
+        border.Color = look.border
         border.Thickness = 1
         border.Transparency = 0.45
 
-        if TagSettings.gradient then
+        if look.gradient then
             local gr = Instance.new("UIGradient", frame)
-            gr.Color = ColorSequence.new(TagSettings.bg, TagSettings.bg2)
-            gr.Rotation = TagSettings.gradRot
+            gr.Color = ColorSequence.new(look.bg, look.bg2)
+            gr.Rotation = look.gradRot
         end
-        if TagSettings.glow > 0 then
-            addAnimatedGlow(frame, { thickness = TagSettings.glow,
-                transparency = 0.35, window = 0.18, color = TagSettings.accent })
+        if look.glow > 0 then
+            addAnimatedGlow(frame, { thickness = look.glow,
+                transparency = 0.35, window = 0.18, color = look.accent })
         end
         -- the pulse drives this rather than the billboard size, which the
         -- distance scaler further down already owns
@@ -10715,7 +10832,16 @@ end))
         end
     end
 
-end)()
+end)
+if not _tagOk then
+    SilenceAPI._tagFault = tostring(_tagErr)
+    warn("[Silence] TAG BLOCK FAILED: " .. tostring(_tagErr))
+    print("[Silence] the overhead tags and the admin panel are unavailable,")
+    print("[Silence] everything else still loaded. Error above.")
+    task.delay(4, function()
+        notify("Tag system failed", tostring(_tagErr):sub(1, 180), 12)
+    end)
+end
 
 ----------------------------------------------------------------
 -- TAB: LOGS  -  chat, remote traffic and notification history
@@ -10999,9 +11125,15 @@ track(RunService.Heartbeat:Connect(function()
     end
     notifView.Text = joinLines(n, "nothing yet")
 
-    if SilenceAPI._tagReport then
+    if SilenceAPI._tagFault then
+        tagView.Text = "THE TAG BLOCK CRASHED WHILE LOADING:\n\n"
+            .. tostring(SilenceAPI._tagFault)
+            .. "\n\nOverhead tags and the admin panel are off. Send me this line."
+    elseif SilenceAPI._tagReport then
         local okR, txt = pcall(SilenceAPI._tagReport)
         tagView.Text = okR and txt or "report failed"
+    else
+        tagView.Text = "tag system not loaded"
     end
 end))
 end)()
