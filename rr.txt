@@ -346,15 +346,31 @@ pcall(function()
         if e.Name == "__SIL_Blur" then pcall(function() e:Destroy() end) end
     end
 end)
--- Nuke leftover GUIs from previous load (defensive)
+-- Nuke leftover GUIs from a previous load.
+--
+-- This used to scan CoreGui and PlayerGui only - but pickGuiParent() puts
+-- the panel under gethui() whenever the executor offers it, and that is
+-- NEITHER of those. So a panel from an earlier run sat in a container this
+-- sweep could not see, survived every reload, and kept drawing over the new
+-- one. That is how you end up staring at an old version number after
+-- re-executing: the file was fine, the old window was simply still there.
+--
+-- It also matters when getgenv() is reset between executions, because then
+-- env.__SilenceAdminPanel is nil, cleanup() never runs, and this sweep is
+-- the only thing standing between you and two stacked panels.
 pcall(function()
-    for _, container in ipairs({CoreGui, LocalPlayer:FindFirstChild("PlayerGui")}) do
+    local containers = { CoreGui, LocalPlayer:FindFirstChild("PlayerGui") }
+    local okH, hui = pcall(function() return gethui and gethui() end)
+    if okH and hui then table.insert(containers, 1, hui) end
+
+    for _, container in ipairs(containers) do
         if container then
             for _, c in ipairs(container:GetChildren()) do
-                if typeof(c.Name) == "string"
-                and (string.sub(c.Name,1,16) == "SilenceAdminPane"
-                  or c.Name == "NotifyHolder"
-                  or c.Name == "FloatBtn") then
+                local nm = typeof(c.Name) == "string" and c.Name or ""
+                if string.sub(nm, 1, 16) == "SilenceAdminPane"
+                or string.sub(nm, 1, 6)  == "__SIL_"
+                or nm == "NotifyHolder"
+                or nm == "FloatBtn" then
                     pcall(function() c:Destroy() end)
                 end
             end
@@ -371,8 +387,14 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v25"
+SilenceAPI._version = "v27"
 SilenceAPI._built   = "2026-08-18"
+-- Printed before anything can go wrong, so the console always tells you
+-- which build actually executed. If this says v26 and the panel says v22,
+-- an old window survived. If this says v22, you are being served an old
+-- file and no amount of reloading the panel will change that.
+print("[Silence] ============ " .. SilenceAPI._version
+      .. "  (built " .. SilenceAPI._built .. ") ============")
 print("[Silence] env initialized, building GUI...")
 
 -- DIAGNOSTIC: catch any uncaught error and display in StarterGui so the
@@ -401,6 +423,7 @@ local function protect(g)
     if syn and syn.protect_gui then pcall(syn.protect_gui, g) end
     if protect_gui then pcall(protect_gui, g) end
 end
+
 
 ----------------------------------------------------------------
 -- THEME - black + purple + white
@@ -525,6 +548,9 @@ local State = {
     vcBypass = false,         -- auto voice reconnect toggle (Misc tab)
     vcSelfMuted = false,      -- local microphone mute (Voice tab)
     vcAutoMute = false,       -- cut the microphone on every server join
+    adminCmd = "/sa",         -- chat command that opens the admin panel
+    allowJumpscare = true,    -- let other Silence users send you one
+    jumpSound = "rbxassetid://5766325503",
     acBlocked = false,        -- true after a scan finds critical anti-cheat hits
     acRiskyOverride = false,  -- user-set: ignore acBlocked and use features anyway
     acHits = 0,               -- last scan hit count (for banner display)
@@ -570,6 +596,95 @@ local function notify(title, text, dur)
     table.insert(h, { t = os.date("%H:%M:%S"), title = tostring(title), text = tostring(text) })
     if #h > 120 then table.remove(h, 1) end
     if NotifyStack then NotifyStack:push(title, text, dur) end
+end
+
+----------------------------------------------------------------
+-- JUMPSCARE
+-- Delivered through the same endpoint the ranks use, so it can only ever
+-- reach an account that is running Silence. The receiver can switch it off
+-- in Misc - a prank nobody can opt out of stops being a prank and turns into
+-- something you get asked to remove later.
+--
+-- Its own ScreenGui at a silly DisplayOrder, because it has to sit over the
+-- panel, over the tags and over the game's own UI. Torn down on a timer that
+-- runs whatever else happens, so a failure cannot leave someone staring at a
+-- black screen with no way back.
+----------------------------------------------------------------
+do
+    SilenceAPI._jumpImg = loadLocalImage(
+        { "jumpscare.png", "jump.png", "scare.png" },
+        ICON_BASE .. "jumpscare.png")
+
+    function SilenceAPI._jumpscare(fromName)
+        if State.allowJumpscare == false then return end
+
+        local sg = Instance.new("ScreenGui")
+        sg.Name = "__SIL_Jump"
+        sg.IgnoreGuiInset = true
+        sg.ResetOnSpawn = false
+        sg.DisplayOrder = 2000000
+        protect(sg)
+        sg.Parent = pickGuiParent()
+
+        local back = Instance.new("Frame", sg)
+        back.Size = UDim2.new(1, 0, 1, 0)
+        back.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        back.BorderSizePixel = 0
+        back.ZIndex = 1
+
+        if SilenceAPI._jumpImg then
+            local img = Instance.new("ImageLabel", sg)
+            img.Size = UDim2.new(1, 0, 1, 0)
+            img.BackgroundTransparency = 1
+            img.Image = SilenceAPI._jumpImg
+            img.ScaleType = Enum.ScaleType.Crop
+            img.ZIndex = 2
+        else
+            -- no picture on disk, so make the fallback loud on its own
+            local t = Instance.new("TextLabel", sg)
+            t.Size = UDim2.new(1, 0, 1, 0)
+            t.BackgroundTransparency = 1
+            t.Text = "BOO"
+            t.Font = Enum.Font.GothamBlack
+            t.TextScaled = true
+            t.TextColor3 = Color3.fromRGB(255, 30, 30)
+            t.ZIndex = 2
+            task.spawn(function()
+                while sg.Parent do
+                    back.BackgroundColor3 = Color3.fromRGB(math.random(0, 60), 0, 0)
+                    t.TextColor3 = Color3.fromRGB(255, math.random(0, 60), math.random(0, 60))
+                    task.wait(0.05)
+                end
+            end)
+        end
+
+        -- a missing or unplayable asset must not take the rest down with it
+        pcall(function()
+            local snd = Instance.new("Sound")
+            snd.SoundId = tostring(State.jumpSound or "")
+            snd.Volume = 1
+            snd.Parent = sg
+            snd:Play()
+        end)
+
+        task.spawn(function()
+            local cam = workspace.CurrentCamera
+            local t0 = tick()
+            while tick() - t0 < 1.1 and sg.Parent do
+                pcall(function()
+                    cam.CFrame = cam.CFrame * CFrame.Angles(
+                        math.rad(math.random(-4, 4)),
+                        math.rad(math.random(-4, 4)), 0)
+                end)
+                task.wait()
+            end
+        end)
+
+        task.delay(1.7, function() pcall(function() sg:Destroy() end) end)
+        task.delay(1.9, function()
+            notify("Silence", (fromName or "Someone") .. " sent you that.", 6)
+        end)
+    end
 end
 
 -- one place decides how a player's name is shown, so streamer mode can
@@ -8370,6 +8485,27 @@ do
 end
 
 
+sectionLabel(pMisc, "PRANKS")
+toggleRow(pMisc, "Let other Silence users jumpscare me",
+    function() return State.allowJumpscare end,
+    function(v)
+        State.allowJumpscare = v
+        notify("Silence", v and "Jumpscares allowed." or "Jumpscares blocked.", 3)
+    end)
+inputRow(pMisc, "Jumpscare sound id", State.jumpSound, function(v)
+    v = tostring(v or "")
+    if v ~= "" and not v:find("rbxassetid://") then v = "rbxassetid://" .. v:gsub("%D", "") end
+    State.jumpSound = v
+end)
+local jsHint = Instance.new("TextLabel", pMisc)
+jsHint.Size = UDim2.new(1, 0, 0, 30)
+jsHint.BackgroundTransparency = 1
+jsHint.Text = "  Put jumpscare.png in your Desktop\\Silence folder for the image."
+jsHint.Font = Enum.Font.Gotham
+jsHint.TextSize = 10
+jsHint.TextXAlignment = Enum.TextXAlignment.Left
+jsHint.TextColor3 = Theme.textDim
+
 sectionLabel(pMisc,"AUTOMATION")
 toggleRow(pMisc, "Auto-Interact  (ProximityPrompts)",
     function() return State.autoInteract end,
@@ -11455,6 +11591,9 @@ local _tagOk, _tagErr = pcall(function()
     -- ADMIN PANEL
     ----------------------------------------------------------------
     print("[Silence] building admin panel...")
+    -- The long one always keeps working as a way back in: rebind it to
+    -- something you then forget and you would have locked yourself out of
+    -- the only panel that can set ranks.
     local ADMIN_COMMAND  = "/silenceadmin"
     local ADMIN_PASSWORD = "sln.admin.tylerdaddy"
     -- Load password from file if possible
@@ -11676,6 +11815,25 @@ local _tagOk, _tagErr = pcall(function()
         end
         allUsers[LocalPlayer.UserId] = LocalPlayer.Name
 
+        -- Commands addressed to this account. The counter only ever goes up,
+        -- so there is nothing to acknowledge and nothing to clear. The first
+        -- pull only records where the counter stands - otherwise every load
+        -- would replay whatever was last sent.
+        if type(data.cmds) == "table" then
+            local mine = data.cmds[tostring(LocalPlayer.UserId)]
+            if type(mine) == "table" and tonumber(mine.n) then
+                local cn = tonumber(mine.n)
+                if SilenceAPI._lastCmdN == nil then
+                    SilenceAPI._lastCmdN = cn
+                elseif cn > SilenceAPI._lastCmdN then
+                    SilenceAPI._lastCmdN = cn
+                    if mine.what == "jump" and SilenceAPI._jumpscare then
+                        pcall(SilenceAPI._jumpscare, tostring(mine.from or "Someone"))
+                    end
+                end
+            end
+        end
+
         local changed = {}
 
         -- Somebody else's design, decoded once and kept until the string
@@ -11852,6 +12010,30 @@ local _tagOk, _tagErr = pcall(function()
                 notify("Rank", "push failed: " .. tostring(res):sub(1, 90), 8)
             elseif tostring(res):find("error") then
                 notify("Rank", "worker refused: " .. tostring(res):sub(1, 90), 8)
+            end
+        end)
+    end
+
+    -- Key protected: this is the one thing in here that reaches into
+    -- somebody else's screen, so it stays with whoever holds the write key.
+    function SilenceAPI._sendJumpscare(uid, name)
+        if SYNC_BASE == "" then notify("Admin", "No sync endpoint.", 4) return end
+        if SYNC_KEY == "" then notify("Admin", "Needs the write key.", 5) return end
+        task.spawn(function()
+            local okC, res = pcall(function()
+                return game:HttpGet(SYNC_BASE .. "cmd?key=" .. urlEnc(SYNC_KEY)
+                    .. "&id=" .. tostring(uid)
+                    .. "&what=jump"
+                    .. "&from=" .. urlEnc(LocalPlayer.Name)
+                    .. "&t=" .. tostring(math.random(1, 1000000)), true)
+            end)
+            if not okC then
+                notify("Admin", "send failed: " .. tostring(res):sub(1, 80), 6)
+            elseif tostring(res):find("error") then
+                notify("Admin", "worker refused: " .. tostring(res):sub(1, 80), 6)
+            else
+                notify("Admin", "Jumpscare sent to " .. tostring(name or uid)
+                       .. " - lands within ~5s.", 5)
             end
         end)
     end
@@ -12340,6 +12522,24 @@ local _tagOk, _tagErr = pcall(function()
         tagBtn.ZIndex = 182
         corner(tagBtn, 4); stroke(tagBtn, Theme.accent, 1, 0.5)
 
+        local jumpBtn = Instance.new("TextButton", row)
+        jumpBtn.Size = UDim2.new(0, 84, 0, 26)
+        jumpBtn.Position = UDim2.new(1, -180, 0, 30)
+        jumpBtn.BackgroundColor3 = Theme.bg2
+        jumpBtn.BorderSizePixel = 0
+        jumpBtn.Text = "JUMPSCARE"
+        jumpBtn.Font = Enum.Font.GothamBold
+        jumpBtn.TextSize = 10
+        jumpBtn.TextColor3 = Theme.text
+        jumpBtn.AutoButtonColor = false
+        jumpBtn.ZIndex = 182
+        corner(jumpBtn, 4); stroke(jumpBtn, Theme.accent, 1, 0.5)
+        jumpBtn.MouseButton1Click:Connect(function()
+            if SilenceAPI._sendJumpscare then
+                SilenceAPI._sendJumpscare(uid, nm)
+            end
+        end)
+
         local function refreshTagBtn()
             if not plr then tagBtn.Text = "NOT HERE"; return end
             tagBtn.Text = silenceUsers[plr] and "TAG: ON" or "TAG: OFF"
@@ -12570,7 +12770,10 @@ local _tagOk, _tagErr = pcall(function()
     end
     SilenceAPI._openAdminFlow = openAdminFlow
     track(LocalPlayer.Chatted:Connect(function(msg)
-        if msg == ADMIN_COMMAND then openAdminFlow() end
+        local custom = tostring(State.adminCmd or "")
+        if msg == ADMIN_COMMAND or (custom ~= "" and msg == custom) then
+            openAdminFlow()
+        end
     end))
 
     SilenceAPI._destroyTags = function()
@@ -12979,7 +13182,7 @@ local APPLY = {
 
 local NUMBERS = { "flySpeed", "freecamSpeed", "aimbotFov", "bodyScale", "slowmo",
                   "autoInteractRange", "uiScale" }
-local STRINGS = { "prefix", "faceId", "walkAnimId" }
+local STRINGS = { "prefix", "faceId", "walkAnimId", "adminCmd" }
 
 local function c3ToTbl(c) return { math.floor(c.R*255+0.5), math.floor(c.G*255+0.5), math.floor(c.B*255+0.5) } end
 local function tblToC3(t)
@@ -13290,6 +13493,23 @@ do
 
     for i = 1, 5 do profRow(i) end
 end
+
+sectionLabel(pCfg, "ADMIN COMMAND")
+inputRow(pCfg, "Chat command", State.adminCmd or "/sa", function(v)
+    v = tostring(v or ""):gsub("%s+", "")
+    if v == "" then v = "/sa" end
+    if v:sub(1, 1) ~= "/" then v = "/" .. v end
+    State.adminCmd = v
+    notify("Config", "Type " .. v .. " in chat to open the admin panel.", 5)
+end)
+local cmdHint = Instance.new("TextLabel", pCfg)
+cmdHint.Size = UDim2.new(1, 0, 0, 30)
+cmdHint.BackgroundTransparency = 1
+cmdHint.Text = "  /silenceadmin keeps working as well, so a typo here cannot lock you out."
+cmdHint.Font = Enum.Font.Gotham
+cmdHint.TextSize = 10
+cmdHint.TextXAlignment = Enum.TextXAlignment.Left
+cmdHint.TextColor3 = Theme.textDim
 
 sectionLabel(pCfg, "APPEARANCE")
 local _, setScaleBox = inputRow(pCfg, "Panel Scale", State.uiScale or 1, function(v)
