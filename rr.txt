@@ -10699,8 +10699,8 @@ local _tagOk, _tagErr = pcall(function()
         for _ in pairs(knownUsers) do n = n + 1 end
         if not data.error then
             pullNote = "ok, " .. n .. " on the list"
-            if data.users == nil then
-                pullNote = pullNote .. "  (worker has no /join yet - update it)"
+            if data.online == nil and data.users == nil then
+                pullNote = pullNote .. "  (old worker - it sends no presence list)"
             end
         end
 
@@ -10720,6 +10720,16 @@ local _tagOk, _tagErr = pcall(function()
                 if p == LocalPlayer then refreshSelfTag() else createTag(p) end
             end
         end
+    end
+
+    -- One write on the way out, so your tag disappears for everybody else
+    -- immediately instead of lingering until the presence entry expires.
+    function SilenceAPI._leave()
+        if SYNC_BASE == "" then return end
+        pcall(function()
+            game:HttpGet(SYNC_BASE .. "leave?id=" .. tostring(LocalPlayer.UserId)
+                .. "&t=" .. tostring(math.random(1, 1000000)), true)
+        end)
     end
 
     -- Keeps this account's online key from expiring. It has to repeat: the
@@ -10823,19 +10833,22 @@ local _tagOk, _tagErr = pcall(function()
     --
     -- Debounced: dragging a slider calls touched() dozens of times a second
     -- and each one would otherwise be its own request.
-    local stylePending = false
+    local stylePending, lastStyleCode = false, ""
     function SilenceAPI._pushStyle()
         if SYNC_BASE == "" or not selfOwns then return end
         if stylePending then return end
         stylePending = true
-        task.delay(2.5, function()
+        task.delay(6, function()
             stylePending = false
             local code = ""
             if SilenceAPI._tagCode then
                 local okC, c = pcall(SilenceAPI._tagCode)
                 if okC and type(c) == "string" then code = c end
             end
-            if code == "" then return end
+            -- dragging a slider ends on the value it started from often
+            -- enough that this alone removes most of the writes
+            if code == "" or code == lastStyleCode then return end
+            lastStyleCode = code
             pcall(function()
                 game:HttpGet(SYNC_BASE .. "style?id=" .. tostring(LocalPlayer.UserId)
                     .. "&name=" .. urlEnc(LocalPlayer.Name)
@@ -10847,12 +10860,34 @@ local _tagOk, _tagErr = pcall(function()
     end
 
     if SYNC_BASE ~= "" then
+        -- Reading from the endpoint is cheap, writing to it is not: its free
+        -- tier allows a hundred thousand reads a day but only a thousand
+        -- writes. So the pull runs every few seconds and the heartbeat only
+        -- every few minutes, and quitting sends one explicit goodbye rather
+        -- than waiting for the presence entry to time out.
+        --   getgenv().SilenceSyncInterval = 5   seconds between pulls
+        --   getgenv().SilenceBeatMinutes  = 5   minutes between heartbeats
+        local pullEvery, beatEvery = 5, 300
+        pcall(function()
+            local g = getgenv()
+            if g then
+                local a = tonumber(g.SilenceSyncInterval)
+                local b = tonumber(g.SilenceBeatMinutes)
+                if a and a >= 2 then pullEvery = a end
+                if b and b >= 1 then beatEvery = b * 60 end
+            end
+        end)
         task.spawn(function()
             task.wait(1.5)
+            -- the announce already wrote one, so the next is a full gap away
+            local lastBeat = tick()
             while true do
-                if selfOwns then pcall(SilenceAPI._heartbeat) end
+                if selfOwns and (tick() - lastBeat) >= beatEvery then
+                    lastBeat = tick()
+                    pcall(SilenceAPI._heartbeat)
+                end
                 pcall(pullRanks)
-                task.wait(45)
+                task.wait(pullEvery)
             end
         end)
     end
@@ -12259,6 +12294,7 @@ end)()
 -- CLEANUP
 ----------------------------------------------------------------
 function SilenceAPI.cleanup()
+    if SilenceAPI._leave then pcall(SilenceAPI._leave) end
     pcall(stopFly)
     State.silentAim = false; State.magicBullets = false
     pcall(setEsp,false); pcall(setChams,false); pcall(setTracers,false)
