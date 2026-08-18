@@ -1013,6 +1013,7 @@ end
 local function setVcBypass(on)
     State.vcBypass = on
     _vcClearConns()
+    if SilenceAPI._vcAutoOff then pcall(SilenceAPI._vcAutoOff) end
     if not on then return end
 
     -- Only the timer lives here. Detecting a dead session and rebuilding one
@@ -1023,33 +1024,9 @@ local function setVcBypass(on)
     -- top. The version this replaces re-handshaked every 1.5 seconds whether
     -- or not anything was wrong, and cycling the microphone permission that
     -- often is by itself enough to make voice unusable.
-    SilenceAPI._vcFails = 0
-    table.insert(vcBypassConns, RunService.Heartbeat:Connect(function()
-        local now = tick()
-        if (SilenceAPI._vcNextPoll or 0) > now then return end
-        SilenceAPI._vcNextPoll = now + 10
-        if not State.vcBypass then return end
-        if not SilenceAPI._vcState or not SilenceAPI._vcHardReset then return end
-
-        local live = false
-        pcall(function() live = SilenceAPI._vcState() end)
-        if live then SilenceAPI._vcFails = 0 return end
-
-        -- Give up after five failed rebuilds instead of retrying forever.
-        -- A game with no voice chat at all looks exactly like a dead session
-        -- from here, and hammering it would be pointless noise.
-        if SilenceAPI._vcFails >= 5 then
-            if State.vcBypass then
-                State.vcBypass = false
-                _vcClearConns()
-                notify("Voice", "Gave up after 5 rebuilds - is voice on in this game?", 8)
-                for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-            end
-            return
-        end
-        SilenceAPI._vcFails = SilenceAPI._vcFails + 1
-        task.spawn(function() pcall(SilenceAPI._vcHardReset, false) end)
-    end))
+    -- The watcher itself lives in the Voice tab block, next to the method
+    -- names that were confirmed by probing this build. This is only the switch.
+    if SilenceAPI._vcAutoOn then pcall(SilenceAPI._vcAutoOn) end
 end
 SilenceAPI._setVcBypass = setVcBypass
 
@@ -7551,19 +7528,58 @@ do
         return ok
     end
 
-    -- Nothing on this build reports "connected" directly, so say what is
-    -- actually observable instead of inventing a green light.
+    -- A channel id only exists while a session is actually up, so this is a
+    -- real answer rather than the "is a group configured" guess it replaces.
     local function voiceState()
+        local vci = svcOf("VoiceChatInternal")
+        local cid
+        pcall(function()
+            if hasM(vci, "GetChannelId") then cid = vci:GetChannelId() end
+        end)
+        if cid and tostring(cid) ~= "" and tostring(cid) ~= "nil" then
+            return true, "connected  -  channel " .. tostring(cid):sub(1, 20)
+        end
         local dev = false
         pcall(function()
             dev = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput") ~= nil
         end)
         if dev then return true, "connected  -  microphone device present" end
-        local gid = groupId()
-        if gid and tostring(gid) ~= "" then
-            return true, "in a voice group (" .. tostring(gid):sub(1, 18) .. ")"
-        end
-        return false, "no voice session detected"
+        return false, "no live voice session"
+    end
+
+    -- THE question, and it turns out Roblox will answer it directly.
+    -- IsVoiceEnabledForUserIdAsync is the same check the server does when you
+    -- try to join voice. false means Roblox has voice switched off for this
+    -- account - that IS the ban, and no amount of rejoining changes it.
+    -- true with no session means the session merely dropped, which is the
+    -- case a reset does fix. Returns: enabled, known.
+    local function voiceEligible()
+        local vcv = svcOf("VoiceChatService")
+        if not hasM(vcv, "IsVoiceEnabledForUserIdAsync") then return false, false end
+        local ok, res = pcall(function()
+            return vcv:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId)
+        end)
+        if not ok then return false, false end
+        return res and true or false, true
+    end
+
+    -- The API keeps the mute state, so read it instead of tracking a copy
+    -- that can drift out of step with what is really happening.
+    local function isSelfMuted()
+        local v
+        pcall(function()
+            local vci = svcOf("VoiceChatInternal")
+            if hasM(vci, "IsPublishPaused") then v = vci:IsPublishPaused() end
+        end)
+        return v and true or false
+    end
+    local function isMutedFor(p)
+        local v
+        pcall(function()
+            local vci = svcOf("VoiceChatInternal")
+            if hasM(vci, "IsSubscribePaused") then v = vci:IsSubscribePaused(p.UserId) end
+        end)
+        return v and true or false
     end
 
     ------------------------------------------------------------ TAB: ANTI BAN
@@ -7646,6 +7662,95 @@ do
     SilenceAPI._vcHardReset = hardReset
     SilenceAPI._vcState = function() local ok = voiceState() return ok end
 
+    -- StateChanged exists on this build, so the reconnect listens instead of
+    -- polling. The timer that remains is only a backstop for a state change
+    -- that never fires, and it is deliberately slow.
+    local autoConns, autoFails = {}, 0
+    local function autoOff()
+        for _, c in ipairs(autoConns) do pcall(function() c:Disconnect() end) end
+        autoConns = {}
+    end
+    local function tryRebuild(why)
+        if autoFails >= 5 then
+            State.vcBypass = false
+            autoOff()
+            notify("Voice", "Gave up after 5 rebuilds - is voice on in this game?", 8)
+            for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+            return
+        end
+        autoFails = autoFails + 1
+        print("[Silence] voice rebuild triggered by " .. tostring(why))
+        task.spawn(function()
+            if hardReset(false) then autoFails = 0 end
+        end)
+    end
+    local function autoOn()
+        autoOff()
+        autoFails = 0
+        pcall(function()
+            local vci = svcOf("VoiceChatInternal")
+            if hasM(vci, "StateChanged") then
+                autoConns[#autoConns+1] = vci.StateChanged:Connect(function()
+                    if not State.vcBypass then return end
+                    task.wait(0.3)
+                    local live = voiceState()
+                    if not live then tryRebuild("StateChanged") end
+                end)
+            end
+        end)
+        -- backstop, 30s apart, for a build where the signal stays quiet
+        task.spawn(function()
+            while State.vcBypass do
+                task.wait(30)
+                if State.vcBypass and not voiceState() then tryRebuild("backstop") end
+            end
+        end)
+    end
+    SilenceAPI._vcAutoOn  = autoOn
+    SilenceAPI._vcAutoOff = autoOff
+
+    sectionLabel(pVcBan, "IS THIS ACCOUNT ALLOWED TO TALK")
+    local elRow = Instance.new("Frame", pVcBan)
+    elRow.Size = UDim2.new(1, 0, 0, 52)
+    elRow.BorderSizePixel = 0
+    corner(elRow, 8)
+    SilenceAPI._theme(elRow, "BackgroundColor3", "bg2")
+    stroke(elRow, Theme.bg4, 1, 0.6, "bg4")
+    SilenceAPI._registerRow(elRow, "voice ban eligibility allowed check")
+
+    local elLbl = Instance.new("TextLabel", elRow)
+    elLbl.Size = UDim2.new(1, -28, 1, 0); elLbl.Position = UDim2.new(0, 14, 0, 0)
+    elLbl.BackgroundTransparency = 1
+    elLbl.Font = Enum.Font.GothamMedium; elLbl.TextSize = 11
+    elLbl.TextXAlignment = Enum.TextXAlignment.Left
+    elLbl.TextWrapped = true
+    elLbl.Text = "not checked yet"
+    SilenceAPI._theme(elLbl, "TextColor3", "text")
+
+    buttonRow(pVcBan, "Check If Roblox Allows Me Voice", function()
+        elLbl.Text = "asking Roblox..."
+        elLbl.TextColor3 = Theme.textDim
+        task.spawn(function()
+            local enabled, known = voiceEligible()
+            if not known then
+                elLbl.Text = "Roblox would not answer. Try again inside a game"
+                          .. " that has voice chat switched on."
+                elLbl.TextColor3 = Theme.textDim
+            elseif enabled then
+                elLbl.Text = "ALLOWED. Roblox has voice enabled for this account,"
+                          .. " so if you cannot talk the session dropped - the"
+                          .. " reset below is the right button."
+                elLbl.TextColor3 = Color3.fromRGB(90, 230, 120)
+            else
+                elLbl.Text = "NOT ALLOWED. Roblox has voice switched off for this"
+                          .. " account. This is decided on their servers and no"
+                          .. " script can change it. Rejoining will not help."
+                elLbl.TextColor3 = Color3.fromRGB(240, 90, 90)
+            end
+        end)
+    end)
+
+    sectionLabel(pVcBan, "REBUILD")
     buttonRow(pVcBan, "Voice Hard Reset  (leave, cycle mic, rejoin)", function()
         notify("Voice", "Rebuilding voice session...", 3)
         task.spawn(function() hardReset(true) end)
@@ -7683,8 +7788,10 @@ do
 
     ------------------------------------------------------------ TAB: MUTE
     sectionLabel(pVcMute, "YOURSELF")
+    -- reads IsPublishPaused rather than a local copy, so the switch shows
+    -- what is actually true even if something else changed it
     toggleRow(pVcMute, "Mute My Microphone",
-        function() return State.vcSelfMuted end,
+        function() return isSelfMuted() end,
         function(v)
             State.vcSelfMuted = v
             local ok = muteSelf(v)
@@ -7750,7 +7857,7 @@ do
                 local bs = stroke(b, Theme.bg4, 1, 0.5, "bg4")
 
                 local function paint()
-                    local on = muted[p.UserId] and true or false
+                    local on = isMutedFor(p)
                     b.Text = on and "MUTED" or "MUTE"
                     b.BackgroundColor3 = on and Theme.accent or Theme.bg3
                     b.TextColor3       = on and Theme.bg     or Theme.text
@@ -7758,9 +7865,8 @@ do
                 end
                 paint()
                 b.MouseButton1Click:Connect(function()
-                    local want = not muted[p.UserId]
+                    local want = not isMutedFor(p)
                     if mutePlayer(p, want) then
-                        muted[p.UserId] = want or nil
                         paint()
                     else
                         notify("Voice", "No voice API answered for " .. p.Name .. ".", 4)
@@ -7783,23 +7889,38 @@ do
     SilenceAPI._rebuildVoiceList = rebuildVoice
     track(Players.PlayerAdded:Connect(function() task.wait(0.5) rebuildVoice() end))
     track(Players.PlayerRemoving:Connect(function() task.wait(0.2) rebuildVoice() end))
+    -- fires when somebody joins or leaves the voice channel, which is not the
+    -- same moment as joining the server
+    pcall(function()
+        local vci = svcOf("VoiceChatInternal")
+        if hasM(vci, "ParticipantsStateChanged") then
+            track(vci.ParticipantsStateChanged:Connect(function()
+                task.wait(0.2); rebuildVoice()
+            end))
+        end
+    end)
 
-    buttonRow(pVcMute, "Mute Everyone", function()
+    -- SubscribePauseAll does the whole server in one call; the per player
+    -- loop stays as the fallback for builds without it
+    local function muteAll(on)
+        if callM(svcOf("VoiceChatInternal"), "SubscribePauseAll", on) then
+            rebuildVoice()
+            return -1
+        end
         local hit = 0
         for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer and mutePlayer(p, true) then
-                muted[p.UserId] = true; hit = hit + 1
-            end
+            if p ~= LocalPlayer and mutePlayer(p, on) then hit = hit + 1 end
         end
         rebuildVoice()
-        notify("Voice", hit .. " player(s) muted locally.", 3)
+        return hit
+    end
+    buttonRow(pVcMute, "Mute Everyone", function()
+        local n = muteAll(true)
+        notify("Voice", n < 0 and "Everyone muted locally."
+                              or (n .. " player(s) muted locally."), 3)
     end)
     buttonRow(pVcMute, "Unmute Everyone", function()
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer then mutePlayer(p, false) end
-        end
-        muted = {}
-        rebuildVoice()
+        muteAll(false)
         notify("Voice", "Everyone unmuted locally.", 3)
     end)
 
