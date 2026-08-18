@@ -39,6 +39,12 @@ print("[Silence] script starting - if you don't see 'loaded' below, something er
 -- Set to 0 to disable detection (admin panel will show all players).
 ----------------------------------------------------------------
 local SCRIPT_PASS_ID = 1836957867
+-- try a different pass without touching the file:
+--   getgenv().SilencePassId = 123456789
+pcall(function()
+    local g = getgenv()
+    if g and tonumber(g.SilencePassId) then SCRIPT_PASS_ID = tonumber(g.SilencePassId) end
+end)
 
 ----------------------------------------------------------------
 -- LOCAL IMAGES
@@ -8512,7 +8518,19 @@ end))
         if not player or not player.Character then return end
         if State.tagsHidden then return end
         local head = player.Character:FindFirstChild("Head")
-        if not head then return end
+        if not head then
+            -- The head lags behind the character on a join or a respawn.
+            -- Returning here was final: nothing retried, so the tag simply
+            -- never appeared for anyone whose head arrived a moment late.
+            local char = player.Character
+            task.spawn(function()
+                local h = char:WaitForChild("Head", 10)
+                if h and player.Character == char and not State.tagsHidden then
+                    createTag(player)
+                end
+            end)
+            return
+        end
         destroyTag(player)
 
         local bb = Instance.new("BillboardGui")
@@ -10036,7 +10054,7 @@ end))
         if p and p.Character and silenceUsers[p] then createTag(p) end
     end
 
-    local passOwnership = {}
+    local passOwnership, passError = {}, {}
 
     local function ownsScriptPass(p)
         if not p then return false end
@@ -10047,8 +10065,12 @@ end))
         end)
         if ok then
             passOwnership[p.UserId] = owns
+            passError[p.UserId] = nil
             return owns
         end
+        -- a thrown call is not an answer, so it is not cached: the next scan
+        -- gets to try again instead of writing the player off forever
+        passError[p.UserId] = tostring(owns):sub(1, 60)
         return false
     end
 
@@ -10205,6 +10227,54 @@ end))
                 task.wait(45)
             end
         end)
+    end
+
+    -- Everything the tag system knows, in one block. The Logs tab renders
+    -- this; it is the fastest way to tell "nobody owns the pass" apart from
+    -- "the ownership call is failing" apart from "the tag never got drawn".
+    SilenceAPI._tagReport = function()
+        local out = {}
+        out[#out+1] = "pass id : " .. tostring(SCRIPT_PASS_ID)
+            .. (SCRIPT_PASS_ID == 0 and "   (0 = detection disabled)" or "")
+        out[#out+1] = "sync    : " .. (SYNC_BASE ~= "" and SYNC_BASE or "off, ranks stay local")
+        out[#out+1] = "write   : " .. (SYNC_KEY ~= "" and "key present" or "no key, read only")
+        out[#out+1] = ""
+        out[#out+1] = string.format("%-18s %-12s %-5s %s", "PLAYER", "PASS", "TAG", "RANK")
+        for _, p in ipairs(Players:GetPlayers()) do
+            local own = passOwnership[p.UserId]
+            local st  = "unchecked"
+            if passError[p.UserId] then st = "CALL FAILED"
+            elseif own == true then st = "owns"
+            elseif own == false then st = "no" end
+            out[#out+1] = string.format("%-18s %-12s %-5s %s",
+                tostring(p.Name):sub(1, 18), st,
+                silenceUsers[p] and "yes" or "no",
+                playerRank[p.UserId] or "-")
+        end
+        for uid, err in pairs(passError) do
+            out[#out+1] = ""
+            out[#out+1] = "last error: " .. tostring(err)
+            break
+        end
+        return table.concat(out, "\n")
+    end
+
+    SilenceAPI._rescanTags = function()
+        for uid in pairs(passOwnership) do passOwnership[uid] = nil end
+        for uid in pairs(passError)     do passError[uid]     = nil end
+        for _, p in ipairs(Players:GetPlayers()) do queueScan(p) end
+        pcall(pullRanks)
+    end
+
+    -- force a tag on somebody regardless of the pass, for testing
+    SilenceAPI._forceTag = function(name)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name:lower():sub(1, #name) == name:lower() and not silenceUsers[p] then
+                tagUser(p)
+                return p.Name
+            end
+        end
+        return nil
     end
 
     SilenceAPI._ownsScriptPass = ownsScriptPass
@@ -10812,6 +10882,12 @@ local function reloadIcons()
     refreshIconReport()
 end
 
+--------------------------------------------------------------- TAGS
+-- Who the tag system thinks is a Silence user, and why. Redrawn every time
+-- the Logs tab is on screen, so it follows a scan as it happens.
+sectionLabel(pLog, "SILENCE USERS")
+local tagView = makeLogView(pLog, 150)
+
 --------------------------------------------------------------- ACTIONS
 sectionLabel(pLog, "ACTIONS")
 local function copyOut(text, what)
@@ -10821,6 +10897,16 @@ local function copyOut(text, what)
     notify("Logs", done and (what .. " copied to clipboard")
                         or "No clipboard access in this executor", 3)
 end
+
+buttonRow(pLog, "Rescan Silence Users", function()
+    if SilenceAPI._rescanTags then
+        SilenceAPI._rescanTags()
+        notify("Tags", "Rescanning - watch the SILENCE USERS panel above.", 4)
+    end
+end)
+buttonRow(pLog, "Copy Tag Report", function()
+    copyOut(tagView.Text, "Tag report")
+end)
 
 buttonRow(pLog, "Copy Chat Log", function()
     local out = {}
@@ -10912,6 +10998,11 @@ track(RunService.Heartbeat:Connect(function()
         n[#n+1] = "[" .. e.t .. "] " .. e.title .. " - " .. e.text
     end
     notifView.Text = joinLines(n, "nothing yet")
+
+    if SilenceAPI._tagReport then
+        local okR, txt = pcall(SilenceAPI._tagReport)
+        tagView.Text = okR and txt or "report failed"
+    end
 end))
 end)()
 
