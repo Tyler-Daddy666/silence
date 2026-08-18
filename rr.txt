@@ -10311,17 +10311,28 @@ local _tagOk, _tagErr = pcall(function()
         end)
     end
 
+    local pullNote, joinNote = "not run yet", "not run yet"
+    SilenceAPI._syncNotes = function() return pullNote, joinNote end
+
     -- One fetch brings back both halves: who counts as a Silence user, and
     -- what rank each of them carries.
     local function pullRanks()
-        if SYNC_BASE == "" then return end
+        if SYNC_BASE == "" then pullNote = "SYNC_BASE empty" return end
         local okG, body = pcall(function()
             return game:HttpGet(SYNC_BASE .. "all?t=" .. tostring(math.random(1, 1000000)), true)
         end)
-        if not okG or type(body) ~= "string" then return end
+        if not okG then
+            pullNote = "HttpGet threw: " .. tostring(body):sub(1, 70)
+            return
+        end
+        if type(body) ~= "string" then pullNote = "no body returned" return end
         local HS = game:GetService("HttpService")
         local okD, data = pcall(function() return HS:JSONDecode(body) end)
-        if not okD or type(data) ~= "table" then return end
+        if not okD or type(data) ~= "table" then
+            pullNote = "not JSON: " .. tostring(body):sub(1, 70)
+            return
+        end
+        if data.error then pullNote = "worker said: " .. tostring(data.error) end
 
         local ranks = (type(data.ranks) == "table") and data.ranks or data
         local users = (type(data.users) == "table") and data.users or nil
@@ -10354,6 +10365,15 @@ local _tagOk, _tagErr = pcall(function()
             end
         end
 
+        local n = 0
+        for _ in pairs(knownUsers) do n = n + 1 end
+        if not data.error then
+            pullNote = "ok, " .. n .. " on the list"
+            if data.users == nil then
+                pullNote = pullNote .. "  (worker has no /join yet - update it)"
+            end
+        end
+
         tagKnownPlayers()
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
@@ -10366,28 +10386,45 @@ local _tagOk, _tagErr = pcall(function()
     -- Tell the endpoint this account is running Silence. Owning the pass is
     -- checked locally first, which is the one thing the client may ask.
     function SilenceAPI._announceSelf()
-        if SYNC_BASE == "" then return end
+        if SYNC_BASE == "" then joinNote = "SYNC_BASE empty" return end
         task.spawn(function()
-            pcall(function()
-                game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
+            local okJ, res = pcall(function()
+                return game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
                     .. "&name=" .. urlEnc(LocalPlayer.Name), true)
             end)
+            if not okJ then
+                joinNote = "HttpGet threw: " .. tostring(res):sub(1, 70)
+            else
+                joinNote = tostring(res):sub(1, 90)
+            end
             task.wait(1)
             pcall(pullRanks)
         end)
     end
 
     function SilenceAPI._pushRank(p)
-        if SYNC_BASE == "" or SYNC_KEY == "" or not p then return end
+        if not p then return end
+        if SYNC_BASE == "" then notify("Rank", "SYNC_BASE is empty - local only.", 5) return end
+        if SYNC_KEY == "" then
+            notify("Rank", "No write key. Set getgenv().SilenceSyncKey before running.", 7)
+            return
+        end
         local rk = playerRank[p.UserId] or "user"
         local ti = customTitles[p.UserId] or ""
         task.spawn(function()
-            pcall(function()
-                game:HttpGet(SYNC_BASE .. "set?key=" .. urlEnc(SYNC_KEY)
+            local okP, res = pcall(function()
+                return game:HttpGet(SYNC_BASE .. "set?key=" .. urlEnc(SYNC_KEY)
                     .. "&id=" .. tostring(p.UserId)
                     .. "&rank=" .. urlEnc(rk)
                     .. "&title=" .. urlEnc(ti), true)
             end)
+            -- the worker answers {"ok":true} or {"error":"nope"} for a bad
+            -- key; either way the user should see which one it was
+            if not okP then
+                notify("Rank", "push failed: " .. tostring(res):sub(1, 90), 8)
+            elseif tostring(res):find("error") then
+                notify("Rank", "worker refused: " .. tostring(res):sub(1, 90), 8)
+            end
         end)
     end
 
@@ -10411,7 +10448,11 @@ local _tagOk, _tagErr = pcall(function()
         out[#out+1] = "sync    : " .. (SYNC_BASE ~= "" and SYNC_BASE or "off, ranks stay local")
         out[#out+1] = "write   : " .. (SYNC_KEY ~= "" and "key present" or "no key, read only")
         out[#out+1] = ""
+        local pn, jn = "-", "-"
+        if SilenceAPI._syncNotes then pn, jn = SilenceAPI._syncNotes() end
         out[#out+1] = "my pass : " .. (selfOwns and "owned, announced" or "not owned")
+        out[#out+1] = "join    : " .. tostring(jn)
+        out[#out+1] = "pull    : " .. tostring(pn)
         local known = 0
         for _ in pairs(knownUsers) do known = known + 1 end
         out[#out+1] = "list    : " .. known .. " known Silence account(s)"
