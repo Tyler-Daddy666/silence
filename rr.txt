@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v30"
+SilenceAPI._version = "v31"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -606,8 +606,8 @@ end
 --
 -- ON VIDEO: Roblox cannot play one. VideoFrame exists but only accepts video
 -- assets uploaded to Roblox, and that upload is not open to normal accounts.
--- An mp4 on GitHub has no decoder to reach. What DOES work is a picture plus
--- a sound, and a numbered run of pictures played back fast, which is a short
+-- An mp4 on GitHub has no decoder to reach. What DOES work is a numbered run
+-- of stills played back fast next to the extracted audio, which is a short
 -- video in everything but name.
 --
 -- Every asset comes through loadLocalImage, which is misnamed: it checks the
@@ -615,40 +615,25 @@ end
 -- hands back a getcustomasset id. Nothing in it cares whether the bytes are
 -- a PNG or an MP3.
 --
---   jumpscare.png                  single still
---   jumpscare1.png .. jumpscareN   played at 12fps instead, if present
+--   jumpscare.png                  single still, used when there are no frames
+--   jumpscare1.png .. jumpscareN   played at 12fps - the video
 --   jumpscare.mp3                  the sound, and it decides the length
+--
+-- Repo layout: a jumpscare/ subfolder is tried first, then the repo root.
 ----------------------------------------------------------------
 do
-    -- Tries a jumpscare/ subfolder in the repo first, then the repo root, so
-    -- 35 files can be tidied away without editing anything here. The cost of
-    -- guessing wrong is one failed request: raw.githubusercontent answers a
-    -- miss with the 14 byte string "404: Not Found", and loadLocalImage
-    -- already refuses anything under 100 bytes, so a miss cannot be written
-    -- to disk and mistaken for an asset.
-    -- The local filenames stay flat either way - only the URL differs.
     local function jumpAsset(names, file)
         return loadLocalImage(names, ICON_BASE .. "jumpscare/" .. file)
             or loadLocalImage(names, ICON_BASE .. file)
     end
 
-    SilenceAPI._jumpImg = jumpAsset(
-        { "jumpscare.png", "jump.png", "scare.png" }, "jumpscare.png")
-
-    SilenceAPI._jumpSnd = jumpAsset(
-        { "jumpscare.mp3", "jumpscare.ogg", "jumpscare.wav" }, "jumpscare.mp3")
-
-    -- Frames are fetched the first time one is actually needed, never at
-    -- load. A three second clip at 12fps is 36 files, and making every
-    -- client download all of them on startup - for something most of them
-    -- will never be shown - is not a trade worth making. loadLocalImage
-    -- writes each one to disk, so only the first jumpscare on a machine
-    -- costs anything; after that they come off the disk.
-    -- Probing stops at the first gap, so N frames cost exactly one wasted
-    -- lookup rather than the whole cap.
     SilenceAPI._jumpFrames = nil
+    SilenceAPI._jumpReady  = false
+
     function SilenceAPI._loadJumpFrames()
-        if SilenceAPI._jumpFrames then return SilenceAPI._jumpFrames end
+        if SilenceAPI._jumpFrames and #SilenceAPI._jumpFrames > 0 then
+            return SilenceAPI._jumpFrames
+        end
         local out = {}
         for i = 1, 64 do
             local f = jumpAsset({ "jumpscare" .. i .. ".png" },
@@ -656,127 +641,163 @@ do
             if not f then break end
             out[i] = f
         end
-        SilenceAPI._jumpFrames = out
-        print("[Silence] jumpscare frames loaded: " .. #out)
+        -- Only a result that found something is kept. Caching an empty table
+        -- poisoned the whole session: {} is truthy in Lua, so one attempt
+        -- made before the files were uploaded meant every later call returned
+        -- that empty table without retrying and went straight to the
+        -- placeholder.
+        if #out > 0 then SilenceAPI._jumpFrames = out end
         return out
     end
+
+    -- Fetched in the background shortly after load, so the first jumpscare
+    -- already has everything. Fetching at the moment of the scare is exactly
+    -- what put the placeholder on screen first: 34 downloads take seconds and
+    -- the effect had already begun.
+    task.spawn(function()
+        task.wait(3)
+        SilenceAPI._jumpImg = jumpAsset(
+            { "jumpscare.png", "jump.png", "scare.png" }, "jumpscare.png")
+        SilenceAPI._jumpSnd = jumpAsset(
+            { "jumpscare.mp3", "jumpscare.ogg", "jumpscare.wav" }, "jumpscare.mp3")
+        SilenceAPI._loadJumpFrames()
+        SilenceAPI._jumpReady = true
+        print("[Silence] jumpscare ready: frames="
+              .. tostring(#(SilenceAPI._jumpFrames or {}))
+              .. "  sound=" .. tostring(SilenceAPI._jumpSnd ~= nil))
+    end)
 
     function SilenceAPI._jumpscare(fromName)
         if State.allowJumpscare == false then return end
 
-        local sg = Instance.new("ScreenGui")
-        sg.Name = "__SIL_Jump"
-        sg.IgnoreGuiInset = true
-        sg.ResetOnSpawn = false
-        sg.DisplayOrder = 2000000
-        protect(sg)
-        sg.Parent = pickGuiParent()
-
-        -- One closer, called from several places. Whichever fires first
-        -- wins and the rest are no-ops, so no path can leave a black
-        -- screen with no way back.
-        local closed = false
-        local function close()
-            if closed then return end
-            closed = true
-            pcall(function() sg:Destroy() end)
-        end
-
-        local back = Instance.new("Frame", sg)
-        back.Size = UDim2.new(1, 0, 1, 0)
-        back.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        back.BorderSizePixel = 0
-        back.ZIndex = 1
-
-        local frames = SilenceAPI._loadJumpFrames and SilenceAPI._loadJumpFrames() or {}
-        local still  = SilenceAPI._jumpImg
-        if #frames > 0 or still then
-            local img = Instance.new("ImageLabel", sg)
-            img.Size = UDim2.new(1, 0, 1, 0)
-            img.BackgroundTransparency = 1
-            img.Image = frames[1] or still
-            img.ScaleType = Enum.ScaleType.Crop
-            img.ZIndex = 2
-            if #frames > 1 then
-                task.spawn(function()
-                    local i = 1
-                    while sg.Parent and not closed do
-                        i = i % #frames + 1
-                        img.Image = frames[i]
-                        task.wait(1 / 12)
-                    end
-                end)
-            end
-        else
-            -- nothing on disk, so the fallback has to carry it alone
-            local t = Instance.new("TextLabel", sg)
-            t.Size = UDim2.new(1, 0, 1, 0)
-            t.BackgroundTransparency = 1
-            t.Text = "BOO"
-            t.Font = Enum.Font.GothamBlack
-            t.TextScaled = true
-            t.TextColor3 = Color3.fromRGB(255, 30, 30)
-            t.ZIndex = 2
-            task.spawn(function()
-                while sg.Parent and not closed do
-                    back.BackgroundColor3 = Color3.fromRGB(math.random(0, 60), 0, 0)
-                    t.TextColor3 = Color3.fromRGB(255, math.random(0, 60), math.random(0, 60))
-                    task.wait(0.05)
-                end
-            end)
-        end
-
-        local snd
-        pcall(function()
-            snd = Instance.new("Sound")
-            snd.SoundId = SilenceAPI._jumpSnd or tostring(State.jumpSound or "")
-            snd.Volume = 1
-            snd.Parent = sg
-            snd:Play()
-        end)
-
-        -- The sound decides how long this lasts. TimeLength reads 0 until
-        -- the asset has loaded, so it is polled briefly rather than trusted
-        -- straight away, and Ended closes it whichever way that goes.
-        if snd then
-            pcall(function() snd.Ended:Connect(close) end)
-            task.spawn(function()
-                local t0 = tick()
-                while tick() - t0 < 5 and not closed do
-                    local len = 0
-                    pcall(function() len = snd.TimeLength end)
-                    if type(len) == "number" and len > 0.1 then
-                        task.delay(len + 0.3, close)
-                        return
-                    end
-                    task.wait(0.1)
-                end
-                task.delay(2, close)
-            end)
-        else
-            task.delay(1.7, close)
-        end
-        -- nothing may stay on screen longer than this, whatever happens
-        task.delay(20, close)
-
         task.spawn(function()
-            local cam = workspace.CurrentCamera
+            -- Wait for the assets rather than drawing a placeholder over
+            -- them. Nothing is on screen yet, so waiting costs nobody
+            -- anything and the real thing starts on its very first frame.
             local t0 = tick()
-            while tick() - t0 < 1.1 and not closed do
-                pcall(function()
-                    cam.CFrame = cam.CFrame * CFrame.Angles(
-                        math.rad(math.random(-4, 4)),
-                        math.rad(math.random(-4, 4)), 0)
+            while not SilenceAPI._jumpReady and tick() - t0 < 8 do
+                task.wait(0.1)
+            end
+
+            local frames = SilenceAPI._loadJumpFrames()
+            local still  = SilenceAPI._jumpImg
+
+            local sg = Instance.new("ScreenGui")
+            sg.Name = "__SIL_Jump"
+            sg.IgnoreGuiInset = true
+            sg.ResetOnSpawn = false
+            sg.DisplayOrder = 2000000
+            protect(sg)
+            sg.Parent = pickGuiParent()
+
+            -- One closer, called from several places. Whichever fires first
+            -- wins and the rest are no-ops, so no path can leave a black
+            -- screen with no way back.
+            local closed = false
+            local function close()
+                if closed then return end
+                closed = true
+                pcall(function() sg:Destroy() end)
+            end
+
+            local back = Instance.new("Frame", sg)
+            back.Size = UDim2.new(1, 0, 1, 0)
+            back.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            back.BorderSizePixel = 0
+            back.ZIndex = 1
+
+            if #frames > 0 or still then
+                local img = Instance.new("ImageLabel", sg)
+                img.Size = UDim2.new(1, 0, 1, 0)
+                img.BackgroundTransparency = 1
+                img.Image = frames[1] or still
+                img.ScaleType = Enum.ScaleType.Crop
+                img.ZIndex = 2
+                if #frames > 1 then
+                    task.spawn(function()
+                        local i = 1
+                        while sg.Parent and not closed do
+                            i = i % #frames + 1
+                            img.Image = frames[i]
+                            task.wait(1 / 12)
+                        end
+                    end)
+                end
+            else
+                -- genuinely nothing on disk and nothing downloadable, so the
+                -- fallback has to carry it alone
+                local t = Instance.new("TextLabel", sg)
+                t.Size = UDim2.new(1, 0, 1, 0)
+                t.BackgroundTransparency = 1
+                t.Text = "BOO"
+                t.Font = Enum.Font.GothamBlack
+                t.TextScaled = true
+                t.TextColor3 = Color3.fromRGB(255, 30, 30)
+                t.ZIndex = 2
+                task.spawn(function()
+                    while sg.Parent and not closed do
+                        back.BackgroundColor3 = Color3.fromRGB(math.random(0, 60), 0, 0)
+                        t.TextColor3 = Color3.fromRGB(255, math.random(0, 60), math.random(0, 60))
+                        task.wait(0.05)
+                    end
                 end)
-                task.wait()
+            end
+
+            local snd
+            pcall(function()
+                snd = Instance.new("Sound")
+                snd.SoundId = SilenceAPI._jumpSnd or tostring(State.jumpSound or "")
+                -- 10 is the ceiling Roblox allows, and a Sound under a
+                -- ScreenGui has no distance falloff, so this is as loud as
+                -- the engine can be made to play it
+                snd.Volume = 10
+                snd.Parent = sg
+                snd:Play()
+            end)
+
+            -- The sound decides how long this lasts. TimeLength reads 0 until
+            -- the asset has loaded, so it is polled briefly rather than
+            -- trusted straight away, and Ended closes it either way.
+            if snd then
+                pcall(function() snd.Ended:Connect(close) end)
+                task.spawn(function()
+                    local t1 = tick()
+                    while tick() - t1 < 5 and not closed do
+                        local len = 0
+                        pcall(function() len = snd.TimeLength end)
+                        if type(len) == "number" and len > 0.1 then
+                            task.delay(len + 0.3, close)
+                            return
+                        end
+                        task.wait(0.1)
+                    end
+                    task.delay(2, close)
+                end)
+            else
+                task.delay(1.7, close)
+            end
+            -- nothing may stay on screen longer than this, whatever happens
+            task.delay(20, close)
+
+            task.spawn(function()
+                local cam = workspace.CurrentCamera
+                local t2 = tick()
+                while tick() - t2 < 1.1 and not closed do
+                    pcall(function()
+                        cam.CFrame = cam.CFrame * CFrame.Angles(
+                            math.rad(math.random(-4, 4)),
+                            math.rad(math.random(-4, 4)), 0)
+                    end)
+                    task.wait()
+                end
+            end)
+
+            if fromName and fromName ~= "test" then
+                task.delay(0.2, function()
+                    notify("Silence", tostring(fromName) .. " sent you that.", 6)
+                end)
             end
         end)
-
-        if fromName and fromName ~= "test" then
-            task.delay(0.2, function()
-                notify("Silence", tostring(fromName) .. " sent you that.", 6)
-            end)
-        end
     end
 end
 
