@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v31"
+SilenceAPI._version = "v33"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -550,6 +550,10 @@ local State = {
     vcAutoMute = false,       -- cut the microphone on every server join
     adminCmd = "/sa",         -- chat command that opens the admin panel
     allowJumpscare = true,    -- let other Silence users send you one
+    aura = { on = false, style = "sparkle", gradient = true, rainbow = false,
+             size = 1, rate = 1,
+             color  = Color3.fromRGB(255, 60, 60),
+             color2 = Color3.fromRGB(60, 60, 255) },
     jumpSound = "rbxassetid://5766325503",
     acBlocked = false,        -- true after a scan finds critical anti-cheat hits
     acRiskyOverride = false,  -- user-set: ignore acBlocked and use features anyway
@@ -5352,6 +5356,7 @@ local TAB_CATEGORY = {
     Misc      = "System", AntiCheat     = "System", Hotkeys       = "System",
     Config    = "System", Logs          = "System",
     ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
+    ["German Voice"] = "Games",
 }
 -- rail order, top to bottom
 local CATEGORIES = {
@@ -5359,6 +5364,7 @@ local CATEGORIES = {
     { key="Self",   label="SELF",   icon="self"   },
     { key="Larp",   label="LARP",   icon="larp"   },
     { key="Combat", label="COMBAT", icon="combat" },
+    { key="Games",  label="GAMES",  icon="games"  },
     { key="Voice",  label="VOICE",  icon="voice"  },
     { key="System", label="SYSTEM", icon="system" },
 }
@@ -5370,12 +5376,14 @@ local TAB_LO_INSIDE = {
     Aimbot = 1, Visual = 2, Players = 3,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
     ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
+    ["German Voice"] = 1,
 }
 SilenceAPI._catOf     = TAB_CATEGORY
 SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
 SilenceAPI._railPaint = {}   -- repaint fns for the five icon tiles
 SilenceAPI._catBadge  = {}   -- [group] = search-hit badge on its tile
 SilenceAPI._tabDesc = {
+    ["German Voice"] = "Aura and gradients other Silence users can see",
     ["Anti Ban"]  = "Rebuild a dropped voice session",
     Mute          = "Silence yourself or anyone, locally",
     Mic           = "Pick which microphone Roblox uses",
@@ -5459,6 +5467,10 @@ local function makeRailButton(cat)
         dot(4, 11, 11)
         px(2,5, 12, 0, 1); px(2,5, 12,21, 1)
         px(5,2,  0,12, 1); px(5,2, 21,12, 1)
+    elseif cat.icon == "games" then     -- a gamepad: body, dpad, two buttons
+        px(26, 12, 0, 7, 5)
+        px(2, 6, 5, 10, 1); px(6, 2, 3, 12, 1)
+        dot(4, 16, 10); dot(4, 20, 14)
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
@@ -9538,6 +9550,241 @@ track(LocalPlayer.CharacterAdded:Connect(function()
 end))
 
 ----------------------------------------------------------------
+-- GAMES  /  GERMAN VOICE
+-- An aura is drawn by whoever is looking at it, never by the server. A
+-- client cannot make another client render anything - instances it creates
+-- do not replicate - so "everyone can see it" is not something a local
+-- script can do on its own.
+--
+-- What it CAN do is the trick the tags already use: publish the settings to
+-- the endpoint and let every other Silence client draw you with them. The
+-- result looks identical from inside the group. Players without Silence see
+-- nothing, and there is no way around that which does not involve making the
+-- game's own server hand out items it was supposed to charge for.
+--
+-- do..end because the main chunk sits at 198 of Luau's 200 locals.
+----------------------------------------------------------------
+do
+local pGV = addTab("German Voice")
+
+-- Engine textures only. An uploaded asset id would fail on the first client
+-- whose game has it moderated or unavailable; these ship with Roblox.
+local AURA_STYLES = {
+    { key = "sparkle", label = "Sparkle",
+      tex = "rbxasset://textures/particles/sparkles_main.dds",
+      rate = 26, speed = 2.0, size = 1.2, life = 1.3, spread = 45 },
+    { key = "flame",   label = "Flame",
+      tex = "rbxasset://textures/particles/fire_main.dds",
+      rate = 44, speed = 4.0, size = 2.2, life = 0.9, spread = 14 },
+    { key = "smoke",   label = "Smoke",
+      tex = "rbxasset://textures/particles/smoke_main.dds",
+      rate = 16, speed = 1.4, size = 3.2, life = 2.1, spread = 32 },
+    { key = "storm",   label = "Storm",
+      tex = "rbxasset://textures/particles/sparkles_main.dds",
+      rate = 70, speed = 8.0, size = 0.8, life = 0.6, spread = 110 },
+}
+local AURAMAP = {}
+for _, a in ipairs(AURA_STYLES) do AURAMAP[a.key] = a end
+
+local auraFor = {}   -- [player] = { instances }
+
+local function killAura(player)
+    local set = auraFor[player]
+    if not set then return end
+    for _, o in ipairs(set) do pcall(function() o:Destroy() end) end
+    auraFor[player] = nil
+end
+
+-- cfg is the same shape whether it came from State.aura or off the endpoint
+local function buildAura(player, cfg)
+    killAura(player)
+    if not player or not cfg or not cfg.on then return end
+    local char = player.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+                 or char:FindFirstChild("Torso")
+                 or char:FindFirstChildWhichIsA("BasePart")
+    if not root then return end
+
+    local st = AURAMAP[cfg.style] or AURA_STYLES[1]
+    local c1 = cfg.color  or Color3.fromRGB(255, 60, 60)
+    local c2 = cfg.color2 or c1
+    local sz = tonumber(cfg.size) or 1
+    local rt = tonumber(cfg.rate) or 1
+    local set = {}
+
+    local pe = Instance.new("ParticleEmitter")
+    pe.Name = "__SIL_Aura"
+    pe.Texture = st.tex
+    pe.Rate = st.rate * rt
+    pe.Lifetime = NumberRange.new(st.life * 0.7, st.life)
+    pe.Speed = NumberRange.new(st.speed * 0.4, st.speed)
+    pe.SpreadAngle = Vector2.new(st.spread, st.spread)
+    pe.Size = NumberSequence.new(st.size * sz)
+    pe.LightEmission = 1
+    pe.LightInfluence = 0
+    pe.Color = cfg.gradient and ColorSequence.new(c1, c2) or ColorSequence.new(c1)
+    -- fade in and out rather than popping, which is what makes it read as an
+    -- aura instead of a cloud of dots
+    pe.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0,    1),
+        NumberSequenceKeypoint.new(0.18, 0.15),
+        NumberSequenceKeypoint.new(1,    1),
+    })
+    pe.Parent = root
+    set[#set+1] = pe
+
+    local lt = Instance.new("PointLight")
+    lt.Name = "__SIL_AuraLight"
+    lt.Color = c1
+    lt.Range = 10 * sz
+    lt.Brightness = 2
+    lt.Parent = root
+    set[#set+1] = lt
+
+    auraFor[player] = set
+end
+
+-- Reachable from the tag block, which is what draws other people's auras
+-- once their settings arrive from the endpoint.
+SilenceAPI._applyAuraFor = function(player, cfg) pcall(buildAura, player, cfg) end
+SilenceAPI._killAuraFor  = function(player) pcall(killAura, player) end
+
+local function refreshOwnAura()
+    buildAura(LocalPlayer, State.aura)
+end
+SilenceAPI._refreshAura = refreshOwnAura
+
+-- One shared cycle for every rainbow aura in the server, so twenty of them
+-- cost one loop rather than twenty.
+track(RunService.Heartbeat:Connect(function()
+    local hue = (tick() * 0.25) % 1
+    local col = Color3.fromHSV(hue, 0.9, 1)
+    for player, set in pairs(auraFor) do
+        local want = (player == LocalPlayer) and State.aura
+                     or (SilenceAPI._auraOf and SilenceAPI._auraOf(player))
+        if want and want.rainbow then
+            for _, o in ipairs(set) do
+                if o:IsA("ParticleEmitter") then
+                    o.Color = ColorSequence.new(col)
+                elseif o:IsA("PointLight") then
+                    o.Color = col
+                end
+            end
+        end
+    end
+end))
+
+track(LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1)
+    refreshOwnAura()
+end))
+track(Players.PlayerRemoving:Connect(function(p) killAura(p) end))
+
+------------------------------------------------------------ UI
+sectionLabel(pGV, "AURA")
+toggleRow(pGV, "Aura", function() return State.aura.on end, function(v)
+    State.aura.on = v
+    refreshOwnAura()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end)
+
+local styleBox = Instance.new("Frame", pGV)
+styleBox.Size = UDim2.new(1, 0, 0, 0)
+styleBox.AutomaticSize = Enum.AutomaticSize.Y
+styleBox.BackgroundTransparency = 1
+local styleLay = Instance.new("UIGridLayout", styleBox)
+styleLay.CellSize = UDim2.new(0, 120, 0, 30)
+styleLay.CellPadding = UDim2.new(0, 6, 0, 6)
+styleLay.SortOrder = Enum.SortOrder.LayoutOrder
+SilenceAPI._registerRow(styleBox, "aura style sparkle flame smoke storm")
+
+for i, a in ipairs(AURA_STYLES) do
+    local b = Instance.new("TextButton", styleBox)
+    b.BorderSizePixel = 0
+    b.Text = a.label
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 12
+    b.AutoButtonColor = false
+    b.LayoutOrder = i
+    corner(b, 8)
+    local bs = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+    local function paint()
+        local on = (State.aura.style == a.key)
+        b.BackgroundColor3 = on and Theme.accent or Theme.bg2
+        b.TextColor3       = on and Theme.bg     or Theme.text
+        bs.Transparency    = on and 0 or 0.6
+    end
+    paint()
+    table.insert(SilenceAPI._toggleRefreshers, paint)
+    b.MouseButton1Click:Connect(function()
+        State.aura.style = a.key
+        refreshOwnAura()
+        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+        if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+    end)
+end
+
+sectionLabel(pGV, "COLOURS")
+buttonRow(pGV, "Aura Colour", function()
+    openColorPicker(State.aura.color, function(c)
+        State.aura.color = c
+        refreshOwnAura()
+        if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+    end, "Aura")
+end)
+buttonRow(pGV, "Gradient Second Colour", function()
+    openColorPicker(State.aura.color2, function(c)
+        State.aura.color2 = c
+        refreshOwnAura()
+        if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+    end, "Aura gradient")
+end)
+toggleRow(pGV, "Gradient", function() return State.aura.gradient end, function(v)
+    State.aura.gradient = v
+    refreshOwnAura()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end)
+toggleRow(pGV, "Rainbow  (overrides the colours)",
+    function() return State.aura.rainbow end, function(v)
+    State.aura.rainbow = v
+    refreshOwnAura()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end)
+
+sectionLabel(pGV, "SHAPE")
+inputRow(pGV, "Size", State.aura.size, function(v)
+    State.aura.size = math.clamp(tonumber(v) or 1, 0.2, 5)
+    refreshOwnAura()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end, { min = 0.2, max = 5 })
+inputRow(pGV, "Density", State.aura.rate, function(v)
+    State.aura.rate = math.clamp(tonumber(v) or 1, 0.1, 4)
+    refreshOwnAura()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end, { min = 0.1, max = 4 })
+
+sectionLabel(pGV, "WHO SEES THIS")
+local gvHint = Instance.new("TextLabel", pGV)
+gvHint.Size = UDim2.new(1, 0, 0, 92)
+gvHint.BackgroundTransparency = 1
+gvHint.Text = "  Your aura travels to every other Silence user through the same\n"
+           .. "  endpoint the tag designs use, so they see it on you within a\n"
+           .. "  few seconds. Players without Silence see nothing - a client\n"
+           .. "  cannot make another client draw something, only the server can,\n"
+           .. "  and reaching that far means making the game hand out items it\n"
+           .. "  was meant to charge for. That part is not in here."
+gvHint.Font = Enum.Font.Gotham
+gvHint.TextSize = 10
+gvHint.TextXAlignment = Enum.TextXAlignment.Left
+gvHint.TextYAlignment = Enum.TextYAlignment.Top
+gvHint.TextWrapped = true
+gvHint.TextColor3 = Theme.textDim
+
+task.spawn(function() task.wait(2) refreshOwnAura() end)
+end
+
+----------------------------------------------------------------
 -- SILENCE USER TAG
 -- Wrapped in a pcall on purpose. This block is long, it talks to the
 -- Marketplace and to the network, and everything that comes AFTER it in the
@@ -9713,6 +9960,15 @@ local _tagOk, _tagErr = pcall(function()
 
     -- A title set from the admin panel outranks everything, then the rank's
     -- own name, then whatever the player called themselves.
+    -- The aura loop in the Games tab asks this to find out whose settings
+    -- apply to whom; only this scope can see styleLook.
+    SilenceAPI._auraOf = function(p)
+        if not p then return nil end
+        if p == LocalPlayer then return State.aura end
+        local lk = styleLook[p.UserId]
+        return lk and lk.aura
+    end
+
     local function titleFor(player)
         local t = customTitles[player.UserId]
         if t and t ~= "" then return t end
@@ -9822,6 +10078,19 @@ local _tagOk, _tagErr = pcall(function()
         lk.rainbowSpeed = tonumber(t.rs); lk.offsetY = tonumber(t.oy)
         lk.maxDist      = tonumber(t.md); lk.partRate = tonumber(t.pr)
         lk.distGrow     = tonumber(t.dg)
+        if type(t.au) == "table" then
+            local au = t.au
+            lk.aura = {
+                on       = au.on and true or false,
+                style    = tostring(au.st or "sparkle"),
+                gradient = au.gd and true or false,
+                rainbow  = au.rb and true or false,
+                size     = tonumber(au.sz) or 1,
+                rate     = tonumber(au.rt) or 1,
+                color    = col(au.c1) or Color3.fromRGB(255, 60, 60),
+                color2   = col(au.c2) or Color3.fromRGB(60, 60, 255),
+            }
+        end
         if type(t.su) == "boolean" then lk.showUser  = t.su end
         if type(t.bd) == "boolean" then lk.showBadge = t.bd end
         if type(t.ce) == "boolean" then lk.centered  = t.ce end
@@ -10184,6 +10453,11 @@ local _tagOk, _tagErr = pcall(function()
         track(player.CharacterAdded:Connect(function()
             task.wait(0.4)
             if silenceUsers[player] then createTag(player) end
+            -- the emitter hung off the old HumanoidRootPart, which is gone
+            if player ~= LocalPlayer and SilenceAPI._applyAuraFor then
+                local lk = styleLook[player.UserId]
+                SilenceAPI._applyAuraFor(player, lk and lk.aura)
+            end
         end))
         track(player.CharacterRemoving:Connect(function(char)
             if char then
@@ -11307,6 +11581,19 @@ local _tagOk, _tagErr = pcall(function()
             dg = TagSettings.distGrow,
             pr = TagSettings.partRate,  pu = TagSettings.pulse,
             ti = myTitle(),
+            -- The aura rides along in the same string the tag design uses,
+            -- so it reaches everyone through the endpoint that is already
+            -- there and the worker needs no new field.
+            au = {
+                on = State.aura.on and true or false,
+                st = tostring(State.aura.style or "sparkle"),
+                gd = State.aura.gradient and true or false,
+                rb = State.aura.rainbow and true or false,
+                sz = tonumber(State.aura.size) or 1,
+                rt = tonumber(State.aura.rate) or 1,
+                c1 = c3(State.aura.color),
+                c2 = c3(State.aura.color2),
+            },
         }
         local ok, j = pcall(function() return HS:JSONEncode(t) end)
         if not ok then return "" end
@@ -11354,6 +11641,19 @@ local _tagOk, _tagErr = pcall(function()
         TagSettings.offsetY    = num(t.oy,  TagSettings.offsetY)
         TagSettings.maxDist    = num(t.md,  TagSettings.maxDist)
         TagSettings.distGrow   = num(t.dg,  TagSettings.distGrow)
+        -- a saved slot restores the aura with the rest of the look
+        if type(t.au) == "table" then
+            local au = t.au
+            State.aura.on       = au.on and true or false
+            State.aura.style    = tostring(au.st or State.aura.style)
+            State.aura.gradient = au.gd and true or false
+            State.aura.rainbow  = au.rb and true or false
+            State.aura.size     = num(au.sz, State.aura.size)
+            State.aura.rate     = num(au.rt, State.aura.rate)
+            State.aura.color    = col(au.c1, State.aura.color)
+            State.aura.color2   = col(au.c2, State.aura.color2)
+            if SilenceAPI._refreshAura then pcall(SilenceAPI._refreshAura) end
+        end
         TagSettings.partRate   = num(t.pr,  TagSettings.partRate)
         TagSettings.showUser   = boo(t.su,  TagSettings.showUser)
         TagSettings.showBadge  = boo(t.bd,  TagSettings.showBadge)
@@ -11811,6 +12111,10 @@ local _tagOk, _tagErr = pcall(function()
             if knownUsers[p.UserId] and not silenceUsers[p] then
                 tagUser(p)
                 print("[Silence] Silence user in server: " .. p.Name)
+                if p ~= LocalPlayer and SilenceAPI._applyAuraFor then
+                    local lk = styleLook[p.UserId]
+                    SilenceAPI._applyAuraFor(p, lk and lk.aura)
+                end
             end
         end
     end
@@ -12039,8 +12343,13 @@ local _tagOk, _tagErr = pcall(function()
         tagKnownPlayers()
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
-            if changed[p.UserId] and silenceUsers[p] then
-                paintTag(p)
+            if changed[p.UserId] then
+                if silenceUsers[p] then paintTag(p) end
+                -- your own aura is driven by the editor, never by the pull
+                if p ~= LocalPlayer and SilenceAPI._applyAuraFor then
+                    local lk = styleLook[p.UserId]
+                    SilenceAPI._applyAuraFor(p, lk and lk.aura)
+                end
             end
         end
     end
