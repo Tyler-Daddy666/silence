@@ -8544,9 +8544,15 @@ local _tagOk, _tagErr = pcall(function()
         RANKMAP[r.key] = r
     end
 
-    -- no rank, or the plain one: your own tag follows the editor and
-    -- everybody else follows the current defaults
+    -- Your own tag always follows the editor, so the live preview and the
+    -- card over your head can never disagree. Handing your own tag the rank's
+    -- look instead was why applying a preset looked right in the preview but
+    -- the real one kept doing something else - a rank like FOUNDER carries
+    -- rainbow = true, so it cycled colours forever.
+    -- A rank still gives you its TITLE, and other players still draw you with
+    -- the rank's colours.
     local function lookFor(player)
+        if player == LocalPlayer then return TagSettings end
         local r = RANKMAP[playerRank[player.UserId] or ""]
         return (r and r.look) or TagSettings
     end
@@ -10137,6 +10143,21 @@ local _tagOk, _tagErr = pcall(function()
     showPage("TEXT")
     drawFace()
 
+    -- The card in the preview is rebuilt on every change, so the cycling is
+    -- driven from outside it: look up whatever card is current and tint it.
+    -- Without this the preview sat still while the real tag cycled.
+    track(RunService.Heartbeat:Connect(function()
+        if not TagSettingsPopup.Visible then return end
+        if not TagSettings.rainbow then return end
+        local card = face[1]
+        if not card or not card.Parent then return end
+        local hue = (tick() * (tonumber(TagSettings.rainbowSpeed) or 0.2)) % 1
+        local col = Color3.fromHSV(hue, 0.85, 1)
+        for _, o in ipairs(card:GetChildren()) do
+            if o:IsA("UIStroke") then o.Color = col end
+        end
+    end))
+
     -- opening the window is the first time anything in it gets measured
     track(TagSettingsPopup:GetPropertyChangedSignal("Visible"):Connect(function()
         if not TagSettingsPopup.Visible then return end
@@ -10212,54 +10233,53 @@ local _tagOk, _tagErr = pcall(function()
     end)
 
     ----------------------------------------------------------------
-    -- AUTO-TAG OTHER SILENCE USERS
-    -- Pass ownership is public, so every copy of the script can ask Roblox
-    -- who else in the server owns it and draw a tag over them. Nothing was
-    -- doing that: tagUser() only ever ran for LocalPlayer and from the admin
-    -- panel's manual button, which is why two owners never saw each other.
+    -- FINDING OTHER SILENCE USERS
+    -- Roblox refuses UserOwnsGamePassAsync for anyone but the local player:
+    --     "can only query local player"
+    -- Asking about other people is a server-only operation, so a client
+    -- script simply cannot detect pass owners on its own. No amount of
+    -- retrying changes that.
     --
-    -- UserOwnsGamePassAsync is a rate limited web call, so players go
-    -- through a queue one at a time rather than all at once on join.
+    -- So it works the other way round. Each client checks ITS OWN pass,
+    -- which is allowed, and if it owns it, announces itself to the endpoint.
+    -- Everyone then reads that one list and tags whoever is on it. Detection
+    -- becomes a lookup instead of a query.
     ----------------------------------------------------------------
-    local scanQueue, scanning, scanFound = {}, false, 0
+    local knownUsers = {}   -- [userId] = true, straight from the endpoint
+    local selfOwns  = false
 
-    local function drainScanQueue()
-        if scanning then return end
-        scanning = true
-        task.spawn(function()
-            while #scanQueue > 0 do
-                local p = table.remove(scanQueue, 1)
-                if p and p.Parent and not silenceUsers[p] then
-                    if ownsScriptPass(p) then
-                        tagUser(p)
-                        scanFound = scanFound + 1
-                        print("[Silence] pass owner found: " .. p.Name)
-                    end
-                end
-                task.wait(0.35)
+    local function tagKnownPlayers()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if knownUsers[p.UserId] and not silenceUsers[p] then
+                tagUser(p)
+                print("[Silence] Silence user in server: " .. p.Name)
             end
-            scanning = false
-        end)
+        end
     end
 
+    -- kept so the rest of the file has something to call; a newly joined
+    -- player only needs checking against the list we already hold
     local function queueScan(p)
-        -- with no pass configured ownsScriptPass answers true for everyone,
-        -- which would tag the whole server
-        if SCRIPT_PASS_ID == 0 then return end
-        if not p or p == LocalPlayer or silenceUsers[p] then return end
-        table.insert(scanQueue, p)
-        drainScanQueue()
+        if p and knownUsers[p.UserId] and not silenceUsers[p] then tagUser(p) end
     end
     SilenceAPI._queueTagScan = queueScan
 
+    -- asking about yourself is the one query the client is allowed
     task.spawn(function()
-        if SCRIPT_PASS_ID == 0 then return end
-        task.wait(2.5)   -- let the join settle before hitting the endpoint
-        for _, p in ipairs(Players:GetPlayers()) do queueScan(p) end
-        -- report once the first sweep has drained, not per player
-        while scanning or #scanQueue > 0 do task.wait(0.5) end
-        if scanFound > 0 then
-            notify("Silence", scanFound .. " other Silence user(s) in this server.", 5)
+        task.wait(2)
+        if SCRIPT_PASS_ID == 0 then
+            selfOwns = true
+        else
+            local ok, owns = pcall(function()
+                return MarketplaceService:UserOwnsGamePassAsync(
+                    LocalPlayer.UserId, SCRIPT_PASS_ID)
+            end)
+            selfOwns = (ok and owns) and true or false
+            passOwnership[LocalPlayer.UserId] = selfOwns
+            if not ok then passError[LocalPlayer.UserId] = tostring(owns):sub(1, 60) end
+        end
+        if selfOwns and SilenceAPI._announceSelf then
+            SilenceAPI._announceSelf()
         end
     end)
 
@@ -10291,18 +10311,30 @@ local _tagOk, _tagErr = pcall(function()
         end)
     end
 
+    -- One fetch brings back both halves: who counts as a Silence user, and
+    -- what rank each of them carries.
     local function pullRanks()
         if SYNC_BASE == "" then return end
         local okG, body = pcall(function()
-            return game:HttpGet(SYNC_BASE .. "all?t=" .. tostring(math.random(1, 1e9)), true)
+            return game:HttpGet(SYNC_BASE .. "all?t=" .. tostring(math.random(1, 1000000)), true)
         end)
         if not okG or type(body) ~= "string" then return end
         local HS = game:GetService("HttpService")
         local okD, data = pcall(function() return HS:JSONDecode(body) end)
         if not okD or type(data) ~= "table" then return end
 
+        local ranks = (type(data.ranks) == "table") and data.ranks or data
+        local users = (type(data.users) == "table") and data.users or nil
+
+        if users then
+            for _, uid in ipairs(users) do
+                local n = tonumber(uid)
+                if n then knownUsers[n] = true end
+            end
+        end
+
         local changed = {}
-        for uid, entry in pairs(data) do
+        for uid, entry in pairs(ranks) do
             local n = tonumber(uid)
             if n and type(entry) == "table" then
                 local rk = entry.rank
@@ -10311,15 +10343,38 @@ local _tagOk, _tagErr = pcall(function()
                 if playerRank[n] ~= rk then playerRank[n] = rk; changed[n] = true end
                 if type(ti) == "string" and ti ~= "" then
                     if customTitles[n] ~= ti then customTitles[n] = ti; changed[n] = true end
+                elseif customTitles[n] ~= nil then
+                    -- "rank only" from the endpoint. Leaving an old local
+                    -- title in place is what made a rank change the colours
+                    -- but not the name: titleFor prefers a custom title, so
+                    -- a stale one kept winning forever.
+                    customTitles[n] = nil; changed[n] = true
                 end
+                knownUsers[n] = true   -- anybody with a rank is one of us
             end
         end
+
+        tagKnownPlayers()
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
             if changed[p.UserId] and silenceUsers[p] then
                 if p == LocalPlayer then refreshSelfTag() else createTag(p) end
             end
         end
+    end
+
+    -- Tell the endpoint this account is running Silence. Owning the pass is
+    -- checked locally first, which is the one thing the client may ask.
+    function SilenceAPI._announceSelf()
+        if SYNC_BASE == "" then return end
+        task.spawn(function()
+            pcall(function()
+                game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
+                    .. "&name=" .. urlEnc(LocalPlayer.Name), true)
+            end)
+            task.wait(1)
+            pcall(pullRanks)
+        end)
     end
 
     function SilenceAPI._pushRank(p)
@@ -10356,31 +10411,37 @@ local _tagOk, _tagErr = pcall(function()
         out[#out+1] = "sync    : " .. (SYNC_BASE ~= "" and SYNC_BASE or "off, ranks stay local")
         out[#out+1] = "write   : " .. (SYNC_KEY ~= "" and "key present" or "no key, read only")
         out[#out+1] = ""
-        out[#out+1] = string.format("%-18s %-12s %-5s %s", "PLAYER", "PASS", "TAG", "RANK")
+        out[#out+1] = "my pass : " .. (selfOwns and "owned, announced" or "not owned")
+        local known = 0
+        for _ in pairs(knownUsers) do known = known + 1 end
+        out[#out+1] = "list    : " .. known .. " known Silence account(s)"
+        out[#out+1] = ""
+        out[#out+1] = string.format("%-18s %-9s %-5s %s", "PLAYER", "ON LIST", "TAG", "RANK")
         for _, p in ipairs(Players:GetPlayers()) do
-            local own = passOwnership[p.UserId]
-            local st  = "unchecked"
-            if passError[p.UserId] then st = "CALL FAILED"
-            elseif own == true then st = "owns"
-            elseif own == false then st = "no" end
-            out[#out+1] = string.format("%-18s %-12s %-5s %s",
-                tostring(p.Name):sub(1, 18), st,
+            out[#out+1] = string.format("%-18s %-9s %-5s %s",
+                tostring(p.Name):sub(1, 18),
+                knownUsers[p.UserId] and "yes" or "no",
                 silenceUsers[p] and "yes" or "no",
                 playerRank[p.UserId] or "-")
         end
-        for uid, err in pairs(passError) do
+        if passError[LocalPlayer.UserId] then
             out[#out+1] = ""
-            out[#out+1] = "last error: " .. tostring(err)
-            break
+            out[#out+1] = "own pass check failed: " .. tostring(passError[LocalPlayer.UserId])
+        end
+        if SYNC_BASE == "" then
+            out[#out+1] = ""
+            out[#out+1] = "SYNC_BASE is empty, so nobody can be discovered."
+            out[#out+1] = "Roblox forbids a client from asking about another"
+            out[#out+1] = "player's passes, so the endpoint is the only route."
         end
         return table.concat(out, "\n")
     end
 
     SilenceAPI._rescanTags = function()
-        for uid in pairs(passOwnership) do passOwnership[uid] = nil end
-        for uid in pairs(passError)     do passError[uid]     = nil end
-        for _, p in ipairs(Players:GetPlayers()) do queueScan(p) end
+        for uid in pairs(passError) do passError[uid] = nil end
+        if selfOwns then SilenceAPI._announceSelf() end
         pcall(pullRanks)
+        tagKnownPlayers()
     end
 
     -- force a tag on somebody regardless of the pass, for testing
