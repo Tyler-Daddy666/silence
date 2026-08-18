@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v33"
+SilenceAPI._version = "v34"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -7719,8 +7719,12 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
 -- no microphone samples and cannot play raw audio, so no script carries voice
 -- itself. This fixes a session that dropped. An account Roblox has voice
 -- banned is checked server-side on join, and no client talks it out of that.
+--
+-- An IIFE rather than do..end: a do..end block shares registers with the
+-- chunk around it, so everything declared here would be live alongside its
+-- locals and count towards Luau's limit of 200. A function body has its own.
 ----------------------------------------------------------------
-do
+;(function()
     local pVcBan  = addTab("Anti Ban")
     local pVcMute = addTab("Mute")
     local pVcMic  = addTab("Mic")
@@ -8608,7 +8612,7 @@ do
     -- rows created after this block belong to Misc again, or the search index
     -- would file them under the last tab opened here
     SilenceAPI._currentTabName = "Misc"
-end
+end)()
 
 
 sectionLabel(pMisc, "PRANKS")
@@ -9562,9 +9566,14 @@ end))
 -- nothing, and there is no way around that which does not involve making the
 -- game's own server hand out items it was supposed to charge for.
 --
--- do..end because the main chunk sits at 198 of Luau's 200 locals.
+-- An IIFE rather than do..end. A do..end block shares registers with the
+-- chunk around it, so the locals below would be live alongside its 198 and
+-- push the total to 210 - past Luau's limit of 200. That is a COMPILE error,
+-- not a runtime one: the script fails to load and nothing appears at all,
+-- which is exactly what happened. A function body has its own registers,
+-- which is why every other tab block in this file is written this way.
 ----------------------------------------------------------------
-do
+;(function()
 local pGV = addTab("German Voice")
 
 -- Engine textures only. An uploaded asset id would fail on the first client
@@ -9782,7 +9791,7 @@ gvHint.TextWrapped = true
 gvHint.TextColor3 = Theme.textDim
 
 task.spawn(function() task.wait(2) refreshOwnAura() end)
-end
+end)()
 
 ----------------------------------------------------------------
 -- SILENCE USER TAG
