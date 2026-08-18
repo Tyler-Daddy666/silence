@@ -8468,6 +8468,7 @@ local _tagOk, _tagErr = pcall(function()
     -- the card loses its second line when the username is hidden, and the
     -- distance scaler further down has to agree with that
     local function tagH() return TagSettings.showUser and 42 or 34 end
+    local function lookH(lk) return lk.showUser and 42 or 34 end
 
     ----------------------------------------------------------------
     -- RANKS
@@ -8544,23 +8545,36 @@ local _tagOk, _tagErr = pcall(function()
         RANKMAP[r.key] = r
     end
 
+    -- Everyone is drawn with THEIR OWN design. A player publishes the same
+    -- SILTAG1 string the EXPORT page produces, everybody else pulls it and
+    -- draws them with it. Before this, another player's tag borrowed your
+    -- fonts, sizes and text colours and only took its background from their
+    -- rank - which is why somebody else's tag looked like a mix of the two.
+    local styleLook, styleTitle, styleRaw = {}, {}, {}
+
     -- Your own tag always follows the editor, so the live preview and the
     -- card over your head can never disagree. Handing your own tag the rank's
     -- look instead was why applying a preset looked right in the preview but
     -- the real one kept doing something else - a rank like FOUNDER carries
     -- rainbow = true, so it cycled colours forever.
-    -- A rank still gives you its TITLE, and other players still draw you with
-    -- the rank's colours.
     local function lookFor(player)
         if player == LocalPlayer then return TagSettings end
+        local s = styleLook[player.UserId]
+        if s then return s end
         local r = RANKMAP[playerRank[player.UserId] or ""]
         return (r and r.look) or TagSettings
     end
+
+    -- A title set from the admin panel outranks everything, then the rank's
+    -- own name, then whatever the player called themselves.
     local function titleFor(player)
         local t = customTitles[player.UserId]
         if t and t ~= "" then return t end
         local r = RANKMAP[playerRank[player.UserId] or ""]
-        return (r and r.title) or "SILENCE USER"
+        if r and r.title then return r.title end
+        local st = styleTitle[player.UserId]
+        if st and st ~= "" then return st end
+        return "SILENCE USER"
     end
 
     local RANKS_FILE = "silence_ranks.json"
@@ -8633,6 +8647,53 @@ local _tagOk, _tagErr = pcall(function()
         end
     end
 
+    -- Turn a published SILTAG1 string into a look table. Deliberately NOT
+    -- into TagSettings: that is your own design and must not move because
+    -- somebody else changed theirs. Missing keys fall through the metatable
+    -- to the defaults, so an old or truncated code degrades instead of
+    -- erroring the moment a tag is drawn.
+    local function decodeTagCode(str)
+        local body = tostring(str or ""):match("SILTAG1|(.+)$")
+        if not body then return nil end
+        local HS = game:GetService("HttpService")
+        local okD, t = pcall(function() return HS:JSONDecode(body) end)
+        if not okD or type(t) ~= "table" then return nil end
+
+        local function col(v)
+            if type(v) == "table" and #v >= 3 then
+                return Color3.fromRGB(v[1], v[2], v[3])
+            end
+            return nil
+        end
+        local lk = {}
+        lk.bg     = col(t.bg);  lk.bg2  = col(t.bg2)
+        lk.accent = col(t.ac);  lk.text = col(t.tx)
+        lk.sub    = col(t.sb);  lk.outlineCol = col(t.oc)
+        if lk.accent then lk.border = lk.accent end
+        lk.titleSize    = tonumber(t.ts); lk.width   = tonumber(t.wd)
+        lk.radius       = tonumber(t.rd); lk.bgAlpha = tonumber(t.al)
+        lk.glow         = tonumber(t.gl); lk.gradRot = tonumber(t.gr)
+        lk.rainbowSpeed = tonumber(t.rs); lk.offsetY = tonumber(t.oy)
+        lk.maxDist      = tonumber(t.md); lk.partRate = tonumber(t.pr)
+        if type(t.su) == "boolean" then lk.showUser  = t.su end
+        if type(t.bd) == "boolean" then lk.showBadge = t.bd end
+        if type(t.ce) == "boolean" then lk.centered  = t.ce end
+        if type(t.gd) == "boolean" then lk.gradient  = t.gd end
+        if type(t.ol) == "boolean" then lk.outline   = t.ol end
+        if type(t.rb) == "boolean" then lk.rainbow   = t.rb end
+        if type(t.pu) == "boolean" then lk.pulse     = t.pu end
+        if type(t.pa) == "string" and (t.pa == "None" or PARTICLE_GLYPHS[t.pa]) then
+            lk.particle = t.pa
+        end
+        if type(t.fn) == "string" then
+            -- a client without that font would throw on the lookup
+            local okF, f = pcall(function() return Enum.Font[t.fn] end)
+            if okF and f then lk.font = f end
+        end
+        setmetatable(lk, { __index = TagSettings })
+        return lk, (type(t.ti) == "string" and t.ti or nil)
+    end
+
     local function createTag(player)
         if not player or not player.Character then return end
         if State.tagsHidden then return end
@@ -8652,19 +8713,20 @@ local _tagOk, _tagErr = pcall(function()
         end
         destroyTag(player)
 
+        -- Everything below reads from this one table: the player's published
+        -- style, or their rank, or the defaults. Nothing reads TagSettings
+        -- directly any more, because TagSettings is YOURS.
+        local look = lookFor(player)
+
         local bb = Instance.new("BillboardGui")
         bb.Name = "__SilenceTag"
-        bb.Size = UDim2.new(0, TagSettings.width, 0, tagH())
-        bb.StudsOffset = Vector3.new(0, TagSettings.offsetY, 0)
+        bb.Size = UDim2.new(0, look.width, 0, lookH(look))
+        bb.StudsOffset = Vector3.new(0, look.offsetY, 0)
         bb.AlwaysOnTop = true
         bb.Active = true
         bb.LightInfluence = 0
-        bb.MaxDistance = TagSettings.maxDist
+        bb.MaxDistance = look.maxDist
         bb.Parent = head
-
-        -- colours, font and effects come from this player's rank; the
-        -- geometry below stays global so the distance scaler stays valid
-        local look = lookFor(player)
 
         local frame = Instance.new("Frame", bb)
         frame.Size = UDim2.new(1, 0, 1, 0)
@@ -8672,7 +8734,7 @@ local _tagOk, _tagErr = pcall(function()
         frame.BackgroundTransparency = look.bgAlpha
         frame.BorderSizePixel = 0
         local fc = Instance.new("UICorner", frame)
-        fc.CornerRadius = UDim.new(0, TagSettings.radius)
+        fc.CornerRadius = UDim.new(0, look.radius)
 
         local border = Instance.new("UIStroke", frame)
         border.Color = look.border
@@ -8695,7 +8757,7 @@ local _tagOk, _tagErr = pcall(function()
 
         local badgeSize = 30
         local badge = Instance.new("Frame", frame)
-        badge.Visible = TagSettings.showBadge
+        badge.Visible = look.showBadge
         badge.Size = UDim2.new(0, badgeSize, 0, badgeSize)
         badge.Position = UDim2.new(0, 4, 0.5, -badgeSize/2)
         badge.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -8712,7 +8774,7 @@ local _tagOk, _tagErr = pcall(function()
         badgeGrad.Rotation = 90
 
         local bs = Instance.new("UIStroke", badge)
-        bs.Color = TagSettings.accent
+        bs.Color = look.accent
         bs.Thickness = 1.5
         bs.Transparency = 0.2
         bs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -8724,7 +8786,7 @@ local _tagOk, _tagErr = pcall(function()
         innerRing.BorderSizePixel = 0
         local irc = Instance.new("UICorner", innerRing); irc.CornerRadius = UDim.new(1, 0)
         local irs = Instance.new("UIStroke", innerRing)
-        irs.Color = TagSettings.accent
+        irs.Color = look.accent
         irs.Thickness = 0.6
         irs.Transparency = 0.65
 
@@ -8738,23 +8800,25 @@ local _tagOk, _tagErr = pcall(function()
         local bic = Instance.new("UICorner", badgeImg); bic.CornerRadius = UDim.new(1, 0)
 
         -- text starts after the badge, or near the edge when it is hidden
-        local padL  = TagSettings.showBadge and 38 or 12
-        local align = TagSettings.centered and Enum.TextXAlignment.Center
-                                            or Enum.TextXAlignment.Left
+        local padL  = look.showBadge and 38 or 12
+        local align = look.centered and Enum.TextXAlignment.Center
+                                     or Enum.TextXAlignment.Left
 
         local title = Instance.new("TextLabel", frame)
         title.Size = UDim2.new(1, -(padL + 8), 0, 16)
         -- with the username hidden there is only one line, so it centres
-        title.Position = UDim2.new(0, padL, 0, TagSettings.showUser and 5 or 9)
+        title.Position = UDim2.new(0, padL, 0, look.showUser and 5 or 9)
         title.BackgroundTransparency = 1
-        title.Text = customTitles[player.UserId] or "SILENCE USER"
-        title.Font = TagSettings.font
-        title.TextSize = TagSettings.titleSize
-        title.TextColor3 = TagSettings.text
+        -- titleFor() existed but nothing called it, so a rank could only ever
+        -- change the colours and never the name written on the card
+        title.Text = titleFor(player)
+        title.Font = look.font
+        title.TextSize = look.titleSize
+        title.TextColor3 = look.text
         title.TextXAlignment = align
         title.TextTruncate = Enum.TextTruncate.AtEnd
-        title.TextStrokeColor3 = TagSettings.outlineCol
-        title.TextStrokeTransparency = TagSettings.outline and 0 or 1
+        title.TextStrokeColor3 = look.outlineCol
+        title.TextStrokeTransparency = look.outline and 0 or 1
 
         local sub = Instance.new("TextLabel", frame)
         sub.Size = UDim2.new(1, -(padL + 8), 0, 13)
@@ -8765,7 +8829,7 @@ local _tagOk, _tagErr = pcall(function()
         sub.TextSize = 9
         sub.TextColor3 = look.sub
         sub.TextXAlignment = align
-        sub.Visible = TagSettings.showUser
+        sub.Visible = look.showUser
 
         -- ranked players carry their own particles too, not just you; the
         -- loop idles cheaply when the look asks for none
@@ -8889,22 +8953,23 @@ local _tagOk, _tagErr = pcall(function()
         local fovTan = math.tan(math.rad(Camera.FieldOfView/2))
         -- computed once per frame, not once per tag
         local now = tick()
-        local pulseAt
-        if TagSettings.pulse then
-            pulseAt = 1 + math.sin(now * 3) * 0.05
-        end
         for player, bb in pairs(activeTags) do
             if bb and bb.Parent and player.Character then
                 local head = player.Character:FindFirstChild("Head")
                 if head then
+                    -- Size belongs to the player being drawn too. Rescaling
+                    -- every tag in the server with YOUR width and YOUR line
+                    -- count undid half of what createTag had just built.
+                    local pLook = lookFor(player)
                     local d = (Camera.CFrame.Position - head.Position).Magnitude
                     local px2stud = d * 2 * fovTan / viewSize.Y
                     bb.SizeOffset = Vector2.new(0, 0)
-                    bb.Size = UDim2.new(TagSettings.width * px2stud, 0,
-                                        tagH() * px2stud, 0)
-                    -- the rank decides whether this one cycles, so the hue is
-                    -- worked out per tag rather than once for the whole frame
-                    local pLook = lookFor(player)
+                    bb.Size = UDim2.new((tonumber(pLook.width) or 170) * px2stud, 0,
+                                        lookH(pLook) * px2stud, 0)
+                    local pulseAt
+                    if pLook.pulse then
+                        pulseAt = 1 + math.sin(now * 3) * 0.05
+                    end
                     local rainbowCol
                     if pLook.rainbow then
                         local hue = (now * (tonumber(pLook.rainbowSpeed) or 0.2)) % 1
@@ -8989,9 +9054,15 @@ local _tagOk, _tagErr = pcall(function()
     end
 
     local function drawFace() end   -- forward declared, defined with the preview
+    -- assigned further down, once tagCode() exists; touched() is up here and
+    -- has to be able to reach it
+    local saveStyleSoon = function() end
     local function touched(note)
         refreshSelfTag()
         drawFace()
+        -- changing your tag is pointless if nobody else ever finds out
+        if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+        saveStyleSoon()
         if statusLbl then statusLbl.Text = note or "applied" end
     end
 
@@ -9164,6 +9235,11 @@ local _tagOk, _tagErr = pcall(function()
         elseif kind == "fx" then        -- a four point spark
             px(3, 22, 9.5, 0, 1); px(22, 3, 0, 9.5, 1)
             px(3, 14, 9.5, 4, 1, 45); px(14, 3, 4, 9.5, 1, 45)
+        elseif kind == "save" then      -- a floppy: four edges, shutter, label
+            px(22, 3, 0,  0, 1); px(22, 3, 0, 19, 1)
+            px(3, 22, 0,  0, 1); px(3, 22, 19, 0, 1)
+            px(9,  6, 6.5, 3, 1)
+            px(12, 5, 5,  13, 1)
         elseif kind == "export" then    -- a box with an arrow leaving it
             px(16, 3, 0, 19, 1); px(3, 8, 0, 12, 1); px(3, 8, 13, 12, 1)
             px(3, 13, 9.5, 1, 1)
@@ -9956,6 +10032,9 @@ local _tagOk, _tagErr = pcall(function()
         if not ok then return "" end
         return "SILTAG1|" .. j
     end
+    -- the sync block lives outside this window's scope and needs to be able
+    -- to ask what your tag currently looks like
+    SilenceAPI._tagCode = tagCode
 
     local function applyTagCode(str)
         local body = tostring(str or ""):match("SILTAG1|(.+)$")
@@ -10013,6 +10092,190 @@ local _tagOk, _tagErr = pcall(function()
         end
         if type(t.ti) == "string" then setMyTitle(t.ti) end
         return true
+    end
+
+    ------------------------------------------------------------ PAGE: SAVES
+    -- Two different things live here. The editor writes the current look to
+    -- disk after every change, so a reload comes back exactly as you left it
+    -- without anyone pressing save. On top of that sit five named slots you
+    -- fill by hand - and a slot is just the SILTAG1 string the EXPORT page
+    -- already produces, so storing one is "keep this string" and restoring
+    -- one is applyTagCode.
+    local STYLE_FILE = "silence_tagstyle.txt"
+    local SLOTS_FILE = "silence_tagslots.json"
+    local styleSlots = {}
+    for i = 1, 5 do styleSlots[i] = { name = "Slot " .. i, code = "" } end
+
+    local function canTagFile()
+        return type(writefile) == "function" and type(readfile) == "function"
+    end
+
+    local function saveStyleSlots()
+        if not canTagFile() then return end
+        local HS = game:GetService("HttpService")
+        pcall(function() writefile(SLOTS_FILE, HS:JSONEncode(styleSlots)) end)
+    end
+
+    if canTagFile() then
+        local HS = game:GetService("HttpService")
+        local okR, content = pcall(function() return readfile(SLOTS_FILE) end)
+        if okR and type(content) == "string" and content ~= "" then
+            local okD, data = pcall(function() return HS:JSONDecode(content) end)
+            if okD and type(data) == "table" then
+                for i = 1, 5 do
+                    local e = data[i]
+                    if type(e) == "table" then
+                        styleSlots[i].name = tostring(e.name or styleSlots[i].name):sub(1, 22)
+                        styleSlots[i].code = tostring(e.code or "")
+                    end
+                end
+            end
+        end
+    end
+
+    -- Debounced: dragging a slider calls touched() every frame, and each one
+    -- would otherwise be its own disk write.
+    do
+        local dirty = false
+        saveStyleSoon = function()
+            if not canTagFile() or dirty then return end
+            dirty = true
+            task.delay(0.8, function()
+                dirty = false
+                pcall(function() writefile(STYLE_FILE, tagCode()) end)
+            end)
+        end
+    end
+
+    -- Restore before anything is drawn with it. The repaint is deferred
+    -- because the widgets showing these values are still being built.
+    if canTagFile() then
+        local okR, content = pcall(function() return readfile(STYLE_FILE) end)
+        if okR and type(content) == "string" and content ~= "" then
+            local okA = pcall(applyTagCode, content)
+            if okA then
+                task.defer(function()
+                    for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+                    pcall(refreshSelfTag)
+                    pcall(drawFace)
+                end)
+            end
+        end
+    end
+
+    do
+        local p = makePage("SAVES")
+        eCaption(p, "SAVED STYLES")
+
+        local function slotRow(i)
+            local r = Instance.new("Frame", p)
+            r.Size = UDim2.new(1, -6, 0, 68)
+            r.BorderSizePixel = 0
+            r.ZIndex = EZ + 2
+            corner(r, 9)
+            SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+            stroke(r, Theme.bg4, 1, 0.5, "bg4")
+
+            local nameBox = Instance.new("TextBox", r)
+            nameBox.Size = UDim2.new(0, 240, 0, 22)
+            nameBox.Position = UDim2.new(0, 14, 0, 10)
+            nameBox.BackgroundTransparency = 1
+            nameBox.Text = styleSlots[i].name
+            nameBox.PlaceholderText = "Slot " .. i
+            nameBox.Font = Enum.Font.GothamBold; nameBox.TextSize = 12
+            nameBox.TextXAlignment = Enum.TextXAlignment.Left
+            nameBox.ClearTextOnFocus = false
+            nameBox.ZIndex = EZ + 3
+            SilenceAPI._theme(nameBox, "TextColor3", "text")
+
+            local state = Instance.new("TextLabel", r)
+            state.Size = UDim2.new(0, 120, 0, 22)
+            state.Position = UDim2.new(1, -134, 0, 10)
+            state.BackgroundTransparency = 1
+            state.Font = Enum.Font.Code; state.TextSize = 10
+            state.TextXAlignment = Enum.TextXAlignment.Right
+            state.ZIndex = EZ + 3
+            SilenceAPI._theme(state, "TextColor3", "textDim")
+
+            local function paint()
+                state.Text = (styleSlots[i].code ~= "" and "saved" or "empty")
+            end
+            paint()
+
+            nameBox.FocusLost:Connect(function()
+                local t = tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""
+                if t == "" then t = "Slot " .. i end
+                styleSlots[i].name = t:sub(1, 22)
+                nameBox.Text = styleSlots[i].name
+                saveStyleSlots()
+                if statusLbl then statusLbl.Text = "renamed" end
+            end)
+
+            local function mini(label, x, w, cb)
+                local b = Instance.new("TextButton", r)
+                b.Size = UDim2.new(0, w, 0, 22)
+                b.Position = UDim2.new(0, x, 0, 38)
+                b.BorderSizePixel = 0
+                b.Text = label
+                b.Font = Enum.Font.GothamBold; b.TextSize = 10
+                b.AutoButtonColor = false
+                b.ZIndex = EZ + 3
+                corner(b, 7)
+                SilenceAPI._theme(b, "BackgroundColor3", "bg3")
+                SilenceAPI._theme(b, "TextColor3", "text")
+                local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+                b.MouseEnter:Connect(function()
+                    TweenService:Create(st, SilenceAPI._twFade,
+                        { Color = Theme.accent, Transparency = 0.2 }):Play()
+                end)
+                b.MouseLeave:Connect(function()
+                    TweenService:Create(st, SilenceAPI._twFade,
+                        { Color = Theme.bg4, Transparency = 0.6 }):Play()
+                end)
+                b.MouseButton1Click:Connect(cb)
+                return b
+            end
+
+            mini("SAVE", 14, 84, function()
+                styleSlots[i].code = tagCode()
+                saveStyleSlots(); paint()
+                if statusLbl then statusLbl.Text = "stored in " .. styleSlots[i].name end
+            end)
+            mini("LOAD", 104, 84, function()
+                if styleSlots[i].code == "" then
+                    if statusLbl then statusLbl.Text = "that slot is empty" end
+                    return
+                end
+                local okA, why = applyTagCode(styleSlots[i].code)
+                if not okA then
+                    if statusLbl then statusLbl.Text = tostring(why) end
+                    return
+                end
+                for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+                touched(styleSlots[i].name .. " loaded")
+            end)
+            mini("CLEAR", 194, 84, function()
+                styleSlots[i].code = ""
+                saveStyleSlots(); paint()
+                if statusLbl then statusLbl.Text = "slot cleared" end
+            end)
+        end
+
+        for i = 1, 5 do slotRow(i) end
+
+        eCaption(p, "HOW THIS WORKS")
+        local hint = Instance.new("TextLabel", p)
+        hint.Size = UDim2.new(1, -6, 0, 72)
+        hint.BackgroundTransparency = 1
+        hint.Text = "  Everything you change is written to disk straight away, so a\n"
+                 .. "  reload brings your tag back on its own - the slots are not\n"
+                 .. "  needed for that. They are for keeping several looks side by\n"
+                 .. "  side. Click a slot name to rename it."
+        hint.Font = Enum.Font.Gotham; hint.TextSize = 10
+        hint.TextXAlignment = Enum.TextXAlignment.Left
+        hint.TextYAlignment = Enum.TextYAlignment.Top
+        hint.ZIndex = EZ + 2
+        SilenceAPI._theme(hint, "TextColor3", "textDim")
     end
 
     do
@@ -10139,7 +10402,8 @@ local _tagOk, _tagErr = pcall(function()
     railTile("STYLE",  "STYLE",  "style",  2)
     railTile("FX",     "FX",     "fx",     3)
     railTile("PRESET", "PRESETS","preset", 4)
-    railTile("EXPORT", "EXPORT", "export", 5)
+    railTile("SAVES",  "SAVES",  "save",   5)
+    railTile("EXPORT", "EXPORT", "export", 6)
     showPage("TEXT")
     drawFace()
 
@@ -10346,6 +10610,29 @@ local _tagOk, _tagErr = pcall(function()
         end
 
         local changed = {}
+
+        -- Somebody else's design, decoded once and kept until the string
+        -- itself changes: re-parsing 20 players' styles every 45 seconds
+        -- would be pure waste.
+        local styles = (type(data.styles) == "table") and data.styles or nil
+        if styles then
+            for uid, entry in pairs(styles) do
+                local n = tonumber(uid)
+                local code = (type(entry) == "table") and entry.code or entry
+                if n and n ~= LocalPlayer.UserId
+                   and type(code) == "string" and code ~= "" then
+                    knownUsers[n] = true
+                    if styleRaw[n] ~= code then
+                        styleRaw[n] = code
+                        local lk, ti = decodeTagCode(code)
+                        styleLook[n]  = lk
+                        styleTitle[n] = (type(entry) == "table" and entry.title) or ti
+                        changed[n] = true
+                    end
+                end
+            end
+        end
+
         for uid, entry in pairs(ranks) do
             local n = tonumber(uid)
             if n and type(entry) == "table" then
@@ -10427,6 +10714,9 @@ local _tagOk, _tagErr = pcall(function()
                     -- the endpoint has us now, so the report can say so
                     -- without waiting a whole poll cycle to hear it back
                     knownUsers[LocalPlayer.UserId] = true
+                    -- a fresh install has never touched the editor, so this
+                    -- is the only chance to publish what it already looks like
+                    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
                     break
                 else
                     joinNote = "try " .. joinTries .. ": " .. tostring(res):sub(1, 55)
@@ -10466,6 +10756,37 @@ local _tagOk, _tagErr = pcall(function()
         end)
     end
 
+    -- Publishing your own design needs no admin key, because it only ever
+    -- writes your own id. Someone could forge another player's style with a
+    -- hand-made request; that is a fair trade against handing the write key
+    -- to everyone who runs the script. Ranks stay key-protected, since those
+    -- are the ones actually worth protecting.
+    --
+    -- Debounced: dragging a slider calls touched() dozens of times a second
+    -- and each one would otherwise be its own request.
+    local stylePending = false
+    function SilenceAPI._pushStyle()
+        if SYNC_BASE == "" or not selfOwns then return end
+        if stylePending then return end
+        stylePending = true
+        task.delay(2.5, function()
+            stylePending = false
+            local code = ""
+            if SilenceAPI._tagCode then
+                local okC, c = pcall(SilenceAPI._tagCode)
+                if okC and type(c) == "string" then code = c end
+            end
+            if code == "" then return end
+            pcall(function()
+                game:HttpGet(SYNC_BASE .. "style?id=" .. tostring(LocalPlayer.UserId)
+                    .. "&name=" .. urlEnc(LocalPlayer.Name)
+                    .. "&code=" .. urlEnc(code)
+                    .. "&title=" .. urlEnc(customTitles[LocalPlayer.UserId] or "")
+                    .. "&t=" .. tostring(math.random(1, 1000000)), true)
+            end)
+        end)
+    end
+
     if SYNC_BASE ~= "" then
         task.spawn(function()
             task.wait(1.5)
@@ -10495,12 +10816,18 @@ local _tagOk, _tagErr = pcall(function()
         for _ in pairs(knownUsers) do known = known + 1 end
         out[#out+1] = "list    : " .. known .. " known Silence account(s)"
         out[#out+1] = ""
-        out[#out+1] = string.format("%-18s %-9s %-5s %s", "PLAYER", "ON LIST", "TAG", "RANK")
+        local styled = 0
+        for _ in pairs(styleLook) do styled = styled + 1 end
+        out[#out+1] = "styles  : " .. styled .. " design(s) pulled"
+        out[#out+1] = ""
+        out[#out+1] = string.format("%-16s %-8s %-4s %-6s %s",
+            "PLAYER", "ON LIST", "TAG", "STYLE", "RANK")
         for _, p in ipairs(Players:GetPlayers()) do
-            out[#out+1] = string.format("%-18s %-9s %-5s %s",
-                tostring(p.Name):sub(1, 18),
+            out[#out+1] = string.format("%-16s %-8s %-4s %-6s %s",
+                tostring(p.Name):sub(1, 16),
                 knownUsers[p.UserId] and "yes" or "no",
                 silenceUsers[p] and "yes" or "no",
+                (p == LocalPlayer and "own") or (styleLook[p.UserId] and "yes" or "no"),
                 playerRank[p.UserId] or "-")
         end
         if passError[LocalPlayer.UserId] then
@@ -11171,6 +11498,22 @@ buttonRow(pLog, "Rescan Silence Users", function()
         notify("Tags", "Rescanning - watch the SILENCE USERS panel above.", 4)
     end
 end)
+buttonRow(pLog, "Test Tag On Someone Else", function()
+    -- Splits the two halves of "I cannot see other people's tags" apart.
+    -- This draws a tag over a random stranger without asking the endpoint
+    -- anything. Works -> rendering is fine and the problem is discovery.
+    -- Does not work -> the endpoint was never the issue.
+    local target
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then target = p break end
+    end
+    if not target then
+        notify("Tags", "Nobody else in this server to test on.", 3)
+    elseif SilenceAPI._forceTag then
+        SilenceAPI._forceTag(target.Name)
+        notify("Tags", "Forced a tag on " .. target.Name .. " - go look at them.", 5)
+    end
+end)
 buttonRow(pLog, "Copy Tag Report", function()
     copyOut(tagView.Text, "Tag report")
 end)
@@ -11534,6 +11877,129 @@ toggleRow(pCfg, "Auto-load on inject", function() return autoLoad end, function(
     autoLoad = v
     notify("Config", v and "Will auto-load next inject" or "Auto-load off", 2)
 end)
+
+sectionLabel(pCfg, "PROFILES")
+do
+    -- Five named profiles in one file. The quick SAVE/LOAD above still owns
+    -- silence_config.json and is what auto-load reads on inject; these sit
+    -- beside it so one setup per game can be kept without overwriting it.
+    local PROF_FILE = "silence_config_slots.json"
+    local profs = {}
+    for i = 1, 5 do profs[i] = { name = "Profile " .. i, data = nil } end
+
+    local function saveProfs()
+        if not canFile() then return end
+        local HS = game:GetService("HttpService")
+        pcall(function() writefile(PROF_FILE, HS:JSONEncode(profs)) end)
+    end
+
+    if canFile() then
+        local HS = game:GetService("HttpService")
+        local okR, content = pcall(function() return readfile(PROF_FILE) end)
+        if okR and type(content) == "string" and content ~= "" then
+            local okD, data = pcall(function() return HS:JSONDecode(content) end)
+            if okD and type(data) == "table" then
+                for i = 1, 5 do
+                    local e = data[i]
+                    if type(e) == "table" then
+                        profs[i].name = tostring(e.name or profs[i].name):sub(1, 22)
+                        if type(e.data) == "table" then profs[i].data = e.data end
+                    end
+                end
+            end
+        end
+    end
+
+    local function profRow(i)
+        local r = Instance.new("Frame", pCfg)
+        r.Size = UDim2.new(1, 0, 0, 68)
+        r.BorderSizePixel = 0
+        corner(r, 9)
+        SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+        stroke(r, Theme.bg4, 1, 0.5, "bg4")
+        SilenceAPI._registerRow(r, "profile " .. i)
+
+        local nameBox = Instance.new("TextBox", r)
+        nameBox.Size = UDim2.new(0, 260, 0, 22)
+        nameBox.Position = UDim2.new(0, 14, 0, 10)
+        nameBox.BackgroundTransparency = 1
+        nameBox.Text = profs[i].name
+        nameBox.PlaceholderText = "Profile " .. i
+        nameBox.Font = Enum.Font.GothamBold; nameBox.TextSize = 13
+        nameBox.TextXAlignment = Enum.TextXAlignment.Left
+        nameBox.ClearTextOnFocus = false
+        SilenceAPI._theme(nameBox, "TextColor3", "text")
+
+        local state = Instance.new("TextLabel", r)
+        state.Size = UDim2.new(0, 140, 0, 22)
+        state.Position = UDim2.new(1, -154, 0, 10)
+        state.BackgroundTransparency = 1
+        state.Font = Enum.Font.Code; state.TextSize = 10
+        state.TextXAlignment = Enum.TextXAlignment.Right
+        SilenceAPI._theme(state, "TextColor3", "textDim")
+
+        local function paint()
+            state.Text = profs[i].data and "saved" or "empty"
+        end
+        paint()
+
+        nameBox.FocusLost:Connect(function()
+            local t = tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""
+            if t == "" then t = "Profile " .. i end
+            profs[i].name = t:sub(1, 22)
+            nameBox.Text = profs[i].name
+            saveProfs()
+        end)
+
+        local function mini(label, x, w, cb)
+            local b = Instance.new("TextButton", r)
+            b.Size = UDim2.new(0, w, 0, 24)
+            b.Position = UDim2.new(0, x, 0, 36)
+            b.BorderSizePixel = 0
+            b.Text = label
+            b.Font = Enum.Font.GothamBold; b.TextSize = 11
+            b.AutoButtonColor = false
+            corner(b, 7)
+            SilenceAPI._theme(b, "BackgroundColor3", "bg3")
+            SilenceAPI._theme(b, "TextColor3", "text")
+            local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+            b.MouseEnter:Connect(function()
+                TweenService:Create(st, SilenceAPI._twFade,
+                    { Color = Theme.accent, Transparency = 0.2 }):Play()
+            end)
+            b.MouseLeave:Connect(function()
+                TweenService:Create(st, SilenceAPI._twFade,
+                    { Color = Theme.bg4, Transparency = 0.6 }):Play()
+            end)
+            b.MouseButton1Click:Connect(cb)
+            return b
+        end
+
+        mini("SAVE", 14, 92, function()
+            if not canFile() then
+                notify("Config", "This executor has no writefile.", 4); return
+            end
+            profs[i].data = buildConfig()
+            saveProfs(); paint()
+            notify("Config", "Stored in " .. profs[i].name, 3)
+        end)
+        mini("LOAD", 112, 92, function()
+            if not profs[i].data then
+                notify("Config", profs[i].name .. " is empty.", 3); return
+            end
+            local okA = pcall(applyConfig, profs[i].data)
+            notify("Config", okA and (profs[i].name .. " restored.")
+                                  or "Restore failed.", 3)
+        end)
+        mini("CLEAR", 210, 92, function()
+            profs[i].data = nil
+            saveProfs(); paint()
+            notify("Config", profs[i].name .. " cleared.", 2)
+        end)
+    end
+
+    for i = 1, 5 do profRow(i) end
+end
 
 sectionLabel(pCfg, "APPEARANCE")
 local _, setScaleBox = inputRow(pCfg, "Panel Scale", State.uiScale or 1, function(v)
