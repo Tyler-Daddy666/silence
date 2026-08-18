@@ -10509,7 +10509,13 @@ local _tagOk, _tagErr = pcall(function()
     -- Everyone then reads that one list and tags whoever is on it. Detection
     -- becomes a lookup instead of a query.
     ----------------------------------------------------------------
-    local knownUsers = {}   -- [userId] = true, straight from the endpoint
+    -- knownUsers is who is running Silence RIGHT NOW and is the only thing
+    -- that may put a tag over somebody's head. allUsers is everyone the
+    -- endpoint has ever seen, name included, and only feeds the admin panel.
+    -- Keeping them apart is what stops a player who used Silence last week
+    -- from being tagged while standing there without it.
+    local knownUsers = {}   -- [userId] = true, online now
+    local allUsers   = {}   -- [userId] = name, ever seen
     local selfOwns  = false
 
     local function tagKnownPlayers()
@@ -10599,15 +10605,49 @@ local _tagOk, _tagErr = pcall(function()
         end
         if data.error then pullNote = "worker said: " .. tostring(data.error) end
 
-        local ranks = (type(data.ranks) == "table") and data.ranks or data
-        local users = (type(data.users) == "table") and data.users or nil
+        local ranks  = (type(data.ranks) == "table") and data.ranks or data
+        local online = (type(data.online) == "table") and data.online
+                       or ((type(data.users) == "table") and data.users or nil)
+        local names  = (type(data.known)  == "table") and data.known or nil
 
-        if users then
-            for _, uid in ipairs(users) do
+        -- Presence is rebuilt from scratch every pull rather than added to.
+        -- The endpoint lets an online key expire a couple of minutes after
+        -- the last heartbeat, so somebody who closed the script drops out of
+        -- this set and loses their tag here. Adding to the old set would have
+        -- meant a tag once earned never went away.
+        if online then
+            local fresh = {}
+            for _, uid in ipairs(online) do
                 local n = tonumber(uid)
-                if n then knownUsers[n] = true end
+                if n then
+                    fresh[n] = true
+                    if allUsers[n] == nil then allUsers[n] = "?" end
+                end
+            end
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and silenceUsers[p] and not fresh[p.UserId] then
+                    silenceUsers[p] = nil
+                    destroyTag(p)
+                end
+            end
+            -- your own tag is yours to decide, never the endpoint's
+            if knownUsers[LocalPlayer.UserId] then fresh[LocalPlayer.UserId] = true end
+            knownUsers = fresh
+        end
+
+        if names then
+            for uid, nm in pairs(names) do
+                local n = tonumber(uid)
+                if n and type(nm) == "string" and nm ~= "" then allUsers[n] = nm end
             end
         end
+        -- anyone standing here is worth a real name in the registry
+        for _, p in ipairs(Players:GetPlayers()) do
+            if allUsers[p.UserId] ~= nil or knownUsers[p.UserId] then
+                allUsers[p.UserId] = p.Name
+            end
+        end
+        allUsers[LocalPlayer.UserId] = LocalPlayer.Name
 
         local changed = {}
 
@@ -10621,7 +10661,8 @@ local _tagOk, _tagErr = pcall(function()
                 local code = (type(entry) == "table") and entry.code or entry
                 if n and n ~= LocalPlayer.UserId
                    and type(code) == "string" and code ~= "" then
-                    knownUsers[n] = true
+                    -- having a saved design says nothing about being online
+                    if allUsers[n] == nil then allUsers[n] = "?" end
                     if styleRaw[n] ~= code then
                         styleRaw[n] = code
                         local lk, ti = decodeTagCode(code)
@@ -10649,7 +10690,8 @@ local _tagOk, _tagErr = pcall(function()
                     -- a stale one kept winning forever.
                     customTitles[n] = nil; changed[n] = true
                 end
-                knownUsers[n] = true   -- anybody with a rank is one of us
+                -- a rank is permanent, presence is not; only the registry
+                if allUsers[n] == nil then allUsers[n] = "?" end
             end
         end
 
@@ -10666,7 +10708,7 @@ local _tagOk, _tagErr = pcall(function()
         -- landed. Ask again instead of sitting invisible until the next
         -- reload: the pull recovers on its own every 45s, the announce used
         -- to get exactly one shot at startup and no second chance.
-        if users and selfOwns and not knownUsers[LocalPlayer.UserId]
+        if online and selfOwns and not knownUsers[LocalPlayer.UserId]
            and SilenceAPI._announceSelf then
             SilenceAPI._announceSelf()
         end
@@ -10678,6 +10720,19 @@ local _tagOk, _tagErr = pcall(function()
                 if p == LocalPlayer then refreshSelfTag() else createTag(p) end
             end
         end
+    end
+
+    -- Keeps this account's online key from expiring. It has to repeat: the
+    -- endpoint drops the key a couple of minutes after the last one, and
+    -- that expiry is exactly what makes your tag vanish for everybody else
+    -- when you close the script.
+    function SilenceAPI._heartbeat()
+        if SYNC_BASE == "" then return end
+        pcall(function()
+            game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
+                .. "&name=" .. urlEnc(LocalPlayer.Name)
+                .. "&t=" .. tostring(math.random(1, 1000000)), true)
+        end)
     end
 
     -- Tell the endpoint this account is running Silence. Owning the pass is
@@ -10729,19 +10784,23 @@ local _tagOk, _tagErr = pcall(function()
         end)
     end
 
+    -- Takes a Player or a bare userId, because the admin panel can now set a
+    -- rank on somebody who is not in this server and has no Player object.
     function SilenceAPI._pushRank(p)
         if not p then return end
+        local uid = (type(p) == "number") and p or p.UserId
+        if not uid then return end
         if SYNC_BASE == "" then notify("Rank", "SYNC_BASE is empty - local only.", 5) return end
         if SYNC_KEY == "" then
             notify("Rank", "No write key. Set getgenv().SilenceSyncKey before running.", 7)
             return
         end
-        local rk = playerRank[p.UserId] or "user"
-        local ti = customTitles[p.UserId] or ""
+        local rk = playerRank[uid] or "user"
+        local ti = customTitles[uid] or ""
         task.spawn(function()
             local okP, res = pcall(function()
                 return game:HttpGet(SYNC_BASE .. "set?key=" .. urlEnc(SYNC_KEY)
-                    .. "&id=" .. tostring(p.UserId)
+                    .. "&id=" .. tostring(uid)
                     .. "&rank=" .. urlEnc(rk)
                     .. "&title=" .. urlEnc(ti)
                     .. "&t=" .. tostring(math.random(1, 1000000)), true)
@@ -10791,6 +10850,7 @@ local _tagOk, _tagErr = pcall(function()
         task.spawn(function()
             task.wait(1.5)
             while true do
+                if selfOwns then pcall(SilenceAPI._heartbeat) end
                 pcall(pullRanks)
                 task.wait(45)
             end
@@ -10841,6 +10901,42 @@ local _tagOk, _tagErr = pcall(function()
             out[#out+1] = "player's passes, so the endpoint is the only route."
         end
         return table.concat(out, "\n")
+    end
+
+    -- One list the admin panel can render straight: everybody the endpoint
+    -- knows, whether or not they are in this server or even online, sorted so
+    -- the people in front of you come first.
+    SilenceAPI._silenceRoster = function()
+        local byId = {}
+        local function slot(uid)
+            if not byId[uid] then
+                byId[uid] = { id = uid, name = allUsers[uid] or "?",
+                              online = knownUsers[uid] and true or false,
+                              here = false }
+            end
+            return byId[uid]
+        end
+        for uid in pairs(allUsers)   do slot(uid) end
+        for uid in pairs(knownUsers) do slot(uid).online = true end
+        for uid in pairs(playerRank) do slot(uid) end
+        for uid in pairs(customTitles) do slot(uid) end
+        local me = slot(LocalPlayer.UserId)
+        me.name, me.online, me.here = LocalPlayer.Name, true, true
+        me.player = LocalPlayer
+
+        for _, p in ipairs(Players:GetPlayers()) do
+            local e = byId[p.UserId]
+            if e then e.name, e.player, e.here = p.Name, p, true end
+        end
+
+        local out = {}
+        for _, e in pairs(byId) do out[#out+1] = e end
+        table.sort(out, function(a, b)
+            if a.here   ~= b.here   then return a.here   end
+            if a.online ~= b.online then return a.online end
+            return tostring(a.name):lower() < tostring(b.name):lower()
+        end)
+        return out
     end
 
     SilenceAPI._rescanTags = function()
@@ -10988,8 +11084,8 @@ local _tagOk, _tagErr = pcall(function()
 
     AdminPanel = Instance.new("Frame", Gui)
     AdminPanel.Name = "AdminPanel"
-    AdminPanel.Size = UDim2.new(0, 580, 0, 520)
-    AdminPanel.Position = UDim2.new(0.5, -290, 0.5, -260)
+    AdminPanel.Size = UDim2.new(0, 820, 0, 640)
+    AdminPanel.Position = UDim2.new(0.5, -410, 0.5, -320)
     AdminPanel.BackgroundColor3 = Theme.bg
     AdminPanel.BorderSizePixel = 0
     AdminPanel.Visible = false
@@ -11040,9 +11136,45 @@ local _tagOk, _tagErr = pcall(function()
     apClose.MouseButton1Click:Connect(function() AdminPanel.Visible = false end)
     makeHeaderDrag(AdminPanel, apHdr)
 
+    -- Search and a live count. With every account the endpoint has ever seen
+    -- in one list this stops being optional.
+    local apSearchRow = Instance.new("Frame", AdminPanel)
+    apSearchRow.Size = UDim2.new(1, -16, 0, 30)
+    apSearchRow.Position = UDim2.new(0, 8, 0, 44)
+    apSearchRow.BackgroundColor3 = Theme.bg2
+    apSearchRow.BorderSizePixel = 0
+    apSearchRow.ZIndex = 181
+    corner(apSearchRow, 8)
+    stroke(apSearchRow, Theme.bg4, 1, 0.5)
+
+    local apSearch = Instance.new("TextBox", apSearchRow)
+    apSearch.Size = UDim2.new(1, -190, 1, 0)
+    apSearch.Position = UDim2.new(0, 12, 0, 0)
+    apSearch.BackgroundTransparency = 1
+    apSearch.Text = ""
+    apSearch.PlaceholderText = "search name or user id"
+    apSearch.PlaceholderColor3 = Theme.textDim
+    apSearch.Font = Enum.Font.Gotham
+    apSearch.TextSize = 12
+    apSearch.TextColor3 = Theme.text
+    apSearch.TextXAlignment = Enum.TextXAlignment.Left
+    apSearch.ClearTextOnFocus = false
+    apSearch.ZIndex = 182
+
+    local apCount = Instance.new("TextLabel", apSearchRow)
+    apCount.Size = UDim2.new(0, 170, 1, 0)
+    apCount.Position = UDim2.new(1, -178, 0, 0)
+    apCount.BackgroundTransparency = 1
+    apCount.Text = ""
+    apCount.Font = Enum.Font.Code
+    apCount.TextSize = 10
+    apCount.TextColor3 = Theme.textDim
+    apCount.TextXAlignment = Enum.TextXAlignment.Right
+    apCount.ZIndex = 182
+
     local apList = Instance.new("ScrollingFrame", AdminPanel)
-    apList.Size = UDim2.new(1, -16, 1, -50)
-    apList.Position = UDim2.new(0, 8, 0, 44)
+    apList.Size = UDim2.new(1, -16, 1, -88)
+    apList.Position = UDim2.new(0, 8, 0, 82)
     apList.BackgroundTransparency = 1
     apList.BorderSizePixel = 0
     apList.ScrollBarThickness = 4
@@ -11056,10 +11188,18 @@ local _tagOk, _tagErr = pcall(function()
 
     local adminRowSync = {}
     SilenceAPI._refreshAdminTitleFor = function(plr)
-        local fn = adminRowSync[plr]; if fn then fn() end
+        local uid = (type(plr) == "number") and plr or (plr and plr.UserId)
+        local fn = uid and adminRowSync[uid]; if fn then fn() end
     end
 
-    local function buildRow(p)
+    -- Takes a roster entry rather than a Player: most accounts in this list
+    -- are not in the server, so there is no Player object to hand it. `plr`
+    -- is nil for those, and every use of it below is guarded.
+    local function buildRow(e)
+        local uid = e.id
+        local plr = e.player
+        local nm  = e.name or "?"
+
         local row = Instance.new("Frame", apList)
         row.Size = UDim2.new(1, 0, 0, 132)
         row.BackgroundColor3 = Theme.bg2
@@ -11068,15 +11208,31 @@ local _tagOk, _tagErr = pcall(function()
         corner(row, 6)
 
         local nameLbl = Instance.new("TextLabel", row)
-        nameLbl.Size = UDim2.new(1, -16, 0, 18)
+        nameLbl.Size = UDim2.new(1, -180, 0, 18)
         nameLbl.Position = UDim2.new(0, 10, 0, 6)
         nameLbl.BackgroundTransparency = 1
-        nameLbl.Text = p.DisplayName .. "  (@" .. p.Name .. ")"
+        nameLbl.Text = (plr and (plr.DisplayName .. "  (@" .. plr.Name .. ")"))
+                       or (nm .. "   #" .. tostring(uid))
         nameLbl.Font = Enum.Font.GothamBold
         nameLbl.TextSize = 12
         nameLbl.TextColor3 = Theme.text
         nameLbl.TextXAlignment = Enum.TextXAlignment.Left
         nameLbl.ZIndex = 182
+
+        -- three states worth telling apart: standing here, running Silence
+        -- somewhere else, or not running it at all
+        local where = Instance.new("TextLabel", row)
+        where.Size = UDim2.new(0, 160, 0, 18)
+        where.Position = UDim2.new(1, -170, 0, 6)
+        where.BackgroundTransparency = 1
+        where.Text = e.here and "IN THIS SERVER"
+                     or (e.online and "ONLINE ELSEWHERE" or "OFFLINE")
+        where.Font = Enum.Font.GothamBold
+        where.TextSize = 9
+        where.TextColor3 = e.here and Theme.accent
+                           or (e.online and Theme.text or Theme.textDim)
+        where.TextXAlignment = Enum.TextXAlignment.Right
+        where.ZIndex = 182
 
         local titleBox = Instance.new("TextBox", row)
         titleBox.Size = UDim2.new(0.55, 0, 0, 26)
@@ -11086,7 +11242,7 @@ local _tagOk, _tagErr = pcall(function()
         titleBox.Font = Enum.Font.Code
         titleBox.TextSize = 12
         titleBox.TextColor3 = Theme.text
-        titleBox.Text = customTitles[p.UserId] or ""
+        titleBox.Text = customTitles[uid] or ""
         titleBox.PlaceholderText = "custom title"
         titleBox.PlaceholderColor3 = Theme.textDim
         titleBox.ClearTextOnFocus = false
@@ -11119,7 +11275,8 @@ local _tagOk, _tagErr = pcall(function()
         corner(tagBtn, 4); stroke(tagBtn, Theme.accent, 1, 0.5)
 
         local function refreshTagBtn()
-            tagBtn.Text = silenceUsers[p] and "TAG: ON" or "TAG: OFF"
+            if not plr then tagBtn.Text = "NOT HERE"; return end
+            tagBtn.Text = silenceUsers[plr] and "TAG: ON" or "TAG: OFF"
         end
         refreshTagBtn()
 
@@ -11166,24 +11323,26 @@ local _tagOk, _tagErr = pcall(function()
             cst.Color = accent; cst.Thickness = 1; cst.Transparency = 0.75
 
             local function paint()
-                local on = ((playerRank[p.UserId] or "user") == r.key)
+                local on = ((playerRank[uid] or "user") == r.key)
                 c.BackgroundColor3 = on and accent or Theme.bg
                 c.TextColor3       = on and Theme.bg or accent
                 cst.Transparency   = on and 0 or 0.75
             end
             c.MouseButton1Click:Connect(function()
-                playerRank[p.UserId] = (r.key ~= "user") and r.key or nil
+                playerRank[uid] = (r.key ~= "user") and r.key or nil
                 saveRanks()
                 -- an explicit custom title would hide the rank's own title,
                 -- so picking a rank clears it and the rank name takes over
-                customTitles[p.UserId] = nil
+                customTitles[uid] = nil
                 saveCustomTitles()
                 titleBox.Text = ""
-                if not silenceUsers[p] then tagUser(p) else refreshPlayerTag(p) end
-                if p == LocalPlayer then refreshSelfTag(); syncEditorTitle() end
+                if plr then
+                    if not silenceUsers[plr] then tagUser(plr) else refreshPlayerTag(plr) end
+                end
+                if plr == LocalPlayer then refreshSelfTag(); syncEditorTitle() end
                 for _, fn in ipairs(chipPaint) do fn() end
-                if SilenceAPI._pushRank then SilenceAPI._pushRank(p) end
-                notify("Admin", p.Name .. " -> " .. r.title, 3)
+                if SilenceAPI._pushRank then SilenceAPI._pushRank(uid) end
+                notify("Admin", nm .. " -> " .. r.title, 3)
             end)
             chipPaint[#chipPaint+1] = paint
             paint()
@@ -11191,31 +11350,30 @@ local _tagOk, _tagErr = pcall(function()
 
         applyBtn.MouseButton1Click:Connect(function()
             local txt = titleBox.Text
-            if txt == "" then
-                customTitles[p.UserId] = nil
-            else
-                customTitles[p.UserId] = txt
-            end
+            customTitles[uid] = (txt ~= "" and txt) or nil
             saveCustomTitles()
-            if silenceUsers[p] then refreshPlayerTag(p) end
-            if p == LocalPlayer then
+            if plr and silenceUsers[plr] then refreshPlayerTag(plr) end
+            if plr == LocalPlayer then
                 refreshSelfTag()
                 syncEditorTitle()
             end
-            if SilenceAPI._pushRank then SilenceAPI._pushRank(p) end
-            notify("Admin", "Title set for "..p.Name, 2)
+            if SilenceAPI._pushRank then SilenceAPI._pushRank(uid) end
+            notify("Admin", "Title set for " .. nm, 2)
         end)
 
-        adminRowSync[p] = function()
-            titleBox.Text = customTitles[p.UserId] or ""
+        adminRowSync[uid] = function()
+            titleBox.Text = customTitles[uid] or ""
         end
 
         tagBtn.MouseButton1Click:Connect(function()
-            if silenceUsers[p] then
-                silenceUsers[p] = nil
-                destroyTag(p)
+            if not plr then
+                notify("Admin", nm .. " is not in this server.", 3); return
+            end
+            if silenceUsers[plr] then
+                silenceUsers[plr] = nil
+                destroyTag(plr)
             else
-                tagUser(p)
+                tagUser(plr)
             end
             refreshTagBtn()
         end)
@@ -11223,44 +11381,99 @@ local _tagOk, _tagErr = pcall(function()
         return row
     end
 
+    -- Everybody the endpoint knows, grouped by rank, filtered by the search
+    -- box. The old version asked Roblox which players owned the pass - which
+    -- a client may only ask about itself - so in practice this list never
+    -- contained anyone but you.
     local function rebuildList()
         for _, c in ipairs(apList:GetChildren()) do
             if c:IsA("Frame") or c:IsA("TextLabel") then c:Destroy() end
         end
 
-        local status = Instance.new("TextLabel", apList)
-        status.Size = UDim2.new(1, 0, 0, 24)
-        status.BackgroundTransparency = 1
-        status.Text = "Scanning for Silence users..."
-        status.Font = Enum.Font.GothamMedium
-        status.TextSize = 11
-        status.TextColor3 = Theme.textDim
-        status.LayoutOrder = -1
+        local roster = {}
+        if SilenceAPI._silenceRoster then
+            local okR, r = pcall(SilenceAPI._silenceRoster)
+            if okR and type(r) == "table" then roster = r end
+        end
 
-        task.spawn(function()
-            local players = Players:GetPlayers()
-            local pending = 0
-            local found = 0
-            for _, p in ipairs(players) do
-                pending = pending + 1
-                task.spawn(function()
-                    local owns = (p == LocalPlayer) or ownsScriptPass(p)
-                    if owns and AdminPanel.Visible then
-                        buildRow(p)
-                        found = found + 1
-                    end
-                    pending = pending - 1
-                end)
+        local q = tostring(apSearch.Text):lower():match("^%s*(.-)%s*$") or ""
+        local shown, order = 0, 0
+
+        local function header(text, n)
+            order = order + 1
+            local h = Instance.new("TextLabel", apList)
+            h.Size = UDim2.new(1, 0, 0, 24)
+            h.BackgroundTransparency = 1
+            h.Text = "  " .. text .. "   (" .. n .. ")"
+            h.Font = Enum.Font.GothamBold
+            h.TextSize = 10
+            h.TextColor3 = Theme.accent2 or Theme.textDim
+            h.TextXAlignment = Enum.TextXAlignment.Left
+            h.LayoutOrder = order
+            h.ZIndex = 182
+        end
+
+        -- highest rank first, plain users last
+        local groups, groupOf = {}, {}
+        for i = #RANKS, 1, -1 do
+            groups[#groups+1] = RANKS[i]
+            groupOf[RANKS[i].key] = {}
+        end
+
+        for _, e in ipairs(roster) do
+            local hit = (q == "")
+                or (tostring(e.name):lower():find(q, 1, true) ~= nil)
+                or (tostring(e.id):find(q, 1, true) ~= nil)
+            if hit then
+                local key = playerRank[e.id] or "user"
+                if not groupOf[key] then key = "user" end
+                table.insert(groupOf[key], e)
+                shown = shown + 1
             end
-            while pending > 0 do task.wait(0.1) end
-            if not AdminPanel.Visible then return end
-            if found == 0 then
-                status.Text = (SCRIPT_PASS_ID == 0)
-                    and "No GamePass configured. Set SCRIPT_PASS_ID."
-                    or "No other Silence users in this server."
-            else
-                if status and status.Parent then status:Destroy() end
+        end
+
+        for _, r in ipairs(groups) do
+            local list = groupOf[r.key]
+            if #list > 0 then
+                header(r.title, #list)
+                for _, e in ipairs(list) do
+                    order = order + 1
+                    local row = buildRow(e)
+                    if row then row.LayoutOrder = order end
+                end
             end
+        end
+
+        apCount.Text = (q ~= "") and (shown .. " of " .. #roster)
+                       or (#roster .. " account(s)")
+
+        if shown == 0 then
+            local status = Instance.new("TextLabel", apList)
+            status.Size = UDim2.new(1, 0, 0, 48)
+            status.BackgroundTransparency = 1
+            status.Text = (q ~= "") and "  Nothing matches that search."
+                or ("  No Silence accounts known yet." .. "\n"
+                    .. "  They show up here once they have run the script.")
+            status.Font = Enum.Font.GothamMedium
+            status.TextSize = 11
+            status.TextColor3 = Theme.textDim
+            status.TextXAlignment = Enum.TextXAlignment.Left
+            status.TextYAlignment = Enum.TextYAlignment.Top
+            status.LayoutOrder = 0
+            status.ZIndex = 182
+        end
+    end
+
+    -- typing rebuilds the list, but not once per keystroke
+    do
+        local pending = false
+        apSearch:GetPropertyChangedSignal("Text"):Connect(function()
+            if pending then return end
+            pending = true
+            task.delay(0.15, function()
+                pending = false
+                if AdminPanel.Visible then rebuildList() end
+            end)
         end)
     end
 
