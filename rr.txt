@@ -371,7 +371,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v22"
+SilenceAPI._version = "v25"
 SilenceAPI._built   = "2026-08-18"
 print("[Silence] env initialized, building GUI...")
 
@@ -523,7 +523,8 @@ local State = {
     nametagsOn = true,
     espTeamCheck = false,
     vcBypass = false,         -- auto voice reconnect toggle (Misc tab)
-    vcSelfMuted = false,      -- local microphone mute (Misc tab)
+    vcSelfMuted = false,      -- local microphone mute (Voice tab)
+    vcAutoMute = false,       -- cut the microphone on every server join
     acBlocked = false,        -- true after a scan finds critical anti-cheat hits
     acRiskyOverride = false,  -- user-set: ignore acBlocked and use features anyway
     acHits = 0,               -- last scan hit count (for banner display)
@@ -7801,7 +7802,15 @@ do
     -- which case you are in. Leave it on while muted and read the number.
     sectionLabel(pVcBan, "FORCE UNMUTE")
 
-    local forceOn, forceHits, forceStart = false, 0, 0
+    -- Two counters, not one. The single counter this replaces could not tell
+    -- "something keeps re-muting me" apart from "my unmute call does nothing
+    -- at all", and those look identical from outside: in both cases
+    -- IsPublishPaused stays true and the number climbs once per loop.
+    --   STUCK   - PublishPause(false) was called and the flag did not move,
+    --             so there is no live session to unmute and this is pointless
+    --   RE-MUTE - the flag DID go false, and something set it back after,
+    --             which is a real fight this loop can win
+    local forceOn, forceStuck, forceRemute, forceStart = false, 0, 0, 0
     local forceLbl = Instance.new("TextLabel", pVcBan)
     forceLbl.Size = UDim2.new(1, 0, 0, 64)
     forceLbl.BackgroundTransparency = 1
@@ -7815,14 +7824,19 @@ do
     local function forcePaint()
         if not forceOn then forceLbl.Text = "  off" return end
         local secs = math.max(1, math.floor(tick() - forceStart))
-        if forceHits == 0 then
-            forceLbl.Text = "  running " .. secs .. "s\n"
-                .. "  0 forced unmutes so far\n"
-                .. "  nothing is muting you from the client side"
+        local head = "  running " .. secs .. "s   stuck " .. forceStuck
+                     .. "   re-muted " .. forceRemute .. "\n"
+        if forceRemute > 0 then
+            forceLbl.Text = head
+                .. "  SOMETHING KEEPS MUTING YOU and this undoes it.\n"
+                .. "  Ask someone whether they hear you now."
+        elseif forceStuck > 0 then
+            forceLbl.Text = head
+                .. "  Unmuting has NO EFFECT - the flag will not move.\n"
+                .. "  There is no live voice session to unmute. Nothing to win here."
         else
-            forceLbl.Text = "  running " .. secs .. "s\n"
-                .. "  " .. forceHits .. " forced unmutes\n"
-                .. "  SOMETHING KEEPS MUTING YOU - and this is undoing it"
+            forceLbl.Text = head
+                .. "  You are not muted from the client side."
         end
     end
 
@@ -7831,15 +7845,22 @@ do
         forcePaint()
     end
     local function forceStartFn()
-        forceOn, forceHits, forceStart = true, 0, tick()
+        forceOn, forceStuck, forceRemute, forceStart = true, 0, 0, tick()
         forcePaint()
         task.spawn(function()
             while forceOn do
                 -- never fight a mute the user asked for
                 if not State.vcSelfMuted and isSelfMuted() then
-                    if muteSelf(false) then
-                        forceHits = forceHits + 1
-                        print("[Silence] forced unmute #" .. forceHits)
+                    muteSelf(false)
+                    -- Read straight back. This is the whole measurement: a
+                    -- call that changes nothing leaves the flag set, a call
+                    -- that worked clears it and only something ELSE can put
+                    -- it back before the next pass.
+                    if isSelfMuted() then
+                        forceStuck = forceStuck + 1
+                    else
+                        forceRemute = forceRemute + 1
+                        print("[Silence] unmute took effect, was re-muted #" .. forceRemute)
                     end
                 end
                 forcePaint()
@@ -7855,10 +7876,10 @@ do
     local forceHint = Instance.new("TextLabel", pVcBan)
     forceHint.Size = UDim2.new(1, 0, 0, 60)
     forceHint.BackgroundTransparency = 1
-    forceHint.Text = "  Turn this on while you are muted, then ask someone if they\n"
-                  .. "  hear you. Counter climbing + they hear you = it worked.\n"
-                  .. "  Counter at zero + they still cannot hear you = the block is\n"
-                  .. "  on Roblox's servers and no script gets past it."
+    forceHint.Text = "  stuck  = the unmute call does nothing, there is no session\n"
+                  .. "  re-muted = it worked and something put it back - winnable\n"
+                  .. "  Ground truth is still a person telling you they hear you.\n"
+                  .. "  Numbers alone prove the flag moved, not that audio arrives."
     forceHint.Font = Enum.Font.Gotham
     forceHint.TextSize = 10
     forceHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -8021,12 +8042,43 @@ do
         end)
 
     -- The one thing in this whole tab that genuinely reduces your chance of
-    -- being banned: audio that is never sent cannot be reported.
-    buttonRow(pVcMute, "PANIC MUTE  (cut my microphone now)", function()
+    -- being banned: audio that is never sent cannot be reported. Bindable to
+    -- a key from the Hotkeys tab, because reaching for a menu is exactly the
+    -- three seconds in which the thing you did not want recorded gets sent.
+    function SilenceAPI._vcPanicMute()
         local ok = muteSelf(true)
         State.vcSelfMuted = true
         for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-        notify("Voice", ok and "Microphone cut." or "No voice API answered.", 4)
+        notify("Voice", ok and "MIC CUT." or "No voice API answered.", 4)
+    end
+    function SilenceAPI._vcToggleMic()
+        local want = not isSelfMuted()
+        local ok = muteSelf(want)
+        State.vcSelfMuted = want
+        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+        notify("Voice", ok and (want and "MIC CUT." or "Mic live.")
+                          or "No voice API answered.", 3)
+    end
+
+    buttonRow(pVcMute, "PANIC MUTE  (cut my microphone now)", SilenceAPI._vcPanicMute)
+
+    toggleRow(pVcMute, "Cut Microphone On Every Server Join",
+        function() return State.vcAutoMute end,
+        function(v)
+            State.vcAutoMute = v
+            notify("Voice", v and "Your mic will start muted from now on."
+                              or "Mic will start live.", 4)
+        end)
+
+    -- runs once per injection, which is once per server
+    task.spawn(function()
+        task.wait(4)
+        if State.vcAutoMute then
+            muteSelf(true)
+            State.vcSelfMuted = true
+            for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+            notify("Voice", "Microphone muted on join.", 4)
+        end
     end)
 
     sectionLabel(pVcMute, "OTHER PLAYERS")
@@ -8685,7 +8737,13 @@ local BINDABLE = {
       set=function(v) SilenceAPI._setItemEsp(v) end },
     { id="autoInteract", label="Auto-Interact",  get=function() return State.autoInteract end,
       set=function(v) SilenceAPI._setAutoInteract(v) end },
+    { id="vcAutoMute", label="Mute Mic On Join",  get=function() return State.vcAutoMute end,
+      set=function(v) State.vcAutoMute = v end },
     -- one-shot actions: no state to flip, so they carry .action instead
+    { id="vcPanic", label="PANIC MUTE (cut mic)",
+      action=function() if SilenceAPI._vcPanicMute then SilenceAPI._vcPanicMute() end end },
+    { id="vcMicToggle", label="Toggle My Microphone",
+      action=function() if SilenceAPI._vcToggleMic then SilenceAPI._vcToggleMic() end end },
     { id="wpSave",  label="Save Waypoint Here",
       action=function() SilenceAPI._saveWaypoint("")
                         if SilenceAPI._refreshWaypoints then SilenceAPI._refreshWaypoints() end end },
@@ -9273,6 +9331,13 @@ local _tagOk, _tagErr = pcall(function()
         centered  = false,                 -- centre the text instead of left
         offsetY   = 2.8,                   -- studs above the head
         maxDist   = 1000,                  -- studs before it stops drawing
+        -- How much the card fights perspective. 1 pins it to a constant
+        -- number of pixels no matter how far away the player is, which is
+        -- what it used to do unconditionally - and next to a character that
+        -- has shrunk to nothing, a full size card looks enormous. 0 lets it
+        -- shrink like any object in the world, which is unreadable at range.
+        -- 0.5 keeps it legible without taking over the screen.
+        distGrow  = 0.5,
         partRate  = 1,                     -- particle spawn multiplier
         pulse     = false,                 -- slow breathing scale
     }
@@ -9486,6 +9551,7 @@ local _tagOk, _tagErr = pcall(function()
         lk.glow         = tonumber(t.gl); lk.gradRot = tonumber(t.gr)
         lk.rainbowSpeed = tonumber(t.rs); lk.offsetY = tonumber(t.oy)
         lk.maxDist      = tonumber(t.md); lk.partRate = tonumber(t.pr)
+        lk.distGrow     = tonumber(t.dg)
         if type(t.su) == "boolean" then lk.showUser  = t.su end
         if type(t.bd) == "boolean" then lk.showBadge = t.bd end
         if type(t.ce) == "boolean" then lk.centered  = t.ce end
@@ -9888,7 +9954,20 @@ local _tagOk, _tagErr = pcall(function()
                     -- count undid half of what createTag had just built.
                     local pLook = lookFor(player)
                     local d = (Camera.CFrame.Position - head.Position).Magnitude
-                    local px2stud = d * 2 * fovTan / viewSize.Y
+                    -- Sizing off the real distance gives a constant pixel
+                    -- size at any range. Sizing off a compressed distance
+                    -- gives partial compensation instead: close up it is
+                    -- still pinned, and past LOCK studs it falls off as
+                    -- (LOCK/d)^(1-distGrow) rather than not at all.
+                    local LOCK = 24
+                    local g = tonumber(pLook.distGrow)
+                    if g == nil then g = 0.5 end
+                    g = math.clamp(g, 0, 1)
+                    local dEff = d
+                    if d > LOCK and g < 1 then
+                        dEff = LOCK * (d / LOCK) ^ g
+                    end
+                    local px2stud = dEff * 2 * fovTan / viewSize.Y
                     bb.SizeOffset = Vector2.new(0, 0)
                     bb.Size = UDim2.new((tonumber(pLook.width) or 170) * px2stud, 0,
                                         lookH(pLook) * px2stud, 0)
@@ -10712,6 +10791,11 @@ local _tagOk, _tagErr = pcall(function()
         eSlider(p, "Draw distance", 100, 3000,
             function() return TagSettings.maxDist end,
             function(v) TagSettings.maxDist = v; touched("distance " .. v) end, true)
+        -- 1.00 = same pixel size at any range (what it did before, and why a
+        -- distant card looked huge). 0.00 = shrinks away like a world object.
+        eSlider(p, "Keep size at distance", 0, 1,
+            function() return TagSettings.distGrow end,
+            function(v) TagSettings.distGrow = v; touched("distance scaling") end)
     end
 
     ------------------------------------------------------------ PAGE: PRESETS
@@ -10918,6 +11002,7 @@ local _tagOk, _tagErr = pcall(function()
             TagSettings.rainbowSpeed = 0.2
             TagSettings.offsetY   = 2.8
             TagSettings.maxDist   = 1000
+            TagSettings.distGrow  = 0.5
             TagSettings.partRate  = 1
             TagSettings.pulse     = false
             for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
@@ -10949,6 +11034,7 @@ local _tagOk, _tagErr = pcall(function()
             gr = TagSettings.gradRot,   ol = TagSettings.outline,
             rb = TagSettings.rainbow,   rs = TagSettings.rainbowSpeed,
             oy = TagSettings.offsetY,   md = TagSettings.maxDist,
+            dg = TagSettings.distGrow,
             pr = TagSettings.partRate,  pu = TagSettings.pulse,
             ti = myTitle(),
         }
@@ -10997,6 +11083,7 @@ local _tagOk, _tagErr = pcall(function()
         TagSettings.rainbowSpeed = num(t.rs, TagSettings.rainbowSpeed)
         TagSettings.offsetY    = num(t.oy,  TagSettings.offsetY)
         TagSettings.maxDist    = num(t.md,  TagSettings.maxDist)
+        TagSettings.distGrow   = num(t.dg,  TagSettings.distGrow)
         TagSettings.partRate   = num(t.pr,  TagSettings.partRate)
         TagSettings.showUser   = boo(t.su,  TagSettings.showUser)
         TagSettings.showBadge  = boo(t.bd,  TagSettings.showBadge)
@@ -12871,6 +12958,7 @@ local APPLY = {
     headless     = function(v) SilenceAPI._setHeadless(v) end,
     accessoriesOn= function(v) SilenceAPI._setAccessories(v) end,
     vcBypass     = setVcBypass,
+    vcAutoMute   = function(v) State.vcAutoMute = v end,
     playerLog    = function(v) if SilenceAPI._setPlayerLog then SilenceAPI._setPlayerLog(v) end end,
     autoInteract = function(v) SilenceAPI._setAutoInteract(v) end,
     autoClick    = function(v) SilenceAPI._setAutoClick(v) end,
