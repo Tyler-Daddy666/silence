@@ -363,6 +363,16 @@ pcall(function()
 end)
 local SilenceAPI = {}
 env.__SilenceAdminPanel = SilenceAPI
+
+-- The version belongs to THIS FILE, not to the ?v= in the loader URL. The
+-- URL number only busts a cache: load ?v=99 after forgetting to upload and
+-- you still get the old script, with no way to tell. What the panel shows
+-- comes from the source that is actually running, so a mismatch between this
+-- and what you expect means the upload did not happen.
+-- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
+-- Luau's 200 locals.
+SilenceAPI._version = "v20"
+SilenceAPI._built   = "2026-08-18"
 print("[Silence] env initialized, building GUI...")
 
 -- DIAGNOSTIC: catch any uncaught error and display in StarterGui so the
@@ -4505,12 +4515,27 @@ wm.Text="SILENCE"; wm.Font=Enum.Font.GothamBlack; wm.TextSize=20
 wm.TextXAlignment=Enum.TextXAlignment.Left; wm.ZIndex=7
 SilenceAPI._theme(wm,"TextColor3","text")
 
+-- sits right after the wordmark, small enough to ignore and always there
+do
+    local vb=Instance.new("TextLabel", Header)
+    vb.Size=UDim2.new(0,54,0,16); vb.Position=UDim2.new(0,wm.TextSize*5.2,0.5,-15)
+    vb.BackgroundTransparency=0.55
+    vb.Text=SilenceAPI._version
+    vb.Font=Enum.Font.Code; vb.TextSize=10
+    vb.TextXAlignment=Enum.TextXAlignment.Center
+    vb.ZIndex=7
+    corner(vb,5)
+    SilenceAPI._theme(vb,"BackgroundColor3","bg3")
+    SilenceAPI._theme(vb,"TextColor3","textDim")
+    table.insert(SilenceAPI._hdrWide, vb)
+end
+
 -- doubles as the page subtitle: selectTab writes the active tab's one-line
 -- description in here, which is why the pages themselves need no title bar
 local sub=Instance.new("TextLabel", Header)
 sub.Size=UDim2.new(0,222,0,14); sub.Position=UDim2.new(0,71,0.5,5)
 sub.BackgroundTransparency=1
-sub.Text="ADMIN PANEL  /  CLIENT-SIDE"
+sub.Text="ADMIN PANEL  /  CLIENT-SIDE  /  " .. SilenceAPI._version
 sub.Font=Enum.Font.GothamMedium; sub.TextSize=10
 sub.TextXAlignment=Enum.TextXAlignment.Left; sub.ZIndex=7
 sub.TextTruncate=Enum.TextTruncate.AtEnd
@@ -7750,6 +7775,196 @@ do
         end)
     end)
 
+    ------------------------------------------------------------ FORCE UNMUTE
+    -- There are two ways Roblox could be enforcing a short voice mute, and
+    -- they need completely different answers:
+    --
+    --   CLIENT SIDE - it tells your client to pause publishing and trusts it
+    --   to obey. Then setting PublishPause(false) back defeats it outright,
+    --   and this is very likely what the scripts that "work" are doing.
+    --
+    --   SERVER SIDE - the voice backend refuses to relay your stream. Then
+    --   nothing here helps, because your client is not the one saying no.
+    --
+    -- IsPublishPaused() tells the two apart. If something keeps flipping it
+    -- back to true after this sets it false, the mute is being pushed to your
+    -- client and the counter below will climb. If the counter stays at zero
+    -- and people still cannot hear you, it is server side and no script wins.
+    --
+    -- So this is the fix for one case and the measurement that identifies
+    -- which case you are in. Leave it on while muted and read the number.
+    sectionLabel(pVcBan, "FORCE UNMUTE")
+
+    local forceOn, forceHits, forceStart = false, 0, 0
+    local forceLbl = Instance.new("TextLabel", pVcBan)
+    forceLbl.Size = UDim2.new(1, 0, 0, 64)
+    forceLbl.BackgroundTransparency = 1
+    forceLbl.Text = "  off"
+    forceLbl.Font = Enum.Font.Code
+    forceLbl.TextSize = 11
+    forceLbl.TextXAlignment = Enum.TextXAlignment.Left
+    forceLbl.TextYAlignment = Enum.TextYAlignment.Top
+    SilenceAPI._theme(forceLbl, "TextColor3", "textDim")
+
+    local function forcePaint()
+        if not forceOn then forceLbl.Text = "  off" return end
+        local secs = math.max(1, math.floor(tick() - forceStart))
+        if forceHits == 0 then
+            forceLbl.Text = "  running " .. secs .. "s\n"
+                .. "  0 forced unmutes so far\n"
+                .. "  nothing is muting you from the client side"
+        else
+            forceLbl.Text = "  running " .. secs .. "s\n"
+                .. "  " .. forceHits .. " forced unmutes\n"
+                .. "  SOMETHING KEEPS MUTING YOU - and this is undoing it"
+        end
+    end
+
+    local function forceStop()
+        forceOn = false
+        forcePaint()
+    end
+    local function forceStartFn()
+        forceOn, forceHits, forceStart = true, 0, tick()
+        forcePaint()
+        task.spawn(function()
+            while forceOn do
+                -- never fight a mute the user asked for
+                if not State.vcSelfMuted and isSelfMuted() then
+                    if muteSelf(false) then
+                        forceHits = forceHits + 1
+                        print("[Silence] forced unmute #" .. forceHits)
+                    end
+                end
+                forcePaint()
+                task.wait(0.5)
+            end
+        end)
+    end
+
+    toggleRow(pVcBan, "Force Unmute  (undo a client-side mute)",
+        function() return forceOn end,
+        function(v) if v then forceStartFn() else forceStop() end end)
+
+    local forceHint = Instance.new("TextLabel", pVcBan)
+    forceHint.Size = UDim2.new(1, 0, 0, 60)
+    forceHint.BackgroundTransparency = 1
+    forceHint.Text = "  Turn this on while you are muted, then ask someone if they\n"
+                  .. "  hear you. Counter climbing + they hear you = it worked.\n"
+                  .. "  Counter at zero + they still cannot hear you = the block is\n"
+                  .. "  on Roblox's servers and no script gets past it."
+    forceHint.Font = Enum.Font.Gotham
+    forceHint.TextSize = 10
+    forceHint.TextXAlignment = Enum.TextXAlignment.Left
+    forceHint.TextYAlignment = Enum.TextYAlignment.Top
+    forceHint.TextWrapped = true
+    SilenceAPI._theme(forceHint, "TextColor3", "textDim")
+
+    ------------------------------------------------------------ BAN WATCHER
+    -- A short voice ban expires on its own. The scripts going around get
+    -- credit for that: you press their buttons for two minutes, the timer
+    -- runs out, voice returns, and it looks like the script did it.
+    --
+    -- This watches the one authoritative signal - the same eligibility check
+    -- Roblox's own servers use - and writes down when it changes. If voice
+    -- comes back at the five minute mark no matter what you pressed, the
+    -- log says so. If a reset genuinely brings it back early, the log says
+    -- that too. Either way you stop guessing.
+    --
+    -- It also rejoins the moment eligibility returns, so you get to talk
+    -- again immediately instead of testing every 30 seconds.
+    sectionLabel(pVcBan, "BAN WATCHER")
+
+    local watchLog = {}
+    local watchOn, watchConn = false, nil
+    local watchLbl = Instance.new("TextLabel", pVcBan)
+    watchLbl.Size = UDim2.new(1, 0, 0, 116)
+    watchLbl.BackgroundTransparency = 1
+    watchLbl.Text = "  off"
+    watchLbl.Font = Enum.Font.Code
+    watchLbl.TextSize = 11
+    watchLbl.TextXAlignment = Enum.TextXAlignment.Left
+    watchLbl.TextYAlignment = Enum.TextYAlignment.Top
+    SilenceAPI._theme(watchLbl, "TextColor3", "textDim")
+
+    local function stamp()
+        local ok, t = pcall(function() return os.date("%H:%M:%S") end)
+        return ok and t or tostring(math.floor(tick()))
+    end
+    local function watchNote(line)
+        table.insert(watchLog, 1, "  " .. stamp() .. "  " .. line)
+        while #watchLog > 7 do table.remove(watchLog) end
+        watchLbl.Text = table.concat(watchLog, "\n")
+        print("[Silence] voice watch: " .. line)
+    end
+
+    local function startWatch()
+        watchOn = true
+        watchLog = {}
+        watchNote("watching - checking every 15s")
+        task.spawn(function()
+            local was = nil
+            local since = tick()
+            while watchOn do
+                local enabled, known = voiceEligible()
+                if not known then
+                    watchNote("Roblox did not answer")
+                elseif was == nil then
+                    was = enabled
+                    since = tick()
+                    watchNote(enabled and "voice ALLOWED" or "voice NOT allowed")
+                elseif enabled ~= was then
+                    local mins = math.floor((tick() - since) / 60)
+                    local secs = math.floor((tick() - since) % 60)
+                    watchNote(string.format("changed to %s after %dm %02ds",
+                        enabled and "ALLOWED" or "NOT allowed", mins, secs))
+                    was = enabled
+                    since = tick()
+                    if enabled then
+                        watchNote("rejoining voice now")
+                        notify("Voice", "Voice is back - rejoining.", 6)
+                        task.spawn(function() hardReset(false) end)
+                    else
+                        notify("Voice", "Voice was just taken away.", 6)
+                    end
+                end
+                for _ = 1, 15 do
+                    if not watchOn then break end
+                    task.wait(1)
+                end
+            end
+        end)
+    end
+    local function stopWatch()
+        watchOn = false
+        watchNote("stopped")
+    end
+
+    toggleRow(pVcBan, "Watch For The Ban Lifting  (auto rejoin)",
+        function() return watchOn end,
+        function(v)
+            if v then startWatch() else stopWatch() end
+        end)
+
+    buttonRow(pVcBan, "Copy Watch Log", function()
+        local ok = false
+        pcall(function() setclipboard(table.concat(watchLog, "\n")); ok = true end)
+        notify("Voice", ok and "Watch log copied." or "No clipboard access.", 3)
+    end)
+
+    local watchHint = Instance.new("TextLabel", pVcBan)
+    watchHint.Size = UDim2.new(1, 0, 0, 46)
+    watchHint.BackgroundTransparency = 1
+    watchHint.Text = "  Turn this on while you are banned. It records exactly when\n"
+                  .. "  voice comes back and rejoins for you - and it shows whether\n"
+                  .. "  the reset did anything or the ban simply ran out."
+    watchHint.Font = Enum.Font.Gotham
+    watchHint.TextSize = 10
+    watchHint.TextXAlignment = Enum.TextXAlignment.Left
+    watchHint.TextYAlignment = Enum.TextYAlignment.Top
+    watchHint.TextWrapped = true
+    SilenceAPI._theme(watchHint, "TextColor3", "textDim")
+
     sectionLabel(pVcBan, "REBUILD")
     buttonRow(pVcBan, "Voice Hard Reset  (leave, cycle mic, rejoin)", function()
         notify("Voice", "Rebuilding voice session...", 3)
@@ -7798,6 +8013,15 @@ do
             notify("Voice", ok and (v and "Microphone muted." or "Microphone live.")
                               or "No voice API answered.", 4)
         end)
+
+    -- The one thing in this whole tab that genuinely reduces your chance of
+    -- being banned: audio that is never sent cannot be reported.
+    buttonRow(pVcMute, "PANIC MUTE  (cut my microphone now)", function()
+        local ok = muteSelf(true)
+        State.vcSelfMuted = true
+        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+        notify("Voice", ok and "Microphone cut." or "No voice API answered.", 4)
+    end)
 
     sectionLabel(pVcMute, "OTHER PLAYERS")
     local muteHint = Instance.new("TextLabel", pVcMute)
@@ -7922,6 +8146,23 @@ do
     buttonRow(pVcMute, "Unmute Everyone", function()
         muteAll(false)
         notify("Voice", "Everyone unmuted locally.", 3)
+    end)
+
+    -- Hearing is a separate subscription from speaking. A mute that arrives
+    -- from outside can pause the incoming side too, and then "I hear nobody"
+    -- looks like a ban when it is only a stuck subscription.
+    buttonRow(pVcMute, "Force Hearing Back On", function()
+        local vci = svcOf("VoiceChatInternal")
+        local fixed = 0
+        if callM(vci, "SubscribePauseAll", false) then fixed = -1 end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and isMutedFor(p) then
+                if mutePlayer(p, false) and fixed >= 0 then fixed = fixed + 1 end
+            end
+        end
+        rebuildVoice()
+        notify("Voice", fixed < 0 and "Incoming audio unpaused."
+                                  or (fixed .. " player(s) unpaused."), 4)
     end)
 
     ------------------------------------------------------------ TAB: MIC
