@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v93"
+SilenceAPI._version = "v94"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -5344,12 +5344,14 @@ fill.ZIndex = 7
 -- rounded one at the left edge.
 corner(fill, 9)
 
--- A power symbol drawn rather than typed: a ring, a notch cut out of its
--- top, a bar through the gap. The word PANIC does not fit at 50 pixels
--- wide, and this reads at a glance in a way a letter never would.
+-- A plain ring. The word PANIC does not fit across 50 pixels at any
+-- readable size, and a circle carries further at a glance than a letter.
+-- Centred on the strip above the caption rather than on the chip: the
+-- caption owns the bottom 12 pixels, so 0.5 of the button is not the
+-- middle of the space the ring actually has.
 local ring = Instance.new("Frame", b)
 ring.Size = UDim2.new(0, 17, 0, 17)
-ring.Position = UDim2.new(0.5, -8.5, 0.5, -12)
+ring.Position = UDim2.new(0.5, -8.5, 0.5, -13)
 ring.BackgroundTransparency = 1
 ring.BorderSizePixel = 0
 ring.ZIndex = 8
@@ -5357,20 +5359,6 @@ corner(ring, 9)
 local rst = Instance.new("UIStroke", ring)
 rst.Color = Color3.fromRGB(255, 205, 205)
 rst.Thickness = 2
-
-local notch = Instance.new("Frame", b)
-notch.Size = UDim2.new(0, 7, 0, 5)
-notch.Position = UDim2.new(0.5, -3.5, 0.5, -13)
-notch.BackgroundColor3 = Color3.fromRGB(40, 14, 16)
-notch.BorderSizePixel = 0
-notch.ZIndex = 9
-
-local bar = Instance.new("Frame", b)
-bar.Size = UDim2.new(0, 2, 0, 9)
-bar.Position = UDim2.new(0.5, -1, 0.5, -15)
-bar.BackgroundColor3 = Color3.fromRGB(255, 205, 205)
-bar.BorderSizePixel = 0
-bar.ZIndex = 10
 
 local cap = Instance.new("TextLabel", b)
 cap.Size = UDim2.new(1, 0, 0, 10); cap.Position = UDim2.new(0, 0, 1, -12)
