@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v111"
+SilenceAPI._version = "v112"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -4362,9 +4362,35 @@ SilenceAPI._spinLogo = function(host, letter)
     return l
 end
 
+-- Upload S_spin_sheet.png to Roblox as a Decal, put the id here, and every
+-- other route below stops mattering: no download, no writefile, no
+-- getcustomasset, works on every executor and in every game.
+--   getgenv().SilenceSpinAsset = 1234567890
+local SPIN_ASSET = 0
+
 task.spawn(function()
-    local id = loadLocalImage({ "S_spin_sheet.png", "s_spin_sheet.png" },
-                              ICON_BASE .. "logo/S_spin_sheet.png")
+    local forced = nil
+    pcall(function()
+        local g = getgenv()
+        local v = g and tonumber(g.SilenceSpinAsset)
+        if v and v > 0 then forced = math.floor(v) end
+    end)
+    if not forced and SPIN_ASSET > 0 then forced = SPIN_ASSET end
+
+    local id = nil
+    if forced then
+        id = "rbxassetid://" .. tostring(forced)
+        SilenceAPI._spinWhy = "asset id " .. tostring(forced)
+    else
+        -- The file route. HttpGet hands binary back as a Lua string and some
+        -- executors mangle it on the way, which is why a PNG that downloads
+        -- "successfully" can still refuse to draw - so this is the fallback,
+        -- not the plan.
+        id = loadLocalImage({ "S_spin_sheet.png", "s_spin_sheet.png" },
+                            ICON_BASE .. "logo/S_spin_sheet.png")
+        SilenceAPI._spinWhy = id and "loaded from file or repo"
+                                 or "no file, no download, no asset id set"
+    end
     if not id then
         print("[Silence] spin sheet not found - the S stays a letter")
         return
@@ -17955,6 +17981,7 @@ buttonRow(pLog, "SELF TEST  -  run everything, copy one report", function()
     o[#o+1] = "settings icon    : " .. tostring(SETTINGS_IMG or "missing")
     o[#o+1] = "spin sheet       : "
               .. tostring(SilenceAPI._spinT and "animating" or "letter fallback")
+              .. "   (" .. tostring(SilenceAPI._spinWhy or "not tried yet") .. ")"
     o[#o+1] = "jumpscare frames : "
               .. tostring(#(SilenceAPI._jumpFrames or {}))
 
