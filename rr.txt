@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v78"
+SilenceAPI._version = "v80"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -5994,6 +5994,18 @@ end
 -- why "German Voice" kept reappearing after being hidden.
 SilenceAPI._hiddenTabs = {}
 
+-- Marks a tab as moved-into-a-window and takes its button off the strip at
+-- once. Setting the flag alone only mattered the next time _showCat ran,
+-- which for a tab already on screen could be never.
+function SilenceAPI._hideTab(name)
+    SilenceAPI._hiddenTabs[name] = true
+    local t = SilenceAPI._tabs and SilenceAPI._tabs[name]
+    if t and t.btn then t.btn.Visible = false end
+    if SilenceAPI._activeCat and SilenceAPI._showCat then
+        pcall(SilenceAPI._showCat, SilenceAPI._activeCat)
+    end
+end
+
 SilenceAPI._showCat = function(cat)
     SilenceAPI._activeCat = cat
     for n, t in pairs(Tabs) do
@@ -10089,8 +10101,7 @@ local function adopt(tabName)
     if not t or not t.page then return nil end
     -- take it out of the panel's tab strip as well, or the Larp category
     -- would still list a page that is no longer parented there
-    SilenceAPI._hiddenTabs[tabName] = true
-    if t.btn then t.btn.Visible = false end
+    SilenceAPI._hideTab(tabName)
     local pg = t.page
     pg.Parent = LS
     pg.Size = UDim2.new(1, -32, 1, -100)
@@ -10717,9 +10728,7 @@ addStudioTab("COSTUME", "COSTUME")
 -- the same switches twice with two separate paint routines going stale
 -- against each other. Its tab is simply hidden.
 do
-    SilenceAPI._hiddenTabs["Avatar"] = true
-    local t = SilenceAPI._tabs and SilenceAPI._tabs["Avatar"]
-    if t and t.btn then t.btn.Visible = false end
+    SilenceAPI._hideTab("Avatar")
 end
 addStudioTab("PLAYERS", "PLAYERS")
 
@@ -10830,23 +10839,41 @@ local paints = {}
 -- The picture IS the card. A separate text strip under a small thumbnail
 -- reads as a list row; a full bleed image with the words sitting in a scrim
 -- over its lower half reads as a card, which is what was asked for.
+-- The picture IS the card: full bleed art with the words in a scrim over
+-- its lower half. A separate thumbnail above a flat text strip reads as a
+-- list row, which is what these looked like before.
 for i, c in ipairs(CARDS) do
-    local card = Instance.new("TextButton", shelf)
+    -- A wrapper that does NOT clip, so the glow can spill past the edge, and
+    -- an inner frame that does, so the art stays inside the rounded corner.
+    -- One frame cannot do both: ClipsDescendants would eat the glow.
+    local wrap = Instance.new("Frame", shelf)
+    wrap.BackgroundTransparency = 1
+    wrap.BorderSizePixel = 0
+    wrap.LayoutOrder = i
+
+    local lift = Instance.new("UIScale", wrap)
+    lift.Scale = 1
+
+    local card = Instance.new("TextButton", wrap)
+    card.Size = UDim2.new(1, 0, 1, 0)
     card.BorderSizePixel = 0
     card.Text = ""
     card.AutoButtonColor = false
-    card.LayoutOrder = i
     card.ClipsDescendants = true
     card.BackgroundColor3 = Theme.bg
     corner(card, 14)
     local cst = stroke(card, Theme.bg4, 1, 0.45, "bg4")
 
-    -- the lift on hover. A UIScale on the card itself, so the image, the
-    -- text and the stroke all grow together instead of drifting apart
-    local lift = Instance.new("UIScale", card)
-    lift.Scale = 1
+    -- the travelling sheen every other surface in this panel uses, so a card
+    -- that is ready to click reads as alive rather than merely brighter
+    local glow = addAnimatedGlow(card, { thickness = 2, transparency = 1,
+                                         window = 0.22, color = Theme.accent })
 
+    -- AnchorPoint at the centre so the hover zoom grows from the middle
+    -- instead of sliding out of the top-left corner.
     local img = Instance.new("ImageLabel", card)
+    img.AnchorPoint = Vector2.new(0.5, 0.5)
+    img.Position = UDim2.new(0.5, 0, 0.5, 0)
     img.Size = UDim2.new(1, 0, 1, 0)
     img.BackgroundTransparency = 1
     img.BorderSizePixel = 0
@@ -10865,9 +10892,9 @@ for i, c in ipairs(CARDS) do
         end
     end
 
-    -- Scrim over the lower half only. A flat panel behind the text would
-    -- cover the picture; a gradient lets it run all the way down and still
-    -- keeps the words readable over a bright thumbnail.
+    -- Scrim over the lower half only. A solid panel behind the text would
+    -- cover the art; a gradient lets it run to the bottom and still keeps
+    -- the words readable over a bright picture.
     local scrim = Instance.new("Frame", card)
     scrim.Size = UDim2.new(1, 0, 1, 0)
     scrim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -10877,13 +10904,23 @@ for i, c in ipairs(CARDS) do
     sg.Rotation = 90
     sg.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0,    1),
-        NumberSequenceKeypoint.new(0.42, 0.92),
-        NumberSequenceKeypoint.new(0.72, 0.25),
-        NumberSequenceKeypoint.new(1,    0.05),
+        NumberSequenceKeypoint.new(0.40, 0.94),
+        NumberSequenceKeypoint.new(0.70, 0.22),
+        NumberSequenceKeypoint.new(1,    0.02),
     })
 
+    -- a one pixel highlight along the top edge, the same trick the glass
+    -- surfaces use to stop a dark panel looking like a hole
+    local sheen = Instance.new("Frame", card)
+    sheen.Size = UDim2.new(1, -24, 0, 1)
+    sheen.Position = UDim2.new(0, 12, 0, 1)
+    sheen.BorderSizePixel = 0
+    sheen.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    sheen.BackgroundTransparency = 0.86
+    sheen.ZIndex = 3
+
     local t = Instance.new("TextLabel", card)
-    t.Size = UDim2.new(1, -26, 0, 20); t.Position = UDim2.new(0, 14, 1, -58)
+    t.Size = UDim2.new(1, -26, 0, 20); t.Position = UDim2.new(0, 14, 1, -60)
     t.BackgroundTransparency = 1
     t.Text = c.title
     t.Font = Enum.Font.GothamBold; t.TextSize = 15
@@ -10892,19 +10929,19 @@ for i, c in ipairs(CARDS) do
     t.ZIndex = 4
 
     local sub = Instance.new("TextLabel", card)
-    sub.Size = UDim2.new(1, -26, 0, 13); sub.Position = UDim2.new(0, 14, 1, -38)
+    sub.Size = UDim2.new(1, -26, 0, 13); sub.Position = UDim2.new(0, 14, 1, -40)
     sub.BackgroundTransparency = 1
     sub.Text = c.sub
     sub.Font = Enum.Font.Gotham; sub.TextSize = 10
     sub.TextXAlignment = Enum.TextXAlignment.Left
-    sub.TextColor3 = Color3.fromRGB(190, 190, 195)
+    sub.TextColor3 = Color3.fromRGB(195, 195, 200)
     sub.TextTruncate = Enum.TextTruncate.AtEnd
     sub.ZIndex = 4
 
-    -- a pill rather than a line of text: it has to read at a glance from
-    -- across the panel, and a coloured chip does that where grey words do not
+    -- a chip rather than a line of text: this has to read at a glance from
+    -- across the panel, and grey words do not
     local pill = Instance.new("Frame", card)
-    pill.Size = UDim2.new(0, 118, 0, 18); pill.Position = UDim2.new(0, 14, 1, -20)
+    pill.Size = UDim2.new(0, 118, 0, 18); pill.Position = UDim2.new(0, 14, 1, -22)
     pill.BorderSizePixel = 0
     pill.ZIndex = 4
     corner(pill, 9)
@@ -10914,6 +10951,9 @@ for i, c in ipairs(CARDS) do
     pillTxt.Font = Enum.Font.GothamBold; pillTxt.TextSize = 9
     pillTxt.ZIndex = 5
 
+    local TW  = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+    local TWs = TweenInfo.new(0.34, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
     local hovering = false
     local function paint()
         local here = inGame(c.key)
@@ -10921,19 +10961,29 @@ for i, c in ipairs(CARDS) do
         pill.Size = UDim2.new(0, here and 104 or 122, 0, 18)
         pill.BackgroundColor3 = here and Theme.accent or Color3.fromRGB(0, 0, 0)
         pill.BackgroundTransparency = here and 0 or 0.35
-        pillTxt.TextColor3 = here and Theme.bg or Color3.fromRGB(190, 190, 195)
+        pillTxt.TextColor3 = here and Theme.bg or Color3.fromRGB(195, 195, 200)
 
         -- A locked card is dimmed rather than hidden, so you can still see
-        -- what is waiting for you in the other game.
-        local target = here and (hovering and 0 or 0.1) or 0.62
-        TweenService:Create(img, SilenceAPI._twFade,
-            { ImageTransparency = target }):Play()
-        TweenService:Create(cst, SilenceAPI._twFade, {
-            Color = (here and hovering) and Theme.accent or Theme.bg4,
-            Transparency = hovering and 0.05 or (here and 0.3 or 0.6),
+        -- what is waiting in the other game.
+        TweenService:Create(img, TWs, {
+            ImageTransparency = here and (hovering and 0 or 0.1) or 0.64,
+            -- zoom lives in Size because the frame around it clips
+            Size = (here and hovering) and UDim2.new(1, 26, 1, 26)
+                                       or UDim2.new(1, 0, 1, 0),
         }):Play()
-        TweenService:Create(lift, SilenceAPI._twKnob,
-            { Scale = hovering and 1.03 or 1 }):Play()
+        TweenService:Create(cst, TW, {
+            Color = (here and hovering) and Theme.accent or Theme.bg4,
+            Transparency = hovering and 0.05 or (here and 0.32 or 0.6),
+        }):Play()
+        TweenService:Create(glow, TW, {
+            Transparency = (here and hovering) and 0.25 or 1,
+        }):Play()
+        TweenService:Create(lift, TW, {
+            Scale = hovering and (here and 1.035 or 1.012) or 1,
+        }):Play()
+        TweenService:Create(sheen, TW, {
+            BackgroundTransparency = hovering and 0.7 or 0.86,
+        }):Play()
         t.TextColor3 = here and Color3.fromRGB(255, 255, 255)
                             or Color3.fromRGB(185, 185, 190)
     end
@@ -10948,6 +10998,11 @@ for i, c in ipairs(CARDS) do
             notify("Games", c.title .. " only opens inside that game.", 5)
             return
         end
+        -- a short press-in, so a click feels answered
+        TweenService:Create(lift, TweenInfo.new(0.08), { Scale = 0.985 }):Play()
+        task.delay(0.09, function()
+            TweenService:Create(lift, TW, { Scale = hovering and 1.035 or 1 }):Play()
+        end)
         if c.key == "gv" and SilenceAPI._openGV then SilenceAPI._openGV() end
         if c.key == "bb" and SilenceAPI._openBB then SilenceAPI._openBB() end
     end)
@@ -11021,9 +11076,7 @@ do
         pg.Position = UDim2.new(0, 16, 0, 52)
         pg.Visible = true
         pg.ZIndex = 196
-        SilenceAPI._hiddenTabs["German Voice"] = true
-        local t = SilenceAPI._tabs and SilenceAPI._tabs["German Voice"]
-        if t and t.btn then t.btn.Visible = false end
+        SilenceAPI._hideTab("German Voice")
     end
     SilenceAPI._openGV = function() W.Visible = not W.Visible end
 end
