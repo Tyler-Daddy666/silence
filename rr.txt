@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v35"
+SilenceAPI._version = "v36"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -554,7 +554,7 @@ local State = {
              size = 1, rate = 1,
              color  = Color3.fromRGB(255, 60, 60),
              color2 = Color3.fromRGB(60, 60, 255) },
-    jumpSound = "rbxassetid://5766325503",
+    jumpSound = "",           -- optional rbxassetid, only if you have no mp3
     acBlocked = false,        -- true after a scan finds critical anti-cheat hits
     acRiskyOverride = false,  -- user-set: ignore acBlocked and use features anyway
     acHits = 0,               -- last scan hit count (for banner display)
@@ -747,17 +747,18 @@ do
                 end)
             end
 
+            local sndId = SilenceAPI._jumpSnd or tostring(State.jumpSound or "")
             local snd
-            pcall(function()
+            if sndId ~= "" then pcall(function()
                 snd = Instance.new("Sound")
-                snd.SoundId = SilenceAPI._jumpSnd or tostring(State.jumpSound or "")
+                snd.SoundId = sndId
                 -- 10 is the ceiling Roblox allows, and a Sound under a
                 -- ScreenGui has no distance falloff, so this is as loud as
                 -- the engine can be made to play it
                 snd.Volume = 10
                 snd.Parent = sg
                 snd:Play()
-            end)
+            end) end
 
             -- The sound decides how long this lasts. TimeLength reads 0 until
             -- the asset has loaded, so it is polled briefly rather than
@@ -11256,6 +11257,9 @@ local _tagOk, _tagErr = pcall(function()
                 0x1F980, 0x1F352, 0x1F319, 0x2600, 0x2601, 0x1F30A,
                 0x1F4A5, 0x2728, 0x1F339, 0x1F340, 0x1F3AF, 0x1F3B2,
                 0x1F947, 0x1F6E1, 0x1F5E1, 0x1F3B8, 0x1F3A9,
+                -- blood and the rest of that corner, since the shop sells it
+                0x1FA78, 0x1F489, 0x1F9DB, 0x1F9DF, 0x1F571, 0x2620,
+                0x1F5A4, 0x1F494, 0x1F9E1, 0x1F49C, 0x1F49A, 0x1F499,
             }
             local box = Instance.new("Frame", p)
             box.Size = UDim2.new(1, -6, 0, 0)
