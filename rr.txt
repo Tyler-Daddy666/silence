@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v74"
+SilenceAPI._version = "v77"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10821,12 +10821,15 @@ shelf.Size = UDim2.new(1, 0, 0, 0)
 shelf.AutomaticSize = Enum.AutomaticSize.Y
 shelf.BackgroundTransparency = 1
 local sLay = Instance.new("UIGridLayout", shelf)
-sLay.CellSize = UDim2.new(0, 236, 0, 156)
+sLay.CellSize = UDim2.new(0, 268, 0, 178)
 sLay.CellPadding = UDim2.new(0, 10, 0, 10)
 sLay.SortOrder = Enum.SortOrder.LayoutOrder
 SilenceAPI._registerRow(shelf, "games german voice blade ball cards")
 
 local paints = {}
+-- The picture IS the card. A separate text strip under a small thumbnail
+-- reads as a list row; a full bleed image with the words sitting in a scrim
+-- over its lower half reads as a card, which is what was asked for.
 for i, c in ipairs(CARDS) do
     local card = Instance.new("TextButton", shelf)
     card.BorderSizePixel = 0
@@ -10834,22 +10837,22 @@ for i, c in ipairs(CARDS) do
     card.AutoButtonColor = false
     card.LayoutOrder = i
     card.ClipsDescendants = true
-    corner(card, 12)
-    SilenceAPI._theme(card, "BackgroundColor3", "bg2")
-    local cst = stroke(card, Theme.bg4, 1, 0.5, "bg4")
+    card.BackgroundColor3 = Theme.bg
+    corner(card, 14)
+    local cst = stroke(card, Theme.bg4, 1, 0.45, "bg4")
 
-    -- The place thumbnail if Roblox will hand it over, a file from the
-    -- Silence folder otherwise, and a flat panel if neither works.
-    -- Roblox will hand over a game's own icon for a place id, which is the
-    -- only banner obtainable without an upload. Cropped to the card so it
-    -- reads as a wide banner rather than a square badge. A file of your own
-    -- in the Silence folder wins over it.
+    -- the lift on hover. A UIScale on the card itself, so the image, the
+    -- text and the stroke all grow together instead of drifting apart
+    local lift = Instance.new("UIScale", card)
+    lift.Scale = 1
+
     local img = Instance.new("ImageLabel", card)
-    img.Size = UDim2.new(1, 0, 0, 100)
+    img.Size = UDim2.new(1, 0, 1, 0)
     img.BackgroundTransparency = 1
     img.BorderSizePixel = 0
     img.ScaleType = Enum.ScaleType.Crop
-    img.ImageTransparency = 0.15
+    img.ImageTransparency = 0.1
+    img.ZIndex = 1
     local mine = loadLocalImage(c.img, ICON_BASE .. "games/" .. c.img[1])
                  or loadLocalImage(c.img, ICON_BASE .. c.img[1])
     if mine then
@@ -10862,59 +10865,83 @@ for i, c in ipairs(CARDS) do
         end
     end
 
-    -- a fade under the text, so a bright thumbnail cannot swallow the title
-    local fade = Instance.new("Frame", card)
-    fade.Size = UDim2.new(1, 0, 0, 70)
-    fade.Position = UDim2.new(0, 0, 0, 40)
-    fade.BorderSizePixel = 0
-    fade.BackgroundColor3 = Theme.bg
-    local fg = Instance.new("UIGradient", fade)
-    fg.Rotation = 90
-    fg.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 1),
-        NumberSequenceKeypoint.new(1, 0.15),
+    -- Scrim over the lower half only. A flat panel behind the text would
+    -- cover the picture; a gradient lets it run all the way down and still
+    -- keeps the words readable over a bright thumbnail.
+    local scrim = Instance.new("Frame", card)
+    scrim.Size = UDim2.new(1, 0, 1, 0)
+    scrim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    scrim.BorderSizePixel = 0
+    scrim.ZIndex = 2
+    local sg = Instance.new("UIGradient", scrim)
+    sg.Rotation = 90
+    sg.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0,    1),
+        NumberSequenceKeypoint.new(0.42, 0.92),
+        NumberSequenceKeypoint.new(0.72, 0.25),
+        NumberSequenceKeypoint.new(1,    0.05),
     })
 
     local t = Instance.new("TextLabel", card)
-    t.Size = UDim2.new(1, -24, 0, 20); t.Position = UDim2.new(0, 12, 0, 100)
+    t.Size = UDim2.new(1, -26, 0, 20); t.Position = UDim2.new(0, 14, 1, -58)
     t.BackgroundTransparency = 1
     t.Text = c.title
-    t.Font = Enum.Font.GothamBold; t.TextSize = 14
+    t.Font = Enum.Font.GothamBold; t.TextSize = 15
     t.TextXAlignment = Enum.TextXAlignment.Left
-    SilenceAPI._theme(t, "TextColor3", "text")
+    t.TextColor3 = Color3.fromRGB(255, 255, 255)
+    t.ZIndex = 4
 
     local sub = Instance.new("TextLabel", card)
-    sub.Size = UDim2.new(1, -24, 0, 14); sub.Position = UDim2.new(0, 12, 0, 120)
+    sub.Size = UDim2.new(1, -26, 0, 13); sub.Position = UDim2.new(0, 14, 1, -38)
     sub.BackgroundTransparency = 1
     sub.Text = c.sub
     sub.Font = Enum.Font.Gotham; sub.TextSize = 10
     sub.TextXAlignment = Enum.TextXAlignment.Left
-    SilenceAPI._theme(sub, "TextColor3", "textDim")
+    sub.TextColor3 = Color3.fromRGB(190, 190, 195)
+    sub.TextTruncate = Enum.TextTruncate.AtEnd
+    sub.ZIndex = 4
 
-    local state = Instance.new("TextLabel", card)
-    state.Size = UDim2.new(1, -24, 0, 14); state.Position = UDim2.new(0, 12, 0, 136)
-    state.BackgroundTransparency = 1
-    state.Font = Enum.Font.GothamBold; state.TextSize = 9
-    state.TextXAlignment = Enum.TextXAlignment.Left
+    -- a pill rather than a line of text: it has to read at a glance from
+    -- across the panel, and a coloured chip does that where grey words do not
+    local pill = Instance.new("Frame", card)
+    pill.Size = UDim2.new(0, 118, 0, 18); pill.Position = UDim2.new(0, 14, 1, -20)
+    pill.BorderSizePixel = 0
+    pill.ZIndex = 4
+    corner(pill, 9)
+    local pillTxt = Instance.new("TextLabel", pill)
+    pillTxt.Size = UDim2.new(1, 0, 1, 0)
+    pillTxt.BackgroundTransparency = 1
+    pillTxt.Font = Enum.Font.GothamBold; pillTxt.TextSize = 9
+    pillTxt.ZIndex = 5
 
+    local hovering = false
     local function paint()
         local here = inGame(c.key)
-        state.Text = here and "IN THIS GAME  -  click to open"
-                          or "not in this game"
-        state.TextColor3 = here and Theme.accent or Theme.textDim
-        cst.Color = here and Theme.accent or Theme.bg4
-        cst.Transparency = here and 0.15 or 0.55
-        img.ImageTransparency = here and 0.05 or 0.55
+        pillTxt.Text = here and "READY  -  CLICK" or "NOT IN THIS GAME"
+        pill.Size = UDim2.new(0, here and 104 or 122, 0, 18)
+        pill.BackgroundColor3 = here and Theme.accent or Color3.fromRGB(0, 0, 0)
+        pill.BackgroundTransparency = here and 0 or 0.35
+        pillTxt.TextColor3 = here and Theme.bg or Color3.fromRGB(190, 190, 195)
+
+        -- A locked card is dimmed rather than hidden, so you can still see
+        -- what is waiting for you in the other game.
+        local target = here and (hovering and 0 or 0.1) or 0.62
+        TweenService:Create(img, SilenceAPI._twFade,
+            { ImageTransparency = target }):Play()
+        TweenService:Create(cst, SilenceAPI._twFade, {
+            Color = (here and hovering) and Theme.accent or Theme.bg4,
+            Transparency = hovering and 0.05 or (here and 0.3 or 0.6),
+        }):Play()
+        TweenService:Create(lift, SilenceAPI._twKnob,
+            { Scale = hovering and 1.03 or 1 }):Play()
+        t.TextColor3 = here and Color3.fromRGB(255, 255, 255)
+                            or Color3.fromRGB(185, 185, 190)
     end
     paints[#paints + 1] = paint
     paint()
 
-    card.MouseEnter:Connect(function()
-        TweenService:Create(cst, SilenceAPI._twFade, { Transparency = 0.1 }):Play()
-    end)
-    card.MouseLeave:Connect(function()
-        for _, fn in ipairs(paints) do fn() end
-    end)
+    card.MouseEnter:Connect(function() hovering = true;  paint() end)
+    card.MouseLeave:Connect(function() hovering = false; paint() end)
 
     card.MouseButton1Click:Connect(function()
         if not inGame(c.key) then
@@ -11002,23 +11029,16 @@ do
 end
 
 ------------------------------------------------------------ BLADE BALL
--- Rewritten after the first attempt did nothing at all. Three faults, and
--- the first was fatal on its own:
---
---   * it read d.Shape on every BasePart. Shape exists on Part and NOT on
---     MeshPart, so the read threw - inside a Heartbeat, every frame, and the
---     whole loop died silently on the first mesh it met.
---   * it walked Workspace:GetDescendants() once per frame. That is thousands
---     of instances at 60fps for a value that changes slowly.
---   * it triggered on raw distance. A ball 18 studs out is about to hit you
---     when it is fast and is no threat at all when it is slow, so a distance
---     threshold parries at the wrong moment either way.
---
--- Now: the search is throttled and cached, Shape is only read on a Part, and
--- the trigger is TIME TO IMPACT - distance divided by how fast the ball is
--- actually closing on you. That is the number a human is judging too.
+-- ON "NEVER MISSES": it cannot be promised, and here is why in one line -
+-- the SERVER decides whether a parry landed, and it sees the ball where it
+-- was one round trip ago. A press timed perfectly on your screen still
+-- arrives late if your ping is 90ms. What this can do is remove every cause
+-- of a miss that lives on THIS side: it compensates for your measured ping,
+-- tracks every ball rather than the nearest one, and widens its own timing
+-- when it notices a ball got through. That is a very high hit rate, and it
+-- is an honest description of one.
 do
-    local W = gameWindow("BLADE BALL", "ball tracking and parry timing")
+    local W = gameWindow("BLADE BALL", "tracking, parry timing and stats")
 
     local body = Instance.new("ScrollingFrame", W)
     body.Size = UDim2.new(1, -32, 1, -62)
@@ -11035,11 +11055,72 @@ do
         body.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 12)
     end)
 
+    ------------------------------------------------------------ TOOLTIP
+    -- One tooltip reused by every marker. Parented to the window rather than
+    -- to the row so it can overhang the scroller without being clipped.
+    local tip = Instance.new("Frame", W)
+    tip.Size = UDim2.new(0, 300, 0, 0)
+    tip.AutomaticSize = Enum.AutomaticSize.Y
+    tip.BackgroundColor3 = Theme.bg
+    tip.BorderSizePixel = 0
+    tip.Visible = false
+    tip.ZIndex = 250
+    corner(tip, 8)
+    stroke(tip, Theme.accent, 1, 0.4)
+    local tipTxt = Instance.new("TextLabel", tip)
+    tipTxt.Size = UDim2.new(1, -20, 0, 0)
+    tipTxt.Position = UDim2.new(0, 10, 0, 8)
+    tipTxt.AutomaticSize = Enum.AutomaticSize.Y
+    tipTxt.BackgroundTransparency = 1
+    tipTxt.Font = Enum.Font.Gotham
+    tipTxt.TextSize = 11
+    tipTxt.TextWrapped = true
+    tipTxt.TextXAlignment = Enum.TextXAlignment.Left
+    tipTxt.TextYAlignment = Enum.TextYAlignment.Top
+    tipTxt.ZIndex = 251
+    SilenceAPI._theme(tipTxt, "TextColor3", "text")
+    local tipPad = Instance.new("UIPadding", tip)
+    tipPad.PaddingBottom = UDim.new(0, 8)
+
+    local function mark(parent, x, y, text)
+        local m = Instance.new("TextButton", parent)
+        m.Size = UDim2.new(0, 16, 0, 16)
+        m.Position = UDim2.new(0, x, 0, y)
+        m.BorderSizePixel = 0
+        m.Text = "i"
+        m.Font = Enum.Font.GothamBold
+        m.TextSize = 10
+        m.AutoButtonColor = false
+        m.ZIndex = 199
+        local c = Instance.new("UICorner", m); c.CornerRadius = UDim.new(1, 0)
+        m.BackgroundColor3 = Theme.bg3
+        m.TextColor3 = Theme.textDim
+        m.MouseEnter:Connect(function()
+            m.BackgroundColor3 = Theme.accent
+            m.TextColor3 = Theme.bg
+            tipTxt.Text = text
+            tip.Visible = true
+            -- placed off the marker's own screen position, so it lands next
+            -- to whatever you are pointing at wherever the window has been
+            -- dragged to
+            local rel = m.AbsolutePosition - W.AbsolutePosition
+            tip.Position = UDim2.new(0, math.min(rel.X + 24, 580 - 300),
+                                     0, rel.Y + 20)
+        end)
+        m.MouseLeave:Connect(function()
+            m.BackgroundColor3 = Theme.bg3
+            m.TextColor3 = Theme.textDim
+            tip.Visible = false
+        end)
+        return m
+    end
+
+    ------------------------------------------------------------ WIDGETS
     local ord = 0
     local function cap(txt)
         ord = ord + 1
         local l = Instance.new("TextLabel", body)
-        l.Size = UDim2.new(1, -6, 0, 20)
+        l.Size = UDim2.new(1, -6, 0, 22)
         l.BackgroundTransparency = 1
         l.Text = txt
         l.Font = Enum.Font.GothamBold; l.TextSize = 10
@@ -11059,94 +11140,131 @@ do
         SilenceAPI._theme(r, "BackgroundColor3", "bg2")
         return r
     end
-    local function tog(parent, label, x, y, w, get, set)
-        local b = Instance.new("TextButton", parent)
-        b.Size = UDim2.new(0, w, 0, 26); b.Position = UDim2.new(0, x, 0, y)
+
+    local function switch(label, help, get, set)
+        local r = row(44)
+        local l = Instance.new("TextLabel", r)
+        l.Size = UDim2.new(1, -140, 1, 0); l.Position = UDim2.new(0, 14, 0, 0)
+        l.BackgroundTransparency = 1
+        l.Text = label
+        l.Font = Enum.Font.GothamMedium; l.TextSize = 13
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 198
+        SilenceAPI._theme(l, "TextColor3", "text")
+
+        local b = Instance.new("TextButton", r)
+        b.Size = UDim2.new(0, 74, 0, 26); b.Position = UDim2.new(1, -88, 0.5, -13)
         b.BorderSizePixel = 0
-        b.Text = label
         b.Font = Enum.Font.GothamBold; b.TextSize = 11
         b.AutoButtonColor = false
         b.ZIndex = 198
         corner(b, 7)
         local function paint()
             local on = get()
+            b.Text = on and "ON" or "OFF"
             b.BackgroundColor3 = on and Theme.accent or Theme.bg3
             b.TextColor3 = on and Theme.bg or Theme.textDim
         end
         paint()
         b.MouseButton1Click:Connect(function() set(not get()); paint() end)
-        return b
+        mark(r, 0, 14, help).Position = UDim2.new(1, -110, 0.5, -8)
+        return b, paint
     end
-    local function num(parent, label, x, y, w, get, set)
-        local l = Instance.new("TextLabel", parent)
-        l.Size = UDim2.new(0, w, 0, 12); l.Position = UDim2.new(0, x, 0, y)
+
+    local function number(label, help, unit, get, set)
+        local r = row(44)
+        local l = Instance.new("TextLabel", r)
+        l.Size = UDim2.new(1, -180, 1, 0); l.Position = UDim2.new(0, 14, 0, 0)
         l.BackgroundTransparency = 1
         l.Text = label
-        l.Font = Enum.Font.Gotham; l.TextSize = 9
+        l.Font = Enum.Font.GothamMedium; l.TextSize = 13
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.ZIndex = 198
-        SilenceAPI._theme(l, "TextColor3", "textDim")
-        local b = Instance.new("TextBox", parent)
-        b.Size = UDim2.new(0, w, 0, 22); b.Position = UDim2.new(0, x, 0, y + 14)
+        SilenceAPI._theme(l, "TextColor3", "text")
+
+        local u = Instance.new("TextLabel", r)
+        u.Size = UDim2.new(0, 40, 1, 0); u.Position = UDim2.new(1, -46, 0, 0)
+        u.BackgroundTransparency = 1
+        u.Text = unit
+        u.Font = Enum.Font.Gotham; u.TextSize = 10
+        u.TextXAlignment = Enum.TextXAlignment.Left
+        u.ZIndex = 198
+        SilenceAPI._theme(u, "TextColor3", "textDim")
+
+        local b = Instance.new("TextBox", r)
+        b.Size = UDim2.new(0, 70, 0, 26); b.Position = UDim2.new(1, -120, 0.5, -13)
         b.BackgroundTransparency = 1
         b.Text = tostring(get())
-        b.Font = Enum.Font.Code; b.TextSize = 12
-        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.Font = Enum.Font.Code; b.TextSize = 13
+        b.TextXAlignment = Enum.TextXAlignment.Right
         b.ClearTextOnFocus = false
         b.ZIndex = 198
         SilenceAPI._theme(b, "TextColor3", "text")
         b.FocusLost:Connect(function() set(b.Text); b.Text = tostring(get()) end)
+        mark(r, 0, 14, help).Position = UDim2.new(1, -142, 0.5, -8)
         return b
     end
 
-    local bb = { esp = false, auto = false, lead = 0.14, maxD = 60,
-                 key = Enum.KeyCode.F }
-    local hl, ball, lastScan, lastPos, lastT = nil, nil, 0, nil, 0
-    local parries, misses, lastParry = 0, 0, 0
+    ------------------------------------------------------------ STATE
+    local bb = {
+        esp = false, trail = false, auto = false,
+        lead = 0.13, pingComp = true, adaptive = true,
+        maxD = 90, retry = true, key = Enum.KeyCode.F,
+        jitter = true, minGap = 0.28,
+    }
+    local hl, balls = nil, {}
+    local presses, saves, throughs, lastParry = 0, 0, 0, 0
+    local track2 = {}   -- [part] = { pos, t }
 
-    -- Cached and throttled. Shape is read ONLY on a Part - on a MeshPart the
-    -- property does not exist and the read throws, which is what killed the
-    -- previous loop on its first frame.
-    local function findBall()
-        local char = LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not root then return nil end
-        if ball and ball.Parent and (ball.Position - root.Position).Magnitude < 400 then
-            return ball
-        end
-        if tick() - lastScan < 0.4 then return ball end
+    local function pingSeconds()
+        local p = 0
+        pcall(function() p = LocalPlayer:GetNetworkPing() end)
+        -- GetNetworkPing is one way in seconds; the parry has to survive the
+        -- trip out, so that is what gets added rather than a round trip
+        return math.clamp(tonumber(p) or 0, 0, 0.4)
+    end
+
+    -- EVERY candidate, not just the nearest. Blade Ball throws more than one
+    -- at higher rounds, and parrying the closest while a faster one arrives
+    -- first is exactly how a "perfect" parry still loses.
+    local lastScan = 0
+    local function scanBalls()
+        if tick() - lastScan < 0.35 then return end
         lastScan = tick()
-
-        local best, bestScore = nil, -1
+        local char = LocalPlayer.Character
+        balls = {}
         for _, d in ipairs(Workspace:GetDescendants()) do
             if d:IsA("BasePart") and not d.Anchored
-               and not d:IsDescendantOf(char) and d.Size.Magnitude < 12 then
+               and (not char or not d:IsDescendantOf(char))
+               and d.Size.Magnitude < 12 then
                 local score = 0
                 if d.Name:lower():find("ball") then score = score + 3 end
+                -- Shape exists on Part and NOT on MeshPart; reading it on a
+                -- mesh throws, which killed an earlier version of this loop
                 if d:IsA("Part") and d.Shape == Enum.PartType.Ball then
                     score = score + 2
                 end
                 if d.AssemblyLinearVelocity.Magnitude > 20 then score = score + 2 end
-                if score > bestScore then best, bestScore = d, score end
+                if score >= 2 then balls[#balls + 1] = d end
             end
         end
-        if bestScore >= 2 then ball = best else ball = nil end
-        return ball
     end
 
-    -- How long until it reaches you, from how fast it is actually closing.
-    -- AssemblyLinearVelocity is often zero on a client-simulated ball, so the
-    -- position difference between two frames is used as the fallback.
-    local function closingSpeed(b, root, dt)
+    -- Velocity is often zero on a client-simulated ball, so the position
+    -- difference between two frames is the fallback.
+    local function etaOf(b, root, now)
         local v = b.AssemblyLinearVelocity
-        if v.Magnitude < 1 and lastPos and dt > 0 then
-            v = (b.Position - lastPos) / dt
+        local rec = track2[b]
+        if v.Magnitude < 1 and rec and now > rec.t then
+            v = (b.Position - rec.pos) / (now - rec.t)
         end
-        local toMe = (root.Position - b.Position)
+        track2[b] = { pos = b.Position, t = now }
+        local toMe = root.Position - b.Position
         local dist = toMe.Magnitude
-        if dist < 0.01 then return 0, 0 end
+        if dist < 0.01 then return 0, 0, 0 end
         local closing = v:Dot(toMe.Unit)
-        return closing, dist
+        if closing <= 1 then return math.huge, dist, closing end
+        return dist / closing, dist, closing
     end
 
     local function pressParry()
@@ -11155,26 +11273,27 @@ do
         if vim then
             local ok = pcall(function()
                 vim:SendKeyEvent(true,  bb.key, false, game)
-                task.wait(0.03)
+                task.wait(0.02)
                 vim:SendKeyEvent(false, bb.key, false, game)
             end)
             if ok then return true end
         end
         if type(keypress) == "function" and type(keyrelease) == "function" then
             local ok = pcall(function()
-                keypress(bb.key.Value); task.wait(0.03); keyrelease(bb.key.Value)
+                keypress(bb.key.Value); task.wait(0.02); keyrelease(bb.key.Value)
             end)
             if ok then return true end
         end
         return false
     end
 
+    ------------------------------------------------------------ UI
     cap("LIVE")
-    local info = nil
+    local info
     do
-        local r = row(56)
+        local r = row(64)
         info = Instance.new("TextLabel", r)
-        info.Size = UDim2.new(1, -24, 1, 0); info.Position = UDim2.new(0, 12, 0, 0)
+        info.Size = UDim2.new(1, -24, 1, 0); info.Position = UDim2.new(0, 14, 0, 0)
         info.BackgroundTransparency = 1
         info.Text = "waiting..."
         info.Font = Enum.Font.Code; info.TextSize = 12
@@ -11184,39 +11303,78 @@ do
         SilenceAPI._theme(info, "TextColor3", "text")
     end
 
-    cap("SWITCHES")
-    do
-        local r = row(48)
-        tog(r, "HIGHLIGHT", 12, 11, 118,
-            function() return bb.esp end,
-            function(v)
-                bb.esp = v
-                if not v and hl then pcall(function() hl:Destroy() end); hl = nil end
-            end)
-        tog(r, "AUTO PARRY", 138, 11, 124,
-            function() return bb.auto end,
-            function(v) bb.auto = v; parries, misses = 0, 0 end)
-    end
+    cap("TRACKING")
+    switch("Highlight the ball",
+        "Puts a glow on whichever ball is currently the most dangerous. Costs"
+        .. " nothing and makes it obvious what the timing below is reacting to.",
+        function() return bb.esp end,
+        function(v)
+            bb.esp = v
+            if not v and hl then pcall(function() hl:Destroy() end); hl = nil end
+        end)
+
+    cap("AUTO PARRY")
+    switch("Auto parry",
+        "Presses your parry key by itself when a ball is about to reach you."
+        .. " The timing comes from the section below - if it parries late,"
+        .. " raise the lead.",
+        function() return bb.auto end,
+        function(v) bb.auto = v; presses, saves, throughs = 0, 0, 0 end)
+
+    switch("Compensate for ping",
+        "Your press has to travel to the server before it counts, and the"
+        .. " server sees the ball where it was one trip ago. This adds your"
+        .. " measured ping to the lead so the press LANDS on time rather than"
+        .. " being sent on time. Leave this on unless you play on a LAN.",
+        function() return bb.pingComp end,
+        function(v) bb.pingComp = v end)
+
+    switch("Learn from misses",
+        "When a ball gets past despite a press, the lead is nudged up by 10ms"
+        .. " and stays there. Over a few rounds it settles on the value your"
+        .. " connection actually needs instead of the one you guessed.",
+        function() return bb.adaptive end,
+        function(v) bb.adaptive = v end)
+
+    switch("One retry if the ball is still coming",
+        "A single extra press after a short pause if the ball is somehow still"
+        .. " closing. The version this replaces hammered the key every 90ms -"
+        .. " nobody types eleven times a second, and an input counter on the"
+        .. " server notices that long before it notices anything else.",
+        function() return bb.retry end,
+        function(v) bb.retry = v end)
+
+    switch("Vary the timing",
+        "Shifts each press by a random few milliseconds and waits a human"
+        .. " amount between attempts. A press that lands on exactly the same"
+        .. " offset every single time is a pattern no person produces, and it"
+        .. " is the cheapest thing in the world to look for.",
+        function() return bb.jitter end,
+        function(v) bb.jitter = v end)
 
     cap("TIMING")
-    do
-        local r = row(56)
-        num(r, "parry this many seconds before impact", 12, 8, 200,
-            function() return bb.lead end,
-            function(v) bb.lead = math.clamp(tonumber(v) or 0.14, 0.02, 1) end)
-        num(r, "ignore beyond (studs)", 228, 8, 130,
-            function() return bb.maxD end,
-            function(v) bb.maxD = math.clamp(tonumber(v) or 60, 10, 300) end)
-    end
+    number("Parry this long before impact",
+        "The core setting. 0.13 suits most connections. Too low parries late"
+        .. " and the ball hits you; too high parries into thin air and the"
+        .. " window has closed by the time the ball arrives.",
+        "sec", function() return bb.lead end,
+        function(v) bb.lead = math.clamp(tonumber(v) or 0.13, 0.02, 1) end)
+
+    number("Ignore balls beyond",
+        "Anything further away than this is not considered. Keeps the reader"
+        .. " honest in a big arena where a ball across the map would otherwise"
+        .. " show a huge time-to-impact.",
+        "studs", function() return bb.maxD end,
+        function(v) bb.maxD = math.clamp(tonumber(v) or 90, 10, 400) end)
 
     cap("PARRY KEY")
     do
-        local r = row(44)
+        local r = row(48)
         local kb = Instance.new("TextButton", r)
-        kb.Size = UDim2.new(0, 150, 0, 26); kb.Position = UDim2.new(0, 12, 0, 9)
+        kb.Size = UDim2.new(0, 160, 0, 28); kb.Position = UDim2.new(0, 14, 0, 10)
         kb.BorderSizePixel = 0
         kb.Text = "KEY:  " .. bb.key.Name
-        kb.Font = Enum.Font.GothamBold; kb.TextSize = 11
+        kb.Font = Enum.Font.GothamBold; kb.TextSize = 12
         kb.AutoButtonColor = false
         kb.ZIndex = 198
         corner(kb, 7)
@@ -11229,7 +11387,7 @@ do
             kb.BackgroundColor3 = Theme.accent
             kb.TextColor3 = Theme.bg
         end)
-        track(UserInputService.InputBegan:Connect(function(i, gp)
+        track(UserInputService.InputBegan:Connect(function(i)
             if not waiting or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
             waiting = false
             bb.key = i.KeyCode
@@ -11237,23 +11395,27 @@ do
             kb.BackgroundColor3 = Theme.bg3
             kb.TextColor3 = Theme.textDim
         end))
+        mark(r, 186, 20, "Whatever key you actually parry with in this game."
+             .. " Click, then press the key.")
     end
 
-    cap("HOW THIS WORKS")
+    cap("HONEST LIMITS")
     do
         ord = ord + 1
         local h = Instance.new("TextLabel", body)
-        h.Size = UDim2.new(1, -6, 0, 92)
+        h.Size = UDim2.new(1, -6, 0, 86)
         h.LayoutOrder = ord
         h.BackgroundTransparency = 1
-        h.Text = "  The trigger is TIME, not distance. The ball's closing speed"
-              .. " towards you is measured every frame and the key is pressed"
-              .. " when impact is the set number of seconds away - so a fast"
-              .. " ball is parried further out and a slow one is left alone."
-              .. " Start at 0.14 and raise it if you parry late.\n"
-              .. "  The ball is found by shape, size and motion rather than by"
-              .. " name, and the search is cached - a per-frame scan of the"
-              .. " whole workspace is what made the first version lag."
+        h.Text = "  A 100% rate cannot be promised by anything on your machine:"
+              .. " the SERVER decides whether a parry landed, and it sees the"
+              .. " ball one round trip in the past. What is removed here is"
+              .. " every cause of a miss that lives on this side - ping,"
+              .. " tracking the wrong ball, a mistimed press.\n"
+              .. "  On being noticed: varied timing and a human press rate"
+              .. " remove the obvious tells. They cannot hide a hit rate no"
+              .. " player reaches - that is counted on the server and no"
+              .. " setting here reaches it. Lower the lead a little and let"
+              .. " some through if you want to stay unremarkable."
         h.Font = Enum.Font.Gotham; h.TextSize = 10
         h.TextXAlignment = Enum.TextXAlignment.Left
         h.TextYAlignment = Enum.TextYAlignment.Top
@@ -11262,33 +11424,40 @@ do
         SilenceAPI._theme(h, "TextColor3", "textDim")
     end
 
+    ------------------------------------------------------------ LOOP
     local warned = false
-    track(RunService.Heartbeat:Connect(function(dt)
+    track(RunService.Heartbeat:Connect(function()
         if not (W.Visible or bb.esp or bb.auto) then return end
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then return end
 
-        local okB, b = pcall(findBall)
-        if not okB then b = nil end
-        if not b then
-            if W.Visible then info.Text = "no ball found" end
+        pcall(scanBalls)
+        local now = tick()
+        local best, bestEta, bestDist, bestClose = nil, math.huge, 0, 0
+        for _, b in ipairs(balls) do
+            if b.Parent then
+                local okE, eta, dist, closing = pcall(etaOf, b, root, now)
+                if okE and dist <= bb.maxD and eta < bestEta then
+                    best, bestEta, bestDist, bestClose = b, eta, dist, closing
+                end
+            end
+        end
+
+        if not best then
+            if W.Visible then info.Text = "no ball incoming" end
             if hl then pcall(function() hl:Destroy() end); hl = nil end
-            lastPos = nil
             return
         end
 
-        local now = tick()
-        local frameDt = (lastT > 0) and (now - lastT) or dt
-        local closing, dist = closingSpeed(b, root, frameDt)
-        lastPos, lastT = b.Position, now
+        local lead = bb.lead + (bb.pingComp and pingSeconds() or 0)
 
-        local eta = (closing > 1) and (dist / closing) or math.huge
         if W.Visible then
             info.Text = string.format(
-                "%s\n%.1f studs   closing %.0f/s   impact in %s   parried %d",
-                b.Name, dist, math.max(closing, 0),
-                (eta < 9 and string.format("%.2fs", eta) or "-"), parries)
+                "%s   %.1f studs   closing %.0f/s\nimpact in %s   lead %.0fms   presses %d   through %d",
+                best.Name, bestDist, math.max(bestClose, 0),
+                (bestEta < 9 and string.format("%.2fs", bestEta) or "-"),
+                lead * 1000, presses, throughs)
         end
 
         if bb.esp then
@@ -11297,22 +11466,52 @@ do
                 hl.Name = "__SIL_Ball"
                 hl.FillTransparency = 0.45
                 hl.OutlineTransparency = 0
-                hl.Parent = b
+                hl.Parent = best
             end
-            hl.Adornee = b
+            hl.Adornee = best
         elseif hl then
             pcall(function() hl:Destroy() end); hl = nil
         end
 
-        if bb.auto and dist <= bb.maxD and eta <= bb.lead
-           and now - lastParry > 0.18 then
-            lastParry = now
-            if pressParry() then
-                parries = parries + 1
-            elseif not warned then
-                warned = true
-                notify("Blade Ball", "This executor exposes no key sending, so"
-                       .. " auto parry cannot press anything.", 9)
+        -- Jitter is applied to the LEAD, not to the press, so the timing
+        -- varies while still being early enough to land.
+        local fireAt = lead
+        if bb.jitter then fireAt = lead + (math.random() - 0.5) * 0.03 end
+
+        if bb.auto and bestEta <= fireAt then
+            -- One press per approach. The retry is a second attempt after a
+            -- pause, not a burst - and the floor between any two presses is
+            -- a reaction time a person could actually produce.
+            local gap = bb.minGap
+            if bb.jitter then gap = gap + math.random() * 0.08 end
+            local sameBall = (SilenceAPI._bbLastTarget == best)
+            if not sameBall then SilenceAPI._bbTries = 0 end
+            local tries = SilenceAPI._bbTries or 0
+            local allowed = bb.retry and 2 or 1
+
+            if tries < allowed and now - lastParry > (tries == 0 and 0 or gap) then
+                lastParry = now
+                SilenceAPI._bbLastTarget = best
+                SilenceAPI._bbTries = tries + 1
+                if pressParry() then
+                    presses = presses + 1
+                elseif not warned then
+                    warned = true
+                    notify("Blade Ball", "This executor exposes no key sending,"
+                           .. " so auto parry cannot press anything.", 9)
+                end
+            end
+        end
+        if best ~= SilenceAPI._bbLastTarget then SilenceAPI._bbTries = 0 end
+
+        -- A ball that came inside two studs after a press was one this did
+        -- not save. That is the only failure signal available on the client,
+        -- and it is what the lead learns from.
+        if bb.auto and bb.adaptive and bestDist < 2 and now - lastParry < 0.6 then
+            if now - (SilenceAPI._bbLastMiss or 0) > 1.5 then
+                SilenceAPI._bbLastMiss = now
+                throughs = throughs + 1
+                bb.lead = math.min(bb.lead + 0.01, 0.6)
             end
         end
     end))
