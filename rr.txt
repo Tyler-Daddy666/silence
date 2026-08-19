@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v98"
+SilenceAPI._version = "v99"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -3369,6 +3369,12 @@ local function playEmote(animId, soundId, loop, pitch)
     State.currentEmote = animId
     print(string.format("[Silence] OK anim playing  Length=%.2fs  Looped=%s",
         trk.Length, tostring(trk.Looped)))
+    -- An executor's print lands in the executor console, not in Roblox's F9
+    -- window, so the one number that tells a good asset from a bad one has
+    -- to come to the screen by itself.
+    SilenceAPI._lastEmote = string.format("%s  Length=%.2fs", tostring(animId), trk.Length)
+    notify("Emote", "playing " .. tostring(animId)
+           .. string.format("   Length %.2fs", trk.Length), 3)
     if trk.Length < 0.5 then
         notify("Emote WARN", "Length="..string.format("%.2f",trk.Length).."s - animation has too few keyframes.", 6)
         warn("[Silence] WARNING: animation length is suspiciously short ("..trk.Length.."s)")
@@ -3399,9 +3405,32 @@ local function playEmote(animId, soundId, loop, pitch)
     end
 
     -- Enforcer: Nur Animate deaktiviert halten, keine anderen Skripte
+    -- The enforcer has exactly one job: this game may switch the Animate
+    -- script back on, and its idle animation would then fight the emote.
+    --
+    -- It used to do considerably more, and the more WAS the bug. The
+    -- liveness test read "not activeTrack.Parent" - but AnimationTrack.Parent
+    -- is ALWAYS nil. A track is never parented into the DataModel; that is
+    -- precisely why Animator:GetPlayingAnimationTracks() has to exist, since
+    -- tracks cannot be found through GetChildren. So the branch fired on
+    -- every Heartbeat: a fresh Animation and AnimationTrack were built and
+    -- played with fadeTime 0, sixty times a second. The only track ever at
+    -- full weight was one frame old, so the rig sat on the frame-0 pose
+    -- forever - "frozen in the first second" - while leaking about 120
+    -- instances a second. IsPlaying is the test that actually means
+    -- something here.
+    --
+    -- Also gone: forcing TimePosition back to 0 near the end. The track is
+    -- Looped, and the engine wraps it by itself; doing both fought each other.
     local trackAnimId = animId
+    local nextCheck = 0
     emoteEnforceConn = RunService.Heartbeat:Connect(function()
         if State.currentEmote ~= trackAnimId then return end
+        -- a quarter second catches a game re-enabling Animate long before a
+        -- human sees it, and takes this off the per-frame budget entirely
+        if tick() < nextCheck then return end
+        nextCheck = tick() + 0.25
+
         local c2 = getChar(); if not c2 then return end
         local an = c2:FindFirstChild("Animate")
         if an and not an.Disabled then an.Disabled = true end
@@ -3415,26 +3444,19 @@ local function playEmote(animId, soundId, loop, pitch)
             end
         end
 
-        if not activeTrack or not activeTrack.Parent then
-            local newAnim = Instance.new("Animation")
-            newAnim.AnimationId = "rbxassetid://"..tostring(trackAnimId)
-            local rOk, newTrk = pcall(function() return anim2:LoadAnimation(newAnim) end)
-            if rOk and newTrk then
-                newTrk.Priority = Enum.AnimationPriority.Action4
-                newTrk.Looped = true
-                newTrk:Play(0)
-                activeTrack = newTrk
-            end
-        elseif not activeTrack.IsPlaying then
-            pcall(function() activeTrack:Play(0) end)
-        elseif activeTrack.Length > 0 and activeTrack.TimePosition >= activeTrack.Length - 0.05 then
-            pcall(function() activeTrack.TimePosition = 0 end)
+        if activeTrack and not activeTrack.IsPlaying then
+            pcall(function() activeTrack:Play(0.1) end)
         end
     end)
 
     activeAnimConn = trk.Stopped:Connect(function()
-        if State.currentEmote == animId and activeTrack then
-            pcall(function() activeTrack:Play(0) end)
+        -- A looped track does not fire this by itself, so if it fires,
+        -- something else stopped us. The enforcer would catch it within a
+        -- quarter second anyway - this only makes the recovery instant. The
+        -- IsPlaying guard stops the two of them stacking Play calls.
+        if State.currentEmote == animId and activeTrack
+           and not activeTrack.IsPlaying then
+            pcall(function() activeTrack:Play(0.1) end)
         end
     end)
 
@@ -16893,25 +16915,23 @@ end))
 end)()
 
 ----------------------------------------------------------------
--- TAB: UGC EMOTES
+-- TAB: UGC EMOTES  ->  its own window
 --
 -- A catalog emote is AssetType 61 (EmoteAnimation) and is NOT an animation.
 -- It is a small wrapper whose root instance is an Animation pointing at the
 -- real asset - catalog id 5895009708 ("Jumping Cheer") holds 5895324424.
 -- Assigning the catalog id to AnimationId gives you an emote that silently
--- does nothing, which is the same trap the animation packages set.
+-- does nothing, the same trap the animation packages set.
 --
--- The list below therefore stores the INNER animation ids, each one pulled
--- out of its wrapper and confirmed as AssetTypeId 24 through the economy
--- API. Anything typed in by hand goes through resolveId(), which unwraps a
--- catalog id and passes a raw animation id straight through - so both kinds
--- of number work and you do not have to know which one you have.
+-- The list below stores the INNER animation ids, each pulled out of its
+-- wrapper and confirmed as AssetTypeId 24 through the economy API. Anything
+-- typed in by hand goes through resolveId(), which unwraps a catalog id and
+-- passes a raw animation id straight through - so both kinds of number work
+-- and you do not have to know which one you are holding.
 ----------------------------------------------------------------
 ;(function()
 local pEm = addTab("UGC Emotes")
 
--- name, animation id. The seven classics first, then catalog emotes by
--- favourites. These are inner ids, ready for AnimationId as they stand.
 local EMOTES = {
     { "Wave",             507770239 },
     { "Point",            507770453 },
@@ -16962,9 +16982,9 @@ local function resolveId(id)
     if not id then return nil end
     if resolved[id] then return resolved[id] end
     -- GetObjects hands the wrapper back as a real instance, so the inner id
-    -- can simply be read off it - no binary parsing of the rbxm. A raw
-    -- animation id comes back as an Animation with an empty AnimationId, or
-    -- fails outright, and falls through to being used as-is.
+    -- can be read straight off it - no binary parsing of the rbxm. A raw
+    -- animation id either comes back with an empty AnimationId or fails
+    -- outright, and falls through to being used as it is.
     local ok, objs = pcall(function()
         return game:GetObjects("rbxassetid://" .. id)
     end)
@@ -16991,80 +17011,128 @@ local function play(id)
             notify("Emotes", "That is not an id.", 4)
             return
         end
-        -- playEmote already waits for Length and says so when Roblox refuses
-        -- the asset, so a dead id reports itself rather than doing nothing
         -- playEmote owns State.currentEmote: it stores the ANIMATION ID
         -- there, and its resume-after-respawn and stop paths compare against
-        -- that exact value. Writing a display name over it would break both,
-        -- and would also leave a failed emote looking like a running one to
-        -- the animation-pack block, which refuses to apply while one plays.
+        -- that exact value. Writing a display name over it would break both.
         playEmote(a, 0, false, 1)
     end)
 end
+SilenceAPI._playEmoteId = play
 
-sectionLabel(pEm, "PLAY")
+------------------------------------------------------------------ WINDOW
+local EW = SilenceAPI._gameWindow("UGC EMOTES",
+    #EMOTES .. " verified emotes, or paste any catalog id")
+EW.Size = UDim2.new(0, 660, 0, 600)
+EW.Position = UDim2.new(0.5, -330, 0.5, -300)
 
-local sBox = Instance.new("TextBox", pEm)
-sBox.Size = UDim2.new(1, 0, 0, 34)
-sBox.BorderSizePixel = 0
-sBox.Text = ""
-sBox.PlaceholderText = "search emotes..."
-sBox.Font = Enum.Font.Gotham; sBox.TextSize = 12
-sBox.TextXAlignment = Enum.TextXAlignment.Left
-sBox.ClearTextOnFocus = false
-corner(sBox, 9); padding(sBox, 0, 0, 14, 14)
-SilenceAPI._theme(sBox, "BackgroundColor3", "bg2")
-SilenceAPI._theme(sBox, "TextColor3", "text")
-SilenceAPI._theme(sBox, "PlaceholderColor3", "textDim")
+local function box(y, placeholder)
+    local t = Instance.new("TextBox", EW)
+    t.Size = UDim2.new(1, -142, 0, 30); t.Position = UDim2.new(0, 20, 0, y)
+    t.BorderSizePixel = 0
+    t.Text = ""
+    t.PlaceholderText = placeholder
+    t.Font = Enum.Font.Gotham; t.TextSize = 12
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.ClearTextOnFocus = false
+    t.ZIndex = 400
+    corner(t, 8); padding(t, 0, 0, 12, 12)
+    SilenceAPI._theme(t, "BackgroundColor3", "bg2")
+    SilenceAPI._theme(t, "TextColor3", "text")
+    SilenceAPI._theme(t, "PlaceholderColor3", "textDim")
+    return t
+end
 
-inputRow(pEm, "Play by id  (catalog or animation)", "", function(v)
-    if tostring(v or ""):match("%d+") then play(v) end
-end)
+local function topBtn(label, y, cb)
+    local b = Instance.new("TextButton", EW)
+    b.Size = UDim2.new(0, 100, 0, 30); b.Position = UDim2.new(1, -120, 0, y)
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.Font = Enum.Font.GothamBold; b.TextSize = 11
+    b.AutoButtonColor = false
+    b.ZIndex = 400
+    corner(b, 8)
+    SilenceAPI._theme(b, "BackgroundColor3", "bg2")
+    SilenceAPI._theme(b, "TextColor3", "text")
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg3 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg2 }):Play()
+    end)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
 
-buttonRow(pEm, "Stop Emote", function()
+local sBox  = box(54, "search emotes...")
+local idBox = box(92, "paste a catalog or animation id...")
+
+topBtn("STOP", 54, function()
     stopEmote()
     notify("Emotes", "Stopped.", 2)
 end)
+topBtn("PLAY ID", 92, function()
+    if tostring(idBox.Text or ""):match("%d+") then play(idBox.Text)
+    else notify("Emotes", "Put an id in the box first.", 3) end
+end)
+idBox.FocusLost:Connect(function(enter)
+    if enter and tostring(idBox.Text or ""):match("%d+") then play(idBox.Text) end
+end)
 
-local hint = Instance.new("TextLabel", pEm)
-hint.Size = UDim2.new(1, 0, 0, 44)
-hint.BackgroundTransparency = 1
-hint.Text = "  A catalog emote is a wrapper, not an animation - pasting a"
-         .. " catalog id straight in plays nothing.\n  The field above unwraps"
-         .. " it for you, so either kind of id works."
-hint.Font = Enum.Font.Gotham
-hint.TextSize = 10
-hint.TextWrapped = true
-hint.TextXAlignment = Enum.TextXAlignment.Left
-hint.TextYAlignment = Enum.TextYAlignment.Top
-hint.TextColor3 = Theme.textDim
+local list = Instance.new("ScrollingFrame", EW)
+list.Size = UDim2.new(1, -40, 1, -192); list.Position = UDim2.new(0, 20, 0, 132)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.ZIndex = 400
+local lay = Instance.new("UIListLayout", list)
+lay.Padding = UDim.new(0, 4); lay.SortOrder = Enum.SortOrder.LayoutOrder
 
-sectionLabel(pEm, "EMOTES")
+local foot = Instance.new("TextLabel", EW)
+foot.Size = UDim2.new(1, -40, 0, 40); foot.Position = UDim2.new(0, 20, 1, -50)
+foot.BackgroundTransparency = 1
+foot.Text = "A catalog emote is a wrapper, not an animation - pasting a catalog"
+         .. " id raw plays nothing. The box above unwraps it, so either kind"
+         .. " of id works.\nRightShift or the STOP button ends an emote."
+foot.Font = Enum.Font.Gotham; foot.TextSize = 10
+foot.TextXAlignment = Enum.TextXAlignment.Left
+foot.TextYAlignment = Enum.TextYAlignment.Top
+foot.TextWrapped = true
+foot.ZIndex = 400
+SilenceAPI._theme(foot, "TextColor3", "textDim")
 
--- Rows are built by hand rather than with buttonRow: buttonRow registers
--- every row with the panel-wide search, and forty-one emotes would drown
--- everything else in it. This tab has a search of its own instead.
 local rows = {}
 for i, e in ipairs(EMOTES) do
-    local b = Instance.new("TextButton", pEm)
-    b.Size = UDim2.new(1, 0, 0, 32)
+    local b = Instance.new("TextButton", list)
+    b.Size = UDim2.new(1, -6, 0, 32)
     b.BorderSizePixel = 0
-    b.Text = e[1]
-    b.Font = Enum.Font.GothamMedium; b.TextSize = 12
-    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.Text = ""
     b.AutoButtonColor = false
-    b.LayoutOrder = 100 + i
-    corner(b, 9); padding(b, 0, 0, 14, 60)
-    SilenceAPI._theme(b, "BackgroundColor3", "bg2")
-    SilenceAPI._theme(b, "TextColor3", "text")
+    b.LayoutOrder = i
+    b.ZIndex = 401
+    corner(b, 8)
+    b.BackgroundColor3 = Theme.bg2
+
+    local nm = Instance.new("TextLabel", b)
+    nm.Size = UDim2.new(1, -150, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
+    nm.BackgroundTransparency = 1
+    nm.Text = e[1]
+    nm.Font = Enum.Font.GothamMedium; nm.TextSize = 12
+    nm.TextXAlignment = Enum.TextXAlignment.Left
+    nm.ZIndex = 402
+    SilenceAPI._theme(nm, "TextColor3", "text")
 
     local idl = Instance.new("TextLabel", b)
-    idl.Size = UDim2.new(0, 120, 1, 0); idl.Position = UDim2.new(1, -128, 0, 0)
+    idl.Size = UDim2.new(0, 130, 1, 0); idl.Position = UDim2.new(1, -142, 0, 0)
     idl.BackgroundTransparency = 1
     idl.Text = tostring(e[2])
     idl.Font = Enum.Font.Code; idl.TextSize = 9
     idl.TextXAlignment = Enum.TextXAlignment.Right
-    idl.TextColor3 = Theme.textDim
+    idl.ZIndex = 402
+    SilenceAPI._theme(idl, "TextColor3", "textDim")
 
     b.MouseEnter:Connect(function()
         TweenService:Create(b, SilenceAPI._twFade,
@@ -17086,7 +17154,29 @@ sBox:GetPropertyChangedSignal("Text"):Connect(function()
     end
 end)
 
-SilenceAPI._playEmoteId = play
+SilenceAPI._openEmotes = function() EW.Visible = not EW.Visible end
+
+------------------------------------------------------------------ THE TAB
+sectionLabel(pEm, "UGC EMOTES")
+buttonRow(pEm, "Open UGC Emotes", function()
+    SilenceAPI._openEmotes()
+end)
+buttonRow(pEm, "Stop Emote", function()
+    stopEmote()
+    notify("Emotes", "Stopped.", 2)
+end)
+
+local eHint = Instance.new("TextLabel", pEm)
+eHint.Size = UDim2.new(1, 0, 0, 34)
+eHint.BackgroundTransparency = 1
+eHint.Text = "  " .. #EMOTES .. " verified emotes, plus a box for any catalog"
+          .. " id.\n  Catalog ids are unwrapped for you - both kinds work."
+eHint.Font = Enum.Font.Gotham
+eHint.TextSize = 10
+eHint.TextWrapped = true
+eHint.TextXAlignment = Enum.TextXAlignment.Left
+eHint.TextYAlignment = Enum.TextYAlignment.Top
+eHint.TextColor3 = Theme.textDim
 end)()
 
 ----------------------------------------------------------------
@@ -17370,6 +17460,9 @@ buttonRow(pLog, "SELF TEST  -  run everything, copy one report", function()
     o[#o+1] = "settings icon    : " .. tostring(SETTINGS_IMG or "missing")
     o[#o+1] = "jumpscare frames : "
               .. tostring(#(SilenceAPI._jumpFrames or {}))
+
+    head("LAST EMOTE")
+    o[#o+1] = tostring(SilenceAPI._lastEmote or "none played this session")
 
     head("LIVE PREVIEW")
     o[#o+1] = tostring(SilenceAPI._vpState
