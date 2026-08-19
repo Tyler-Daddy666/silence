@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v119"
+SilenceAPI._version = "v120"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -4476,6 +4476,21 @@ task.spawn(function()
     end
     print("[Silence] spin sheet loaded for " .. #hosts .. " logo(s)")
 end)
+
+-- Called once the decal has been unwrapped, if the id turned out to point at
+-- a Decal rather than at the image inside it.
+SilenceAPI._respin = function(id)
+    if not id then return end
+    sheet = "rbxassetid://" .. tostring(id)
+    for _, h in ipairs(hosts) do
+        if h.img and h.img.Parent then
+            h.img.Image = sheet
+            h.img.Visible = true
+            if h.letter then pcall(function() h.letter.Text = "" end) end
+        end
+    end
+    SilenceAPI._spinWhy = "asset id " .. tostring(id) .. " (unwrapped)"
+end
 
 -- One clock for every logo on screen. Four separate Heartbeats each summing
 -- their own dt would drift apart within a minute and show four different
@@ -18295,7 +18310,9 @@ refreshIconReport()
 -- exist, so dropping the files in does not need a fresh inject. The workspace
 -- lookups run before the directory discovery, which is already done, so
 -- anything placed since boot is picked up.
-local function reloadIcons()
+local reloadIcons
+SilenceAPI._reloadIcons = function() if reloadIcons then reloadIcons() end end
+function reloadIcons()
     DISCORD_IMG = loadLocalImage(
         { "discord-icon.png", "silence_discord.png", "discord.png" },
         "https://raw.githubusercontent.com/Tyler-daddy/silence-admin-panel/main/discord-icon.png")
@@ -19708,6 +19725,57 @@ task.delay(12, function()
                .. " but GitHub still has " .. remote
                .. " - that upload never happened.", 12)
     end
+end)
+end)()
+
+;(function()
+-- The Creator Dashboard hands you the DECAL id. An ImageLabel needs the
+-- image INSIDE that decal, and the two are separate assets - feed it the
+-- wrapper and it draws nothing at all, silently. Roblox's asset endpoint
+-- answers 401 to anything unauthorised, so this cannot be looked up from
+-- outside; but game:GetObjects goes through the engine's own asset pipeline
+-- and hands the Decal back as an instance whose Texture is the number that
+-- was actually wanted.
+--
+-- Same shape as the emote wrapper problem, same solution.
+local function unwrap(id)
+    local ok, objs = pcall(function()
+        return game:GetObjects("rbxassetid://" .. tostring(id))
+    end)
+    if not ok or type(objs) ~= "table" or not objs[1] then return nil end
+    local o = objs[1]
+    local tex = nil
+    if o:IsA("Decal") or o:IsA("Texture") then
+        tex = tostring(o.Texture):match("%d+")
+    elseif o:IsA("ImageLabel") or o:IsA("ImageButton") then
+        tex = tostring(o.Image):match("%d+")
+    end
+    pcall(function() o:Destroy() end)
+    return tex
+end
+
+task.delay(2, function()
+    local changed = false
+    for _, k in ipairs({ "spin", "discord", "settings" }) do
+        local id = ICON_DIRS.assets[k]
+        if id and id > 0 then
+            local inner = tonumber(unwrap(id))
+            if inner and inner ~= id then
+                ICON_DIRS.assets[k] = inner
+                ICON_DIRS.src[k .. " decal"] = tostring(id) .. " -> " .. tostring(inner)
+                changed = true
+                print("[Silence] decal " .. id .. " unwrapped to " .. inner)
+            end
+        end
+    end
+    if not changed then return end
+    -- re-run the icon load so the corrected ids actually reach the buttons
+    pcall(function()
+        if SilenceAPI._reloadIcons then SilenceAPI._reloadIcons() end
+    end)
+    pcall(function()
+        if SilenceAPI._respin then SilenceAPI._respin(ICON_DIRS.assets.spin) end
+    end)
 end)
 end)()
 
