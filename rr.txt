@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v62"
+SilenceAPI._version = "v63"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -5666,7 +5666,7 @@ local TAB_CATEGORY = {
     IMPORTANT = "Home",   Founder       = "Home",
     Player    = "Self",   Skins         = "Self",   ["FPS Boost"] = "Self",
     Sky       = "Self",
-    Avatar    = "Larp",   Roleplay      = "Larp",
+    Avatar    = "Larp",
     Studio    = "Larp",
     Aimbot    = "Combat", Visual        = "Combat",
     Players   = "People", Trolling      = "People",
@@ -5690,7 +5690,7 @@ local CATEGORIES = {
 local TAB_LO_INSIDE = {
     IMPORTANT = 1, Founder = 2,
     Player = 1, Skins = 2, Sky = 3, ["FPS Boost"] = 4,
-    Studio = 0, Avatar = 1, Roleplay = 2,
+    Studio = 0, Avatar = 1,
     Aimbot = 1, Visual = 2,
     Players = 1, Trolling = 2,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
@@ -7633,71 +7633,6 @@ end)
 lockTabIfRisky(pAv)
 end)()
 
-----------------------------------------------------------------
--- TAB: ROLEPLAY   (category: Larp)
-----------------------------------------------------------------
-;(function()
-local pPer = addTab("Roleplay")
-
-sectionLabel(pPer, "OVERHEAD TAG")
-buttonRow(pPer, "Open Tag Editor", function()
-    if SilenceAPI._toggleTagEditor then SilenceAPI._toggleTagEditor() end
-end)
-local tagHint = Instance.new("TextLabel", pPer)
-tagHint.Size = UDim2.new(1,0,0,26); tagHint.BackgroundTransparency = 1
-tagHint.Text = "  Titles are saved per UserId and survive a restart."
-tagHint.Font = Enum.Font.Gotham; tagHint.TextSize = 10
-tagHint.TextColor3 = Theme.textDim
-tagHint.TextXAlignment = Enum.TextXAlignment.Left
-
-sectionLabel(pPer, "LOCAL CHAT")
-local chatBox = inputRow(pPer, "Message", "", function() end)
-local function pushLocal(msg, colour)
-    if not msg or msg == "" then return end
-    pcall(function()
-        StarterGui:SetCore("ChatMakeSystemMessage", {
-            Text     = msg,
-            Color    = colour or Color3.fromRGB(190, 130, 255),
-            Font     = Enum.Font.GothamBold,
-            TextSize = 18,
-        })
-    end)
-end
-buttonRow(pPer, "Send (only you see it)", function()
-    pushLocal(chatBox.Text)
-end)
-buttonRow(pPer, "Send as [SERVER]", function()
-    if chatBox.Text ~= "" then
-        pushLocal("[SERVER] " .. chatBox.Text, Color3.fromRGB(255, 190, 80))
-    end
-end)
-local chatHint = Instance.new("TextLabel", pPer)
-chatHint.Size = UDim2.new(1,0,0,26); chatHint.BackgroundTransparency = 1
-chatHint.Text = "  Rendered in your own chat window only - nothing is sent to the server."
-chatHint.Font = Enum.Font.Gotham; chatHint.TextSize = 10
-chatHint.TextColor3 = Theme.textDim
-chatHint.TextXAlignment = Enum.TextXAlignment.Left
-
-sectionLabel(pPer, "PLAYER LOG")
-local logConns = {}
-local function setPlayerLog(on)
-    State.playerLog = on
-    for _, c in ipairs(logConns) do pcall(function() c:Disconnect() end) end
-    logConns = {}
-    if not on then return end
-    table.insert(logConns, Players.PlayerAdded:Connect(function(pl)
-        notify("Joined", pl.DisplayName .. "  (@" .. pl.Name .. ")", 3)
-    end))
-    table.insert(logConns, Players.PlayerRemoving:Connect(function(pl)
-        notify("Left", pl.DisplayName .. "  (@" .. pl.Name .. ")", 3)
-    end))
-end
-toggleRow(pPer, "Notify on join / leave", function() return State.playerLog end, setPlayerLog)
-SilenceAPI._setPlayerLog = setPlayerLog
-
--- no lockTabIfRisky here on purpose: nothing on this tab touches the server,
--- so there is nothing for an anti-cheat to catch.
-end)()
 
 ----------------------------------------------------------------
 -- TAB: PLAYERS
@@ -8937,6 +8872,41 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
     SilenceAPI._currentTabName = "Misc"
 end)()
 
+
+-- Moved here from the Roleplay tab, which no longer exists. It writes into
+-- your own chat window and never touches the server, so it sits with the
+-- other harmless utilities rather than under a roleplay heading.
+sectionLabel(pMisc, "LOCAL CHAT")
+do
+    local chatBox = inputRow(pMisc, "Message", "", function() end)
+    local function pushLocal(msg, colour)
+        if not msg or msg == "" then return end
+        pcall(function()
+            StarterGui:SetCore("ChatMakeSystemMessage", {
+                Text     = msg,
+                Color    = colour or Color3.fromRGB(190, 130, 255),
+                Font     = Enum.Font.GothamBold,
+                TextSize = 18,
+            })
+        end)
+    end
+    buttonRow(pMisc, "Send (only you see it)", function()
+        pushLocal(chatBox.Text)
+    end)
+    buttonRow(pMisc, "Send as [SERVER]", function()
+        if chatBox.Text ~= "" then
+            pushLocal("[SERVER] " .. chatBox.Text, Color3.fromRGB(255, 190, 80))
+        end
+    end)
+    local chatHint = Instance.new("TextLabel", pMisc)
+    chatHint.Size = UDim2.new(1, 0, 0, 26)
+    chatHint.BackgroundTransparency = 1
+    chatHint.Text = "  Rendered in your own chat window only - nothing is sent to the server."
+    chatHint.Font = Enum.Font.Gotham
+    chatHint.TextSize = 10
+    chatHint.TextColor3 = Theme.textDim
+    chatHint.TextXAlignment = Enum.TextXAlignment.Left
+end
 
 sectionLabel(pMisc, "PRANKS")
 toggleRow(pMisc, "Let other Silence users jumpscare me",
@@ -10560,7 +10530,6 @@ do
     local t = SilenceAPI._tabs and SilenceAPI._tabs["Avatar"]
     if t and t.btn then t.btn.Visible = false end
 end
-local pgRp = adopt("Roleplay"); if pgRp then addStudioTab("ROLEPLAY", "ROLEPLAY", pgRp) end
 addStudioTab("PLAYERS", "PLAYERS")
 
 -- one tab left in the panel, and it does nothing but open this window
@@ -15071,6 +15040,28 @@ end
 --------------------------------------------------------------- TAGS
 -- Who the tag system thinks is a Silence user, and why. Redrawn every time
 -- the Logs tab is on screen, so it follows a scan as it happens.
+-- Moved here from the Roleplay tab. A join/leave notifier is a log, and the
+-- Logs tab is where somebody looks for one.
+sectionLabel(pLog, "PLAYER LOG")
+do
+    local logConns = {}
+    local function setPlayerLog(on)
+        State.playerLog = on
+        for _, c in ipairs(logConns) do pcall(function() c:Disconnect() end) end
+        logConns = {}
+        if not on then return end
+        table.insert(logConns, Players.PlayerAdded:Connect(function(pl)
+            notify("Joined", pl.DisplayName .. "  (@" .. pl.Name .. ")", 3)
+        end))
+        table.insert(logConns, Players.PlayerRemoving:Connect(function(pl)
+            notify("Left", pl.DisplayName .. "  (@" .. pl.Name .. ")", 3)
+        end))
+    end
+    toggleRow(pLog, "Notify on join / leave",
+        function() return State.playerLog end, setPlayerLog)
+    SilenceAPI._setPlayerLog = setPlayerLog
+end
+
 sectionLabel(pLog, "SILENCE USERS")
 local tagView = makeLogView(pLog, 150)
 
