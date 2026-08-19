@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v104"
+SilenceAPI._version = "v105"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -17439,12 +17439,89 @@ local function catalogPage()
     return data
 end
 
+local function merge(list)
+    local added = 0
+    for _, e in ipairs(list) do
+        local id = tonumber(e[1])
+        local nm = tostring(e[2] or "")
+        if id and nm ~= "" then
+            local k = string.lower(nm)
+            if not seenName[k] then
+                seenName[k] = true
+                EMOTES[#EMOTES + 1] = { nm, id }
+                added = added + 1
+            end
+        end
+    end
+    return added
+end
+
+local CACHE = "silence_emotes.json"
+local HS = game:GetService("HttpService")
+
+local function readCache()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then return nil end
+    local ok, body = pcall(function()
+        if isfile(CACHE) then return readfile(CACHE) end
+        return nil
+    end)
+    if not ok or type(body) ~= "string" or #body < 10 then return nil end
+    local okJ, d = pcall(function() return HS:JSONDecode(body) end)
+    if okJ and type(d) == "table" and type(d.e) == "table" then return d.e end
+    return nil
+end
+
+local function writeCache()
+    if type(writefile) ~= "function" then return end
+    pcall(function()
+        local e = {}
+        for i, x in ipairs(EMOTES) do e[i] = { x[2], x[1] } end
+        writefile(CACHE, HS:JSONEncode({ n = #e, e = e }))
+    end)
+end
+
+-- The whole list in one request. The worker walks the catalog server side,
+-- once for everybody, and hands back what it found - so the eight minutes of
+-- rate-limited paging happen there instead of here, and only ever once.
+local function fromWorker()
+    if SYNC_BASE == "" then return nil, "no sync endpoint set" end
+    local ok, body = pcall(function()
+        return game:HttpGet(SYNC_BASE .. "emotes?t="
+                            .. tostring(math.random(1, 1000000)), true)
+    end)
+    if not ok then return nil, "worker unreachable" end
+    local okJ, d = pcall(function() return HS:JSONDecode(body) end)
+    if not okJ or type(d) ~= "table" then return nil, "worker sent no JSON" end
+    if type(d.e) ~= "table" or #d.e == 0 then
+        return nil, tostring(d.note or "worker has no list yet")
+    end
+    return d.e
+end
+
 local catBtn
 local function loadCatalog()
     if catBusy then catStop = true; return end
     catBusy, catStop = true, false
     catBtn.Text = "STOP LOAD"
     task.spawn(function()
+        -- One request beats a hundred. Only if the worker has nothing does
+        -- this fall back to walking Roblox's catalog from here, which is
+        -- twelve requests a minute and takes the better part of ten.
+        countLbl.Text = "asking the worker..."
+        local list, why = fromWorker()
+        if list then
+            local n = merge(list)
+            writeCache()
+            render()
+            countLbl.Text = "worker: " .. n .. " new, " .. #EMOTES .. " total"
+            notify("Emotes", n .. " added from the worker, "
+                   .. #EMOTES .. " total.", 5)
+            catBusy = false
+            catBtn.Text = "CATALOG"
+            return
+        end
+        countLbl.Text = tostring(why) .. " - walking the catalog directly"
+        task.wait(1.5)
         local added, pages = 0, 0
         while not catStop do
             local data, err = catalogPage()
@@ -17477,12 +17554,26 @@ local function loadCatalog()
         end
         catBusy = false
         catBtn.Text = "CATALOG"
+        writeCache()
         render()
         notify("Emotes", added .. " added, " .. #EMOTES .. " total.", 5)
     end)
 end
 
 catBtn = topBtn("CATALOG", 92, loadCatalog)
+
+-- Whatever a previous session pulled down is already on disk, so the list is
+-- long before anybody presses anything.
+do
+    local cached = readCache()
+    if cached then
+        local n = merge(cached)
+        if n > 0 then
+            print("[Silence] emote cache: " .. n .. " restored, "
+                  .. #EMOTES .. " total")
+        end
+    end
+end
 
 render()
 SilenceAPI._emoteRender = render
