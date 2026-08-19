@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v80"
+SilenceAPI._version = "v81"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -11069,15 +11069,23 @@ do
     local W = gameWindow("GERMAN VOICE", "aura, gradients and emoji tags")
     -- The page the panel already built is moved in whole rather than rebuilt.
     -- Its rows keep working, and the search index still points at them.
-    local pg = SilenceAPI._gvPage
-    if pg then
+    -- Deferred on purpose. This block runs while the panel is still being
+    -- built and the German Voice tab does not exist yet, so reading _gvPage
+    -- here gives nil and the guard below silently skips everything. A
+    -- deferred task runs once the whole chunk is done and every tab is up.
+    task.defer(function()
+        local pg = SilenceAPI._gvPage
+        if not pg then
+            warn("[Silence] German Voice page missing - card will open empty")
+            return
+        end
         pg.Parent = W
         pg.Size = UDim2.new(1, -32, 1, -62)
         pg.Position = UDim2.new(0, 16, 0, 52)
         pg.Visible = true
         pg.ZIndex = 196
         SilenceAPI._hideTab("German Voice")
-    end
+    end)
     SilenceAPI._openGV = function() W.Visible = not W.Visible end
 end
 
