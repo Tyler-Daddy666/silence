@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v89"
+SilenceAPI._version = "v90"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -11006,7 +11006,7 @@ for i, c in ipairs(CARDS) do
     card.ClipsDescendants = true
     card.BackgroundColor3 = Theme.bg
     corner(card, 14)
-    local cst = stroke(card, Color3.fromRGB(255, 255, 255), 2.5, 0.45)
+    local cst = stroke(card, Color3.fromRGB(255, 255, 255), 3, 0.4)
 
     -- A second hairline a pixel inside the first. Two thin lines read as a
     -- crisp edge where one thick line just reads as a border.
@@ -11026,7 +11026,7 @@ for i, c in ipairs(CARDS) do
     -- The travelling sheen, in white and faintly on at rest. A card that
     -- only lights up under the cursor looks dead until you find it.
     local glow = addAnimatedGlow(card, {
-        thickness = 4.5, transparency = 0.6, window = 0.26,
+        thickness = 2, transparency = 0.55, window = 0.3,
         color = Color3.fromRGB(255, 255, 255) })
 
     -- AnchorPoint at the centre so the hover zoom grows from the middle
@@ -11034,16 +11034,15 @@ for i, c in ipairs(CARDS) do
     local img = Instance.new("ImageLabel", card)
     img.AnchorPoint = Vector2.new(0.5, 0.5)
     img.Position = UDim2.new(0.5, 0, 0.5, 0)
-    -- Deliberately larger than the card even at rest. Parallax shifts the
-    -- art by up to 16px, and an image sized exactly to the frame slides its
-    -- own edge into view the moment it moves. 20px of overscan means there
-    -- is always more picture than there is card.
-    img.Size = UDim2.new(1, 20, 1, 20)
+    -- Exactly card sized, with its own rounding to match the border. See the
+    -- note above the loop: this is what rules out the zoom and the parallax.
+    img.Size = UDim2.new(1, 0, 1, 0)
     img.BackgroundTransparency = 1
     img.BorderSizePixel = 0
     img.ScaleType = Enum.ScaleType.Crop
     img.ImageTransparency = 0.1
     img.ZIndex = 1
+    corner(img, 14)
     local mine = loadLocalImage(c.img, ICON_BASE .. "games/" .. c.img[1])
                  or loadLocalImage(c.img, ICON_BASE .. c.img[1])
     if mine then
@@ -11064,6 +11063,7 @@ for i, c in ipairs(CARDS) do
     scrim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
     scrim.BorderSizePixel = 0
     scrim.ZIndex = 2
+    corner(scrim, 14)
     local sg = Instance.new("UIGradient", scrim)
     sg.Rotation = 90
     sg.Transparency = NumberSequence.new({
@@ -11178,20 +11178,17 @@ for i, c in ipairs(CARDS) do
         -- what is waiting in the other game.
         TweenService:Create(img, TWs, {
             ImageTransparency = here and (hovering and 0 or 0.1) or 0.64,
-            -- zoom lives in Size because the frame around it clips
-            Size = (here and hovering) and UDim2.new(1, 48, 1, 48)
-                                       or UDim2.new(1, 20, 1, 20),
         }):Play()
         TweenService:Create(cst, TW, {
-            Transparency = hovering and 0 or (here and 0.35 or 0.68),
-            Thickness = hovering and 3.5 or 2.5,
+            Transparency = hovering and 0 or (here and 0.3 or 0.65),
+            Thickness = hovering and 4 or 3,
         }):Play()
         TweenService:Create(innerSt, TW, {
-            Transparency = hovering and 0.45 or (here and 0.8 or 0.92),
+            Transparency = hovering and 0.5 or (here and 0.82 or 0.93),
         }):Play()
         TweenService:Create(glow, TW, {
-            Transparency = hovering and 0.05 or (here and 0.5 or 0.85),
-            Thickness = hovering and 6 or 4.5,
+            Transparency = hovering and 0.05 or (here and 0.45 or 0.85),
+            Thickness = hovering and 2.5 or 2,
         }):Play()
         TweenService:Create(lift, TW, {
             Scale = hovering and (here and 1.035 or 1.012) or 1,
@@ -11210,31 +11207,8 @@ for i, c in ipairs(CARDS) do
     paints[#paints + 1] = paint
     paint()
 
-    -- Parallax. The art is already oversized while hovering, so there is
-    -- room to slide it without exposing an edge. Moving it AGAINST the cursor
-    -- is what sells the depth - moving it with the cursor just looks like
-    -- the picture is loose.
-    card.MouseMoved:Connect(function(mx, my)
-        if not hovering then return end
-        local ap, as = card.AbsolutePosition, card.AbsoluteSize
-        if as.X < 1 or as.Y < 1 then return end
-        local rx = math.clamp((mx - ap.X) / as.X - 0.5, -0.5, 0.5)
-        local ry = math.clamp((my - ap.Y) / as.Y - 0.5, -0.5, 0.5)
-        TweenService:Create(img, TweenInfo.new(0.28, Enum.EasingStyle.Quart,
-            Enum.EasingDirection.Out), {
-            Position = UDim2.new(0.5, -rx * 16, 0.5, -ry * 12),
-        }):Play()
-    end)
-
     card.MouseEnter:Connect(function() hovering = true;  paint() end)
-    card.MouseLeave:Connect(function()
-        hovering = false
-        -- everything back to centre, or the art keeps the last tilt
-        TweenService:Create(img, TWs, {
-            Position = UDim2.new(0.5, 0, 0.5, 0),
-            Size = UDim2.new(1, 20, 1, 20) }):Play()
-        paint()
-    end)
+    card.MouseLeave:Connect(function() hovering = false; paint() end)
 
     card.MouseButton1Click:Connect(function()
         if not inGame(c.key) then
