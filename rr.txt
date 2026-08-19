@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v138"
+SilenceAPI._version = "v139"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6336,14 +6336,15 @@ local function makeRailButton(cat)
     elseif cat.icon == "people" then    -- two figures, one behind the other
         dot(8, 3, 1); px(14, 9, 0, 12, 4)
         dot(7, 15, 3); px(11, 8, 14, 13, 4)
-    elseif cat.icon == "games" then     -- a d-pad and two buttons
-        -- No body. A filled body would swallow the controls painted on it,
-        -- since both are the same colour - and the controls ARE the icon.
-        -- A cross beside two buttons reads as a gamepad on its own.
-        px(5, 15, 4, 6, 2)                          -- cross, upright x 4..9
-        px(13, 5, 0, 11, 2)                         -- cross, across  x 0..13
-        dot(7, 17, 5)                               -- button, upper right
-        dot(7, 18, 14)                              -- button, lower right
+    elseif cat.icon == "games" then     -- an arcade joystick
+        -- Three shapes that connect into one silhouette, and the silhouette
+        -- is the whole message: round on top, thin in the middle, wide at
+        -- the bottom. Unlike a gamepad, nothing has to be drawn ON anything
+        -- else - which is the trap here, since every shape is the same
+        -- colour and detail painted on a filled body simply vanishes.
+        dot(12, 7, 1)                               -- ball,  x 7..19
+        px(4, 8, 11, 12, 1)                         -- shaft, joins both
+        px(22, 5, 2, 20, 2)                         -- base,  x 2..24
     elseif cat.icon == "anim" then      -- a clapper board
         -- An object, not a figure. Four attempts at a little dancer failed
         -- for the same structural reason every time: at 0.8 scale the tile
