@@ -67,10 +67,33 @@ end)
 -- copy a previous run cached, then the GitHub raw URL.
 -- Override everything with:  getgenv().SilenceIconDir = "C:/full/path"
 ----------------------------------------------------------------
-local ICON_DIRS = { src = {} }   -- probed directories + where each icon came
+-- Upload the PNGs to Roblox as Decals once, paste the ids here, and no user
+-- ever needs a local folder or a working download again - the images come
+-- from Roblox's own delivery for everybody. This is the route that makes the
+-- icons show up for OTHER people, not just whoever put files on their disk.
+--   getgenv().SilenceIconAssets = { discord = 1, settings = 2, spin = 3 }
+local ICON_DIRS = {
+    src = {}, why = {},                    -- where each icon came from, or why not
+    assets = { discord = 0, settings = 0, spin = 0 },
+}
+pcall(function()
+    local g = getgenv()
+    local t = g and g.SilenceIconAssets
+    if type(t) == "table" then
+        for k, v in pairs(t) do
+            if tonumber(v) then ICON_DIRS.assets[k] = math.floor(tonumber(v)) end
+        end
+    end
+end)
                                  -- from, both surfaced on the Logs tab
 
-local function loadLocalImage(filenames, remoteURL)
+local function loadLocalImage(filenames, remoteURL, assetKey)
+    -- an uploaded asset wins over everything: no disk, no download, no
+    -- per-user setup, and it is the same image for every player
+    if assetKey and (ICON_DIRS.assets[assetKey] or 0) > 0 then
+        ICON_DIRS.src[filenames[1]] = "roblox asset " .. ICON_DIRS.assets[assetKey]
+        return "rbxassetid://" .. tostring(ICON_DIRS.assets[assetKey])
+    end
     -- Most executors hand back a content string even when the file does not
     -- exist, so a caller would get a truthy-but-broken asset and never draw
     -- its fallback. Only trust it when the file is really there.
@@ -232,20 +255,59 @@ local function loadLocalImage(filenames, remoteURL)
         end
     end
 
-    if remoteURL and writefile and getcustomasset then
-        local okGet, body = pcall(function() return game:HttpGet(remoteURL, true) end)
-        if okGet and type(body) == "string" and #body > 100 then
+    -- Every step of the download records why it stopped. An executor print
+    -- goes to the executor's own console, not to Roblox's F9 window, so
+    -- "it did not work" was previously the entire diagnosis available.
+    local key = filenames[1]
+    if not remoteURL then
+        ICON_DIRS.why[key] = "no url"
+    elseif type(writefile) ~= "function" then
+        ICON_DIRS.why[key] = "no writefile"
+    elseif type(getcustomasset) ~= "function" then
+        ICON_DIRS.why[key] = "no getcustomasset"
+    else
+        local okGet, body = pcall(function()
+            return game:HttpGet(remoteURL, true)
+        end)
+        -- some executors only expose the newer request(); try it before
+        -- giving up, because its body handling differs
+        if (not okGet or type(body) ~= "string" or #body < 100) then
+            local req = rawget(getfenv(0), "request")
+                     or rawget(getfenv(0), "http_request")
+            if type(req) == "function" then
+                local okR, res = pcall(function()
+                    return req({ Url = remoteURL, Method = "GET" })
+                end)
+                if okR and type(res) == "table" and type(res.Body) == "string" then
+                    okGet, body = true, res.Body
+                end
+            end
+        end
+        if not okGet then
+            ICON_DIRS.why[key] = "http threw: " .. tostring(body):sub(1, 40)
+        elseif type(body) ~= "string" then
+            ICON_DIRS.why[key] = "http gave a " .. typeof(body)
+        elseif #body < 100 then
+            -- raw.githubusercontent answers a miss with the 14 byte body
+            -- "404: Not Found", which arrives as a perfectly valid reply
+            ICON_DIRS.why[key] = "only " .. #body .. " bytes back - wrong path?"
+        else
             local target = filenames[1]
-            if pcall(function() writefile(target, body) end) then
+            local okW, wErr = pcall(function() writefile(target, body) end)
+            if not okW then
+                ICON_DIRS.why[key] = "writefile refused: " .. tostring(wErr):sub(1, 40)
+            else
                 local asset = fromWorkspace(target)
                 if asset then
                     print("[Silence] downloaded " .. remoteURL .. " -> " .. target)
-                    ICON_DIRS.src[filenames[1]] = "downloaded from GitHub"
+                    ICON_DIRS.src[key] = "downloaded from GitHub"
                     return asset
                 end
+                -- the bytes are on disk but the engine will not take them,
+                -- which is what a truncated or text-mangled PNG looks like
+                ICON_DIRS.why[key] = "wrote " .. #body
+                    .. " bytes but getcustomasset refused them"
             end
-        else
-            print("[Silence] HttpGet failed for: " .. remoteURL)
         end
     end
     return nil
@@ -287,11 +349,11 @@ end)
 -- black icon would be invisible on it.
 local DISCORD_IMG  = loadLocalImage(
     { "discord-icon.png", "silence_discord.png", "discord.png" },
-    ICON_BASE .. "discord-icon.png"
+    ICON_BASE .. "discord-icon.png", "discord"
 )
 local SETTINGS_IMG = loadLocalImage(
     { "settings-icon.png", "silence_settings.png", "gear.png" },
-    ICON_BASE .. "settings-icon.png"
+    ICON_BASE .. "settings-icon.png", "settings"
 )
 print("[Silence] SETTINGS_IMG=", tostring(SETTINGS_IMG))
 if not DISCORD_IMG or not SETTINGS_IMG then
@@ -387,7 +449,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v114"
+SilenceAPI._version = "v115"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -4387,7 +4449,7 @@ task.spawn(function()
         -- "successfully" can still refuse to draw - so this is the fallback,
         -- not the plan.
         id = loadLocalImage({ "S_spin_sheet.png", "s_spin_sheet.png" },
-                            ICON_BASE .. "logo/S_spin_sheet.png")
+                            ICON_BASE .. "logo/S_spin_sheet.png", "spin")
         SilenceAPI._spinWhy = id and "loaded from file or repo"
                                  or "no file, no download, no asset id set"
     end
@@ -18380,6 +18442,13 @@ buttonRow(pLog, "SELF TEST  -  run everything, copy one report", function()
     end
 
     head("ASSETS")
+    for _, k in ipairs({ "discord-icon.png", "settings-icon.png",
+                         "S_spin_sheet.png" }) do
+        o[#o+1] = string.format("%-18s %s", k,
+            tostring((ICON_DIRS.src or {})[k]
+                     or ("FAILED - " .. tostring((ICON_DIRS.why or {})[k]
+                                                 or "never tried"))))
+    end
     o[#o+1] = "discord icon     : " .. tostring(DISCORD_IMG or "missing")
     o[#o+1] = "settings icon    : " .. tostring(SETTINGS_IMG or "missing")
     o[#o+1] = "spin sheet       : "
