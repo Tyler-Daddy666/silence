@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v116"
+SilenceAPI._version = "v118"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -764,10 +764,10 @@ local State = {
         { name="Horn 2",  id="215718515",  part="Head",     hide=false, on=false },
         { name="Horn 3",  id="74891470",   part="Head",     hide=false, on=false },
         { name="Korblox", id="139607718",  part="RightLeg", hide=true,  on=false },
-        { name="Hat 5",   id="128217885",  part="Head",     hide=false, on=false },
-        { name="Hat 6",   id="141742418",  part="Head",     hide=false, on=false },
-        { name="Hat 7",   id="226189871",  part="Head",     hide=false, on=false },
-        { name="Hat 8",   id="150381051",  part="Head",     hide=false, on=false },
+        { name="Particles 1", id="128217885", part="Head",  hide=false, on=false },
+        { name="Particles 2", id="141742418", part="Head",  hide=false, on=false },
+        { name="Particles 3", id="226189871", part="Head",  hide=false, on=false },
+        { name="Particles 4", id="150381051", part="Head",  hide=false, on=false },
         { name="Spare 9", id="",           part="Torso",    hide=false, on=false },
     },
     noclip=false,
@@ -6263,23 +6263,26 @@ local function makeRailButton(cat)
     elseif cat.icon == "people" then    -- two figures, one behind the other
         dot(8, 3, 1); px(14, 9, 0, 12, 4)
         dot(7, 15, 3); px(11, 8, 14, 13, 4)
-    elseif cat.icon == "games" then     -- a gamepad seen head on
-        px(24, 15, 1, 5, 7)                         -- body,  x 1..25, y 5..20
-        px(7, 6, 1, 18, 3); px(7, 6, 18, 18, 3)     -- grips, dropped below it
-        px(4, 12, 5, 7, 2); px(12, 4, 1, 11, 2)     -- d-pad cross, centred 7,13
-        dot(6, 15, 8); dot(6, 19, 13)               -- the two face buttons
+    elseif cat.icon == "games" then     -- a d-pad and two buttons
+        -- No body. A filled body would swallow the controls painted on it,
+        -- since both are the same colour - and the controls ARE the icon.
+        -- A cross beside two buttons reads as a gamepad on its own.
+        px(5, 15, 4, 6, 2)                          -- cross, upright x 4..9
+        px(13, 5, 0, 11, 2)                         -- cross, across  x 0..13
+        dot(7, 17, 5)                               -- button, upper right
+        dot(7, 18, 14)                              -- button, lower right
     elseif cat.icon == "anim" then      -- a figure mid-pose, not mid-stride
-        -- One arm up and one out reads as dancing at a glance; two arms down
-        -- and legs apart reads as standing, which is what a walk pose
-        -- collapses into once the tile gets small. Everything here is five
-        -- pixels or four, because the tile is scaled to 0.8 and three is the
-        -- floor at which a limb still looks like a limb.
+        -- Every limb stands OFF the torso by a pixel or two. Touching them
+        -- makes one blob, because there is no outline to separate them - the
+        -- same reason self's head floats above its shoulders rather than
+        -- sitting on them. One arm up, one out: standing arms read as
+        -- standing, and this category is dancing.
         dot(9, 9, 0)                                -- head,  x 9..18
-        px(5, 9, 11, 10, 2)                         -- torso, x 11..16
-        px(4, 10, 17, 3, 2)                         -- arm raised
-        px(9, 5, 2, 11, 2)                          -- arm out
-        px(5, 7, 8, 19, 2)                          -- left leg,  splayed
-        px(5, 7, 14, 19, 2)                         -- right leg, splayed
+        px(7, 8, 10, 11, 3)                         -- torso, x 10..17
+        px(4, 8, 20, 4, 2)                          -- arm up,  clear by 3
+        px(7, 4, 1, 13, 2)                          -- arm out, clear by 2
+        px(4, 6, 8, 20, 2)                          -- left leg
+        px(4, 6, 16, 20, 2)                         -- right leg
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
