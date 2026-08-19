@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v70"
+SilenceAPI._version = "v71"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -5984,10 +5984,16 @@ end
 
 -- Swaps which group's pills are on screen. Deliberately does NOT pick a tab,
 -- so selectTab can call it without recursing back into itself.
+-- Pages that have been moved into a window still have a tab button, and
+-- this used to switch it back on every time you changed category - which is
+-- why "German Voice" kept reappearing after being hidden.
+SilenceAPI._hiddenTabs = {}
+
 SilenceAPI._showCat = function(cat)
     SilenceAPI._activeCat = cat
     for n, t in pairs(Tabs) do
         t.btn.Visible = (TAB_CATEGORY[n] == cat)
+                        and not SilenceAPI._hiddenTabs[n]
     end
     for _, fn in ipairs(SilenceAPI._railPaint) do pcall(fn) end
 end
@@ -10078,6 +10084,7 @@ local function adopt(tabName)
     if not t or not t.page then return nil end
     -- take it out of the panel's tab strip as well, or the Larp category
     -- would still list a page that is no longer parented there
+    SilenceAPI._hiddenTabs[tabName] = true
     if t.btn then t.btn.Visible = false end
     local pg = t.page
     pg.Parent = LS
@@ -10705,6 +10712,7 @@ addStudioTab("COSTUME", "COSTUME")
 -- the same switches twice with two separate paint routines going stale
 -- against each other. Its tab is simply hidden.
 do
+    SilenceAPI._hiddenTabs["Avatar"] = true
     local t = SilenceAPI._tabs and SilenceAPI._tabs["Avatar"]
     if t and t.btn then t.btn.Visible = false end
 end
@@ -10762,6 +10770,36 @@ local CARDS = {
     { key = "bb", title = "BLADE BALL",   sub = "ball tracking and parry timing",
       img = { "bladeball.png", "bb.png" } },
 }
+
+-- BIND exists because I cannot know the place ids of the games you play, and
+-- a wrong one gives a card that never opens with nothing to explain why.
+-- Most of the time it should not be needed though: the place name is asked
+-- for once and matched against the card, so an ordinary server binds itself.
+local NAME_HINTS = { gv = { "german voice" }, bb = { "blade ball", "bladeball" } }
+
+task.spawn(function()
+    local ok, info = pcall(function()
+        return MarketplaceService:GetProductInfo(game.PlaceId)
+    end)
+    local nm = (ok and info and tostring(info.Name) or ""):lower()
+    if nm == "" then return end
+    for key, hints in pairs(NAME_HINTS) do
+        for _, h in ipairs(hints) do
+            if nm:find(h, 1, true) then
+                local list = State.gameIds[key]
+                local have = false
+                for _, id in ipairs(list) do
+                    if id == game.PlaceId then have = true break end
+                end
+                if not have then
+                    list[#list + 1] = game.PlaceId
+                    print("[Silence] auto-bound " .. key .. " to place "
+                          .. tostring(game.PlaceId) .. " (" .. nm .. ")")
+                end
+            end
+        end
+    end
+end)
 
 local function inGame(key)
     for _, id in ipairs(State.gameIds[key] or {}) do
@@ -10850,7 +10888,7 @@ for i, c in ipairs(CARDS) do
     local bind = Instance.new("TextButton", card)
     bind.Size = UDim2.new(0, 54, 0, 20); bind.Position = UDim2.new(1, -64, 0, 132)
     bind.BorderSizePixel = 0
-    bind.Text = "BIND"
+    bind.Text = "LINK"
     bind.Font = Enum.Font.GothamBold; bind.TextSize = 9
     bind.AutoButtonColor = false
     corner(bind, 5)
@@ -10973,6 +11011,7 @@ do
         pg.Position = UDim2.new(0, 16, 0, 52)
         pg.Visible = true
         pg.ZIndex = 196
+        SilenceAPI._hiddenTabs["German Voice"] = true
         local t = SilenceAPI._tabs and SilenceAPI._tabs["German Voice"]
         if t and t.btn then t.btn.Visible = false end
     end
@@ -10980,6 +11019,21 @@ do
 end
 
 ------------------------------------------------------------ BLADE BALL
+-- Rewritten after the first attempt did nothing at all. Three faults, and
+-- the first was fatal on its own:
+--
+--   * it read d.Shape on every BasePart. Shape exists on Part and NOT on
+--     MeshPart, so the read threw - inside a Heartbeat, every frame, and the
+--     whole loop died silently on the first mesh it met.
+--   * it walked Workspace:GetDescendants() once per frame. That is thousands
+--     of instances at 60fps for a value that changes slowly.
+--   * it triggered on raw distance. A ball 18 studs out is about to hit you
+--     when it is fast and is no threat at all when it is slow, so a distance
+--     threshold parries at the wrong moment either way.
+--
+-- Now: the search is throttled and cached, Shape is only read on a Part, and
+-- the trigger is TIME TO IMPACT - distance divided by how fast the ball is
+-- actually closing on you. That is the number a human is judging too.
 do
     local W = gameWindow("BLADE BALL", "ball tracking and parry timing")
 
@@ -11024,7 +11078,7 @@ do
     end
     local function tog(parent, label, x, y, w, get, set)
         local b = Instance.new("TextButton", parent)
-        b.Size = UDim2.new(0, w, 0, 24); b.Position = UDim2.new(0, x, 0, y)
+        b.Size = UDim2.new(0, w, 0, 26); b.Position = UDim2.new(0, x, 0, y)
         b.BorderSizePixel = 0
         b.Text = label
         b.Font = Enum.Font.GothamBold; b.TextSize = 11
@@ -11038,142 +11092,185 @@ do
         end
         paint()
         b.MouseButton1Click:Connect(function() set(not get()); paint() end)
-        table.insert(SilenceAPI._toggleRefreshers, paint)
+        return b
+    end
+    local function num(parent, label, x, y, w, get, set)
+        local l = Instance.new("TextLabel", parent)
+        l.Size = UDim2.new(0, w, 0, 12); l.Position = UDim2.new(0, x, 0, y)
+        l.BackgroundTransparency = 1
+        l.Text = label
+        l.Font = Enum.Font.Gotham; l.TextSize = 9
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 198
+        SilenceAPI._theme(l, "TextColor3", "textDim")
+        local b = Instance.new("TextBox", parent)
+        b.Size = UDim2.new(0, w, 0, 22); b.Position = UDim2.new(0, x, 0, y + 14)
+        b.BackgroundTransparency = 1
+        b.Text = tostring(get())
+        b.Font = Enum.Font.Code; b.TextSize = 12
+        b.TextXAlignment = Enum.TextXAlignment.Left
+        b.ClearTextOnFocus = false
+        b.ZIndex = 198
+        SilenceAPI._theme(b, "TextColor3", "text")
+        b.FocusLost:Connect(function() set(b.Text); b.Text = tostring(get()) end)
         return b
     end
 
-    -- state kept local to this window; nothing here belongs in a config
-    local bb = { esp = false, auto = false, dist = 18, key = Enum.KeyCode.F }
-    local hl, conn = nil, nil
+    local bb = { esp = false, auto = false, lead = 0.14, maxD = 60,
+                 key = Enum.KeyCode.F }
+    local hl, ball, lastScan, lastPos, lastT = nil, nil, 0, nil, 0
+    local parries, misses, lastParry = 0, 0, 0
 
-    -- The ball is whatever unanchored round part is closest to the players.
-    -- Blade Ball has renamed it more than once, so matching on a name would
-    -- have quietly stopped working after an update.
+    -- Cached and throttled. Shape is read ONLY on a Part - on a MeshPart the
+    -- property does not exist and the read throws, which is what killed the
+    -- previous loop on its first frame.
     local function findBall()
-        local best, bestD = nil, math.huge
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root then return nil end
+        if ball and ball.Parent and (ball.Position - root.Position).Magnitude < 400 then
+            return ball
+        end
+        if tick() - lastScan < 0.4 then return ball end
+        lastScan = tick()
+
+        local best, bestScore = nil, -1
         for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("BasePart") and not d.Anchored and d.Size.X < 8
-               and not d:IsDescendantOf(char) then
-                local nm = d.Name:lower()
-                if nm:find("ball") or d.Shape == Enum.PartType.Ball then
-                    local dd = (d.Position - root.Position).Magnitude
-                    if dd < bestD then best, bestD = d, dd end
+            if d:IsA("BasePart") and not d.Anchored
+               and not d:IsDescendantOf(char) and d.Size.Magnitude < 12 then
+                local score = 0
+                if d.Name:lower():find("ball") then score = score + 3 end
+                if d:IsA("Part") and d.Shape == Enum.PartType.Ball then
+                    score = score + 2
                 end
+                if d.AssemblyLinearVelocity.Magnitude > 20 then score = score + 2 end
+                if score > bestScore then best, bestScore = d, score end
             end
         end
-        return best, bestD
+        if bestScore >= 2 then ball = best else ball = nil end
+        return ball
     end
 
-    cap("BALL")
-    do
-        local r = row(84)
-        local info = Instance.new("TextLabel", r)
-        info.Size = UDim2.new(1, -24, 0, 20); info.Position = UDim2.new(0, 12, 0, 8)
-        info.BackgroundTransparency = 1
-        info.Text = "searching..."
-        info.Font = Enum.Font.Code; info.TextSize = 11
-        info.TextXAlignment = Enum.TextXAlignment.Left
-        info.ZIndex = 198
-        SilenceAPI._theme(info, "TextColor3", "textDim")
+    -- How long until it reaches you, from how fast it is actually closing.
+    -- AssemblyLinearVelocity is often zero on a client-simulated ball, so the
+    -- position difference between two frames is used as the fallback.
+    local function closingSpeed(b, root, dt)
+        local v = b.AssemblyLinearVelocity
+        if v.Magnitude < 1 and lastPos and dt > 0 then
+            v = (b.Position - lastPos) / dt
+        end
+        local toMe = (root.Position - b.Position)
+        local dist = toMe.Magnitude
+        if dist < 0.01 then return 0, 0 end
+        local closing = v:Dot(toMe.Unit)
+        return closing, dist
+    end
 
-        tog(r, "HIGHLIGHT", 12, 36, 110,
+    local function pressParry()
+        local vim = nil
+        pcall(function() vim = game:GetService("VirtualInputManager") end)
+        if vim then
+            local ok = pcall(function()
+                vim:SendKeyEvent(true,  bb.key, false, game)
+                task.wait(0.03)
+                vim:SendKeyEvent(false, bb.key, false, game)
+            end)
+            if ok then return true end
+        end
+        if type(keypress) == "function" and type(keyrelease) == "function" then
+            local ok = pcall(function()
+                keypress(bb.key.Value); task.wait(0.03); keyrelease(bb.key.Value)
+            end)
+            if ok then return true end
+        end
+        return false
+    end
+
+    cap("LIVE")
+    local info = nil
+    do
+        local r = row(56)
+        info = Instance.new("TextLabel", r)
+        info.Size = UDim2.new(1, -24, 1, 0); info.Position = UDim2.new(0, 12, 0, 0)
+        info.BackgroundTransparency = 1
+        info.Text = "waiting..."
+        info.Font = Enum.Font.Code; info.TextSize = 12
+        info.TextXAlignment = Enum.TextXAlignment.Left
+        info.TextYAlignment = Enum.TextYAlignment.Center
+        info.ZIndex = 198
+        SilenceAPI._theme(info, "TextColor3", "text")
+    end
+
+    cap("SWITCHES")
+    do
+        local r = row(48)
+        tog(r, "HIGHLIGHT", 12, 11, 118,
             function() return bb.esp end,
             function(v)
                 bb.esp = v
                 if not v and hl then pcall(function() hl:Destroy() end); hl = nil end
             end)
-
-        tog(r, "AUTO PARRY", 130, 36, 116,
+        tog(r, "AUTO PARRY", 138, 11, 124,
             function() return bb.auto end,
-            function(v) bb.auto = v end)
+            function(v) bb.auto = v; parries, misses = 0, 0 end)
+    end
 
-        local dbox = Instance.new("TextBox", r)
-        dbox.Size = UDim2.new(0, 90, 0, 24); dbox.Position = UDim2.new(0, 256, 0, 36)
-        dbox.BackgroundTransparency = 1
-        dbox.Text = tostring(bb.dist)
-        dbox.PlaceholderText = "trigger studs"
-        dbox.Font = Enum.Font.Code; dbox.TextSize = 11
-        dbox.ClearTextOnFocus = false
-        dbox.ZIndex = 198
-        SilenceAPI._theme(dbox, "TextColor3", "text")
-        dbox.FocusLost:Connect(function()
-            bb.dist = math.clamp(tonumber(dbox.Text) or 18, 3, 80)
-            dbox.Text = tostring(bb.dist)
+    cap("TIMING")
+    do
+        local r = row(56)
+        num(r, "parry this many seconds before impact", 12, 8, 200,
+            function() return bb.lead end,
+            function(v) bb.lead = math.clamp(tonumber(v) or 0.14, 0.02, 1) end)
+        num(r, "ignore beyond (studs)", 228, 8, 130,
+            function() return bb.maxD end,
+            function(v) bb.maxD = math.clamp(tonumber(v) or 60, 10, 300) end)
+    end
+
+    cap("PARRY KEY")
+    do
+        local r = row(44)
+        local kb = Instance.new("TextButton", r)
+        kb.Size = UDim2.new(0, 150, 0, 26); kb.Position = UDim2.new(0, 12, 0, 9)
+        kb.BorderSizePixel = 0
+        kb.Text = "KEY:  " .. bb.key.Name
+        kb.Font = Enum.Font.GothamBold; kb.TextSize = 11
+        kb.AutoButtonColor = false
+        kb.ZIndex = 198
+        corner(kb, 7)
+        kb.BackgroundColor3 = Theme.bg3
+        kb.TextColor3 = Theme.textDim
+        local waiting = false
+        kb.MouseButton1Click:Connect(function()
+            waiting = true
+            kb.Text = "press a key..."
+            kb.BackgroundColor3 = Theme.accent
+            kb.TextColor3 = Theme.bg
         end)
-
-        -- Sending a key needs an executor hook, and not every one has the
-        -- same. Whichever answers first is used; if none does, say so rather
-        -- than leave a switch that silently does nothing.
-        local function pressParry()
-            local vim = nil
-            pcall(function() vim = game:GetService("VirtualInputManager") end)
-            if vim then
-                local ok = pcall(function()
-                    vim:SendKeyEvent(true,  bb.key, false, game)
-                    task.wait(0.02)
-                    vim:SendKeyEvent(false, bb.key, false, game)
-                end)
-                if ok then return true end
-            end
-            if type(keypress) == "function" and type(keyrelease) == "function" then
-                local ok = pcall(function()
-                    keypress(bb.key.Value); task.wait(0.02); keyrelease(bb.key.Value)
-                end)
-                if ok then return true end
-            end
-            return false
-        end
-
-        local lastParry, warned = 0, false
-        conn = RunService.Heartbeat:Connect(function()
-            if not W.Visible and not bb.esp and not bb.auto then return end
-            local ball, d = findBall()
-            if not ball then
-                info.Text = "no ball found"
-                if hl then pcall(function() hl:Destroy() end); hl = nil end
-                return
-            end
-            info.Text = string.format("%s   %.1f studs", ball.Name, d or 0)
-
-            if bb.esp then
-                if not hl or not hl.Parent then
-                    hl = Instance.new("Highlight")
-                    hl.Name = "__SIL_Ball"
-                    hl.FillTransparency = 0.4
-                    hl.Parent = ball
-                end
-                hl.Adornee = ball
-            elseif hl then
-                pcall(function() hl:Destroy() end); hl = nil
-            end
-
-            if bb.auto and d and d <= bb.dist and tick() - lastParry > 0.25 then
-                lastParry = tick()
-                if not pressParry() and not warned then
-                    warned = true
-                    notify("Blade Ball", "This executor exposes no key sending -"
-                           .. " auto parry cannot press anything.", 8)
-                end
-            end
-        end)
-        track(conn)
+        track(UserInputService.InputBegan:Connect(function(i, gp)
+            if not waiting or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            waiting = false
+            bb.key = i.KeyCode
+            kb.Text = "KEY:  " .. bb.key.Name
+            kb.BackgroundColor3 = Theme.bg3
+            kb.TextColor3 = Theme.textDim
+        end))
     end
 
     cap("HOW THIS WORKS")
     do
-        local h = Instance.new("TextLabel", body)
         ord = ord + 1
-        h.Size = UDim2.new(1, -6, 0, 76)
+        local h = Instance.new("TextLabel", body)
+        h.Size = UDim2.new(1, -6, 0, 92)
         h.LayoutOrder = ord
         h.BackgroundTransparency = 1
-        h.Text = "  The ball is found by shape and motion, not by name - Blade"
-              .. " Ball has renamed it before, and a name match would have"
-              .. " quietly stopped working after an update. Auto parry presses"
-              .. " your parry key when the ball comes inside the trigger"
-              .. " distance, at most four times a second."
+        h.Text = "  The trigger is TIME, not distance. The ball's closing speed"
+              .. " towards you is measured every frame and the key is pressed"
+              .. " when impact is the set number of seconds away - so a fast"
+              .. " ball is parried further out and a slow one is left alone."
+              .. " Start at 0.14 and raise it if you parry late.\n"
+              .. "  The ball is found by shape, size and motion rather than by"
+              .. " name, and the search is cached - a per-frame scan of the"
+              .. " whole workspace is what made the first version lag."
         h.Font = Enum.Font.Gotham; h.TextSize = 10
         h.TextXAlignment = Enum.TextXAlignment.Left
         h.TextYAlignment = Enum.TextYAlignment.Top
@@ -11182,15 +11279,71 @@ do
         SilenceAPI._theme(h, "TextColor3", "textDim")
     end
 
+    local warned = false
+    track(RunService.Heartbeat:Connect(function(dt)
+        if not (W.Visible or bb.esp or bb.auto) then return end
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        local okB, b = pcall(findBall)
+        if not okB then b = nil end
+        if not b then
+            if W.Visible then info.Text = "no ball found" end
+            if hl then pcall(function() hl:Destroy() end); hl = nil end
+            lastPos = nil
+            return
+        end
+
+        local now = tick()
+        local frameDt = (lastT > 0) and (now - lastT) or dt
+        local closing, dist = closingSpeed(b, root, frameDt)
+        lastPos, lastT = b.Position, now
+
+        local eta = (closing > 1) and (dist / closing) or math.huge
+        if W.Visible then
+            info.Text = string.format(
+                "%s\n%.1f studs   closing %.0f/s   impact in %s   parried %d",
+                b.Name, dist, math.max(closing, 0),
+                (eta < 9 and string.format("%.2fs", eta) or "-"), parries)
+        end
+
+        if bb.esp then
+            if not hl or not hl.Parent then
+                hl = Instance.new("Highlight")
+                hl.Name = "__SIL_Ball"
+                hl.FillTransparency = 0.45
+                hl.OutlineTransparency = 0
+                hl.Parent = b
+            end
+            hl.Adornee = b
+        elseif hl then
+            pcall(function() hl:Destroy() end); hl = nil
+        end
+
+        if bb.auto and dist <= bb.maxD and eta <= bb.lead
+           and now - lastParry > 0.18 then
+            lastParry = now
+            if pressParry() then
+                parries = parries + 1
+            elseif not warned then
+                warned = true
+                notify("Blade Ball", "This executor exposes no key sending, so"
+                       .. " auto parry cannot press anything.", 9)
+            end
+        end
+    end))
+
     SilenceAPI._openBB = function() W.Visible = not W.Visible end
 end
 
 local shelfHint = Instance.new("TextLabel", pGames)
 shelfHint.Size = UDim2.new(1, 0, 0, 46)
 shelfHint.BackgroundTransparency = 1
-shelfHint.Text = "  A card opens only inside its own game. Press BIND while you are"
-              .. " in one to link it - the place id is stored with your config,"
-              .. " so it only has to be done once."
+shelfHint.Text = "  A card opens only inside its own game. Normally it links itself"
+              .. " from the place name; LINK is the manual fallback for a"
+              .. " private server or a renamed copy. Press it while you are in"
+              .. " the game and the card remembers that place for good."
 shelfHint.Font = Enum.Font.Gotham
 shelfHint.TextSize = 10
 shelfHint.TextXAlignment = Enum.TextXAlignment.Left
