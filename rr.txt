@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v34"
+SilenceAPI._version = "v35"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -9864,11 +9864,27 @@ local _tagOk, _tagErr = pcall(function()
         -- shrink like any object in the world, which is unreadable at range.
         -- 0.5 keeps it legible without taking over the screen.
         distGrow  = 0.5,
+        -- Unicode codepoint, 0 for none. Stored as a NUMBER and turned into
+        -- text with utf8.char at runtime, so the source file stays pure
+        -- ASCII - a raw emoji in here would be a high byte, and this file
+        -- has a hard rule against those because most of its fonts render
+        -- them as empty boxes.
+        emoji     = 0,
         partRate  = 1,                     -- particle spawn multiplier
         pulse     = false,                 -- slow breathing scale
     }
     -- the card loses its second line when the username is hidden, and the
     -- distance scaler further down has to agree with that
+    -- utf8.char is missing on nothing that runs Luau, but a bad codepoint
+    -- would throw and take a tag down with it, so it stays guarded.
+    function SilenceAPI._emojiPrefix(cp)
+        cp = tonumber(cp) or 0
+        if cp <= 0 then return "" end
+        local ok, ch = pcall(function() return utf8.char(cp) end)
+        if ok and type(ch) == "string" and ch ~= "" then return ch .. " " end
+        return ""
+    end
+
     local function tagH() return TagSettings.showUser and 42 or 34 end
     local function lookH(lk) return lk.showUser and 42 or 34 end
 
@@ -10087,6 +10103,7 @@ local _tagOk, _tagErr = pcall(function()
         lk.rainbowSpeed = tonumber(t.rs); lk.offsetY = tonumber(t.oy)
         lk.maxDist      = tonumber(t.md); lk.partRate = tonumber(t.pr)
         lk.distGrow     = tonumber(t.dg)
+        lk.emoji        = tonumber(t.em)
         if type(t.au) == "table" then
             local au = t.au
             lk.aura = {
@@ -10253,7 +10270,11 @@ local _tagOk, _tagErr = pcall(function()
         title.BackgroundTransparency = 1
         -- titleFor() existed but nothing called it, so a rank could only ever
         -- change the colours and never the name written on the card
-        title.Text = titleFor(player)
+        -- Prefixed onto the title rather than given its own label: the card
+        -- has a fixed geometry that the distance scaler depends on, and an
+        -- extra element would have meant moving the text every time the
+        -- emoji changed.
+        title.Text = SilenceAPI._emojiPrefix(look.emoji) .. titleFor(player)
         title.Font = look.font
         title.TextSize = look.titleSize
         title.TextColor3 = look.text
@@ -10418,7 +10439,7 @@ local _tagOk, _tagErr = pcall(function()
         if title then
             title.Size     = UDim2.new(1, -(padL + 8), 0, 16)
             title.Position = UDim2.new(0, padL, 0, look.showUser and 5 or 9)
-            title.Text     = titleFor(player)
+            title.Text     = SilenceAPI._emojiPrefix(look.emoji) .. titleFor(player)
             title.Font     = look.font
             title.TextSize = look.titleSize
             title.TextColor3 = look.text
@@ -11222,6 +11243,58 @@ local _tagOk, _tagErr = pcall(function()
             if box and box.Parent then box.Text = myTitle(); drawFace() end
         end
 
+        eCaption(p, "EMOJI")
+        do
+            -- Codepoints, not literal characters: see the note on
+            -- TagSettings.emoji. Chosen to cover the same ground as the
+            -- shop's own emoji list.
+            local CPS = {
+                0, 0x1F480, 0x1F525, 0x2764, 0x2B50, 0x1F451, 0x1F47D,
+                0x1F47B, 0x1F608, 0x2744, 0x26A1, 0x1F308, 0x1F984,
+                0x1F987, 0x1F383, 0x1F48E, 0x1F4B0, 0x1F52A, 0x1F4A3,
+                0x1F441, 0x1F9E0, 0x1F409, 0x1F40D, 0x1F43A, 0x1F981,
+                0x1F980, 0x1F352, 0x1F319, 0x2600, 0x2601, 0x1F30A,
+                0x1F4A5, 0x2728, 0x1F339, 0x1F340, 0x1F3AF, 0x1F3B2,
+                0x1F947, 0x1F6E1, 0x1F5E1, 0x1F3B8, 0x1F3A9,
+            }
+            local box = Instance.new("Frame", p)
+            box.Size = UDim2.new(1, -6, 0, 0)
+            box.AutomaticSize = Enum.AutomaticSize.Y
+            box.BackgroundTransparency = 1
+            box.ZIndex = EZ + 2
+            local lay = Instance.new("UIGridLayout", box)
+            lay.CellSize = UDim2.new(0, 40, 0, 40)
+            lay.CellPadding = UDim2.new(0, 6, 0, 6)
+            lay.SortOrder = Enum.SortOrder.LayoutOrder
+
+            local paints = {}
+            for i, cp in ipairs(CPS) do
+                local b = Instance.new("TextButton", box)
+                b.BorderSizePixel = 0
+                b.AutoButtonColor = false
+                b.LayoutOrder = i
+                b.ZIndex = EZ + 3
+                b.TextSize = cp == 0 and 11 or 20
+                b.Font = cp == 0 and Enum.Font.GothamBold or Enum.Font.Gotham
+                b.Text = cp == 0 and "OFF" or SilenceAPI._emojiPrefix(cp)
+                corner(b, 8)
+                local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+                SilenceAPI._theme(b, "TextColor3", "text")
+                local function paint()
+                    local on = ((tonumber(TagSettings.emoji) or 0) == cp)
+                    b.BackgroundColor3 = on and Theme.accent or Theme.bg2
+                    st.Transparency = on and 0 or 0.6
+                end
+                paint()
+                paints[#paints+1] = paint
+                b.MouseButton1Click:Connect(function()
+                    TagSettings.emoji = cp
+                    for _, fn in ipairs(paints) do fn() end
+                    touched(cp == 0 and "emoji off" or "emoji set")
+                end)
+            end
+        end
+
         eCaption(p, "FONT")
         local fontItems = {}
         for _, f in ipairs(FONTS) do
@@ -11556,6 +11629,7 @@ local _tagOk, _tagErr = pcall(function()
             TagSettings.offsetY   = 2.8
             TagSettings.maxDist   = 1000
             TagSettings.distGrow  = 0.5
+            TagSettings.emoji     = 0
             TagSettings.partRate  = 1
             TagSettings.pulse     = false
             for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
@@ -11588,6 +11662,7 @@ local _tagOk, _tagErr = pcall(function()
             rb = TagSettings.rainbow,   rs = TagSettings.rainbowSpeed,
             oy = TagSettings.offsetY,   md = TagSettings.maxDist,
             dg = TagSettings.distGrow,
+            em = TagSettings.emoji,
             pr = TagSettings.partRate,  pu = TagSettings.pulse,
             ti = myTitle(),
             -- The aura rides along in the same string the tag design uses,
@@ -11650,6 +11725,7 @@ local _tagOk, _tagErr = pcall(function()
         TagSettings.offsetY    = num(t.oy,  TagSettings.offsetY)
         TagSettings.maxDist    = num(t.md,  TagSettings.maxDist)
         TagSettings.distGrow   = num(t.dg,  TagSettings.distGrow)
+        TagSettings.emoji      = num(t.em,  TagSettings.emoji)
         -- a saved slot restores the aura with the rest of the look
         if type(t.au) == "table" then
             local au = t.au
