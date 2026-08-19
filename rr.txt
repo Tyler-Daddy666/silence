@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v94"
+SilenceAPI._version = "v95"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -719,6 +719,8 @@ local State = {
     itemEsp=false,            -- highlight Tools lying in the world
     streamerMode=false,       -- mask player names everywhere
     chatLog=false,            -- record chat to the Logs tab
+    animPack=false,           -- wear a Roblox animation package
+    animPackName="Zombie",    -- which one
     remoteSpy=false,          -- record RemoteEvent/Function traffic
     uiScale=1,                -- panel zoom
     espObjects={},
@@ -5559,9 +5561,9 @@ Sidebar.Size=UDim2.new(0,76,1,-64); Sidebar.Position=UDim2.new(0,0,0,64)
 Sidebar.BackgroundTransparency=1
 Sidebar.BorderSizePixel=0
 local SbLayout=Instance.new("UIListLayout", Sidebar)
-SbLayout.Padding=UDim.new(0,8); SbLayout.SortOrder=Enum.SortOrder.LayoutOrder
+SbLayout.Padding=UDim.new(0,6); SbLayout.SortOrder=Enum.SortOrder.LayoutOrder
 SbLayout.HorizontalAlignment=Enum.HorizontalAlignment.Center
-padding(Sidebar,16,16,10,10)
+padding(Sidebar,10,10,10,10)
 
 do -- hairline that separates the icon rail from the pages
 local d=Instance.new("Frame", Panel)
@@ -5905,6 +5907,7 @@ local TAB_CATEGORY = {
     Config    = "System", Logs          = "System",
     ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
     ["German Voice"] = "Games", Games = "Games",
+    AnimPack = "Anim",
 }
 -- rail order, top to bottom
 local CATEGORIES = {
@@ -5914,6 +5917,7 @@ local CATEGORIES = {
     { key="Combat", label="COMBAT", icon="combat" },
     { key="People", label="PEOPLE", icon="people" },
     { key="Games",  label="GAMES",  icon="games"  },
+    { key="Anim",   label="ANIM",   icon="anim"   },
     { key="Voice",  label="VOICE",  icon="voice"  },
     { key="System", label="SYSTEM", icon="system" },
 }
@@ -5927,6 +5931,7 @@ local TAB_LO_INSIDE = {
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
     ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
     Games = 0, ["German Voice"] = 1,
+    AnimPack = 1,
 }
 SilenceAPI._catOf     = TAB_CATEGORY
 SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
@@ -5966,20 +5971,26 @@ SilenceAPI._tabDesc = {
 local function makeRailButton(cat)
     local b = Instance.new("TextButton", Sidebar)
     b.Name = "Rail_" .. cat.key
-    b.Size = UDim2.new(0, 56, 0, 58)
+    b.Size = UDim2.new(0, 56, 0, 48)
     b.BorderSizePixel = 0
     b.Text = ""
     b.AutoButtonColor = false
     b.BackgroundColor3 = Theme.bg2
     b.BackgroundTransparency = 1
     b.LayoutOrder = cat.order
-    corner(b, 12)
+    corner(b, 10)
     local st = stroke(b, Theme.accent, 1, 1)
     local glow = addAnimatedGlow(b, { thickness = 1.5, transparency = 0.3, window = 0.2 })
     glow.Enabled = false
 
     local ico = Instance.new("Frame", b)
-    ico.Size = UDim2.new(0, 26, 0, 26); ico.Position = UDim2.new(0.5, -13, 0, 8)
+    -- Every glyph below is drawn with absolute coordinates in a 26x26 box -
+    -- px(26, 12, 0, 7, 5) is exactly 26 wide. Shrinking ico.Size alone would
+    -- move the frame and leave the glyph hanging outside it, since ico does
+    -- not clip. A UIScale shrinks box and contents together, so none of the
+    -- thirty-odd literals in the icon chain has to change.
+    ico.Size = UDim2.new(0, 26, 0, 26); ico.Position = UDim2.new(0.5, -10.4, 0, 5)
+    Instance.new("UIScale", ico).Scale = 0.8
     ico.BackgroundTransparency = 1; ico.BorderSizePixel = 0
 
     local parts = {}
@@ -6027,6 +6038,13 @@ local function makeRailButton(cat)
         px(26, 12, 0, 7, 5)
         px(2, 6, 5, 10, 1); px(6, 2, 3, 12, 1)
         dot(4, 16, 10); dot(4, 20, 14)
+    elseif cat.icon == "anim" then      -- a figure mid-stride
+        dot(7, 13, 1)                               -- head
+        px(3, 9, 12, 8, 1)                          -- torso, x 12..15
+        px(7, 2, 5, 10, 1)                          -- back arm, swung out
+        px(6, 2, 15, 13, 1)                         -- front arm
+        px(3, 7, 9, 17, 1)                          -- trailing leg
+        px(3, 6, 15, 17, 1)                         -- leading leg
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
@@ -6037,21 +6055,21 @@ local function makeRailButton(cat)
     end
 
     local lbl = Instance.new("TextLabel", b)
-    lbl.Size = UDim2.new(1, 0, 0, 12); lbl.Position = UDim2.new(0, 0, 0, 39)
+    lbl.Size = UDim2.new(1, 0, 0, 11); lbl.Position = UDim2.new(0, 0, 0, 30)
     lbl.BackgroundTransparency = 1
     lbl.Text = cat.label
-    lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 9
+    lbl.Font = Enum.Font.GothamBold; lbl.TextSize = 8
     lbl.TextColor3 = Theme.textDim
 
     -- search-hit count, so hits in a group you are not looking at are visible
     local badge = Instance.new("TextLabel", b)
-    badge.Size = UDim2.new(0, 16, 0, 14); badge.Position = UDim2.new(1, -18, 0, 2)
+    badge.Size = UDim2.new(0, 14, 0, 12); badge.Position = UDim2.new(1, -16, 0, 2)
     badge.BorderSizePixel = 0
     badge.Text = ""
     badge.Visible = false
     badge.Font = Enum.Font.GothamBold; badge.TextSize = 9
     badge.ZIndex = 4
-    corner(badge, 7)
+    corner(badge, 6)
     SilenceAPI._theme(badge, "BackgroundColor3", "accent")
     SilenceAPI._theme(badge, "TextColor3", "bg")
     SilenceAPI._catBadge[cat.key] = badge
@@ -9187,46 +9205,12 @@ do
     chatHint.TextXAlignment = Enum.TextXAlignment.Left
 end
 
-sectionLabel(pMisc, "PRANKS")
-toggleRow(pMisc, "Let other Silence users jumpscare me",
-    function() return State.allowJumpscare end,
-    function(v)
-        State.allowJumpscare = v
-        notify("Silence", v and "Jumpscares allowed." or "Jumpscares blocked.", 3)
-    end)
-buttonRow(pMisc, "Test Jumpscare On Myself", function()
-    -- Runs the effect directly, with no endpoint involved. Works here but
-    -- not when sent = the relay is at fault. Fails here too = the effect is.
-    if SilenceAPI._jumpscare then SilenceAPI._jumpscare("test") end
-end)
-buttonRow(pMisc, "What Jumpscare Files Loaded", function()
-    notify("Jumpscare", "Fetching frames, this can take a moment...", 4)
-    task.spawn(function()
-        -- pulls the frames in if they are not here yet, which is the point:
-        -- it answers "will this work" rather than "what is cached"
-        local fr = SilenceAPI._loadJumpFrames and SilenceAPI._loadJumpFrames() or {}
-        local out = {}
-        out[#out+1] = "image : "  .. (SilenceAPI._jumpImg and "yes" or "no")
-        out[#out+1] = "sound : "  .. (SilenceAPI._jumpSnd and "yes" or "no")
-        out[#out+1] = "frames: "  .. tostring(#fr)
-        local txt = table.concat(out, "   ")
-        print("[Silence] jumpscare assets: " .. txt)
-        notify("Jumpscare", txt, 10)
-    end)
-end)
-inputRow(pMisc, "Fallback sound id (only if no file)", State.jumpSound, function(v)
-    v = tostring(v or "")
-    if v ~= "" and not v:find("rbxassetid://") then v = "rbxassetid://" .. v:gsub("%D", "") end
-    State.jumpSound = v
-end)
-local jsHint = Instance.new("TextLabel", pMisc)
-jsHint.Size = UDim2.new(1, 0, 0, 30)
-jsHint.BackgroundTransparency = 1
-jsHint.Text = "  Put jumpscare.png in your Desktop\\Silence folder for the image."
-jsHint.Font = Enum.Font.Gotham
-jsHint.TextSize = 10
-jsHint.TextXAlignment = Enum.TextXAlignment.Left
-jsHint.TextColor3 = Theme.textDim
+-- PRANKS used to live here: the receive switch, a self test and an asset
+-- readout. All of it is gone from the UI on purpose - the section announced
+-- that a jumpscare feature exists at all, and the sending half was never in
+-- here anyway. Sending stays where it was: the admin panel behind /sa,
+-- key-protected. State.allowJumpscare defaults to true so an incoming one
+-- still lands, and the asset readout moved into Logs -> SELF TEST.
 
 sectionLabel(pMisc,"AUTOMATION")
 toggleRow(pMisc, "Auto-Interact  (ProximityPrompts)",
@@ -16392,6 +16376,189 @@ if not _tagOk then
 end
 
 ----------------------------------------------------------------
+-- TAB: ANIMPACK  -  wear a Roblox animation package
+--
+-- There is no API for "equip this bundle" from a client. A Roblox animation
+-- package is seven separate animation assets, and the way to wear one is to
+-- overwrite the AnimationId on the Animation objects inside the character's
+-- Animate script, then restart that script so it re-reads them. Animate
+-- caches the ids once, in configureAnimationSet, and never looks again -
+-- which is why writing the ids alone changes nothing until it reloads.
+----------------------------------------------------------------
+;(function()
+local pAnim = addTab("AnimPack")
+
+local PACKS = {
+    -- R15 asset ids for the stock Roblox packages
+    { name = "Zombie",
+      idle = 616158929, walk = 616168032, run   = 616163682,
+      jump = 616161997, fall = 616157476, climb = 616156119,
+      swim = 616165109 },
+}
+SilenceAPI._animPacks = PACKS
+
+-- Animate's children are named after the movement state. swimidle has no id
+-- of its own in these packages, so it borrows the swim one rather than being
+-- left on the default and standing out mid-water.
+local MAP = {
+    idle = "idle", walk = "walk", run = "run", jump = "jump",
+    fall = "fall", climb = "climb", swim = "swim", swimidle = "swim",
+}
+
+-- What the character had before we ever touched it. Captured once, from the
+-- first Animate script we see, and keyed by name rather than by instance:
+-- a respawn hands you brand new objects, and holding references to the old
+-- ones would make the OFF switch a one-way door.
+local orig = nil
+
+local function capture(an)
+    if orig then return end
+    orig = {}
+    for _, f in ipairs(an:GetChildren()) do
+        local t = {}
+        for _, a in ipairs(f:GetChildren()) do
+            if a:IsA("Animation") then t[a.Name] = a.AnimationId end
+        end
+        orig[f.Name] = t
+    end
+end
+
+local function packByName(n)
+    for _, p in ipairs(PACKS) do if p.name == n then return p end end
+    return nil
+end
+
+local function writeIds(an, pack)
+    for _, f in ipairs(an:GetChildren()) do
+        local key = MAP[string.lower(tostring(f.Name))]
+        local id  = key and pack and pack[key]
+        for _, a in ipairs(f:GetChildren()) do
+            if a:IsA("Animation") then
+                if pack then
+                    if id then
+                        pcall(function()
+                            a.AnimationId = "rbxassetid://" .. tostring(id)
+                        end)
+                    end
+                else
+                    local o = orig and orig[f.Name] and orig[f.Name][a.Name]
+                    if o then pcall(function() a.AnimationId = o end) end
+                end
+            end
+        end
+    end
+end
+
+local function restart(char, an)
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local animator = hum and hum:FindFirstChildOfClass("Animator")
+    if animator then
+        for _, t in ipairs(animator:GetPlayingAnimationTracks()) do
+            pcall(function() t:Stop(0) end)
+        end
+    end
+    pcall(function() an.Disabled = true end)
+    task.wait(0.06)
+    pcall(function() an.Disabled = false end)
+end
+
+local function applyPack()
+    local char = getChar()
+    if not char then return false, "no character right now" end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false, "no humanoid on your character" end
+    local an = char:FindFirstChild("Animate")
+    if not an then
+        return false, "this game replaced the Animate script - nothing to edit"
+    end
+    -- An emote has Animate disabled on purpose and is driving the rig
+    -- itself. Restarting Animate underneath it would cut the emote off.
+    if State.currentEmote then
+        return false, "stop the emote first, it is driving the rig"
+    end
+    capture(an)
+    local pack = State.animPack and packByName(State.animPackName) or nil
+    if State.animPack and not pack then
+        return false, "no pack selected"
+    end
+    writeIds(an, pack)
+    restart(char, an)
+    return true
+end
+SilenceAPI._applyAnimPack = applyPack
+
+local function setPack(on)
+    State.animPack = on and true or false
+    if on then
+        -- Roblox authored every one of these packages for R15 only. On an R6
+        -- rig the assets simply refuse to load and you get a character that
+        -- moves normally with no error anywhere - so say it out loud.
+        local hum = getChar() and getChar():FindFirstChildOfClass("Humanoid")
+        if hum and hum.RigType == Enum.HumanoidRigType.R6 then
+            State.animPack = false
+            notify("Anim Pack",
+                   "You are on an R6 rig. Roblox animation packages are R15"
+                   .. " only, so this cannot apply here.", 7)
+            for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
+            return
+        end
+    end
+    local ok, why = applyPack()
+    if on and not ok then
+        State.animPack = false
+        notify("Anim Pack", tostring(why or "could not apply"), 6)
+    elseif ok then
+        notify("Anim Pack", on and (tostring(State.animPackName) .. " on")
+                              or "back to the default animations", 3)
+    end
+    for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
+end
+SilenceAPI._setAnimPack = setPack
+
+sectionLabel(pAnim, "ANIMATION PACK")
+toggleRow(pAnim, "Wear an animation pack",
+    function() return State.animPack end,
+    function(v) setPack(v) end)
+
+sectionLabel(pAnim, "PACKS")
+for _, p in ipairs(PACKS) do
+    toggleRow(pAnim, p.name,
+        function() return State.animPackName == p.name end,
+        function(v)
+            State.animPackName = v and p.name or nil
+            if State.animPack then pcall(applyPack) end
+            for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
+        end)
+end
+
+buttonRow(pAnim, "Re-apply Now", function()
+    local ok, why = applyPack()
+    notify("Anim Pack", ok and "Applied." or tostring(why), ok and 3 or 6)
+end)
+
+local aHint = Instance.new("TextLabel", pAnim)
+aHint.Size = UDim2.new(1, 0, 0, 46)
+aHint.BackgroundTransparency = 1
+aHint.Text = "  These are the stock Roblox packages, written straight into"
+          .. " your Animate script.\n  R15 only - Roblox never authored them"
+          .. " for R6. It survives respawns and reverts on unload."
+aHint.Font = Enum.Font.Gotham
+aHint.TextSize = 10
+aHint.TextWrapped = true
+aHint.TextXAlignment = Enum.TextXAlignment.Left
+aHint.TextYAlignment = Enum.TextYAlignment.Top
+aHint.TextColor3 = Theme.textDim
+
+-- A respawn hands back a stock Animate script with stock ids, so the pack
+-- has to be written again. The wait lets the game finish building the rig -
+-- editing Animate while it is still assembling gets overwritten.
+track(LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1.2)
+    if State.animPack then pcall(applyPack) end
+end))
+end)()
+
+----------------------------------------------------------------
 -- TAB: LOGS  -  chat, remote traffic and notification history
 ----------------------------------------------------------------
 ;(function()
@@ -16860,6 +17027,9 @@ local APPLY = {
         if SilenceAPI._setMenuBlur then SilenceAPI._setMenuBlur() end
     end,
     chatLog      = function(v) SilenceAPI._setChatLog(v) end,
+    animPack     = function(v)
+        if SilenceAPI._setAnimPack then SilenceAPI._setAnimPack(v) end
+    end,
     walkAnim     = function(v) SilenceAPI._setWalkAnim(v) end,
 }
 -- remoteSpy is intentionally not restored: it only works once the namecall
@@ -16869,7 +17039,8 @@ local APPLY = {
 
 local NUMBERS = { "flySpeed", "freecamSpeed", "aimbotFov", "bodyScale", "slowmo",
                   "autoInteractRange", "uiScale" }
-local STRINGS = { "prefix", "faceId", "walkAnimId", "adminCmd", "jumpSound" }
+local STRINGS = { "prefix", "faceId", "walkAnimId", "adminCmd", "jumpSound",
+                  "animPackName" }
 
 local function c3ToTbl(c) return { math.floor(c.R*255+0.5), math.floor(c.G*255+0.5), math.floor(c.B*255+0.5) } end
 local function tblToC3(t)
@@ -17773,6 +17944,9 @@ function SilenceAPI.cleanup()
     pcall(SilenceAPI._setHeadless,false); pcall(SilenceAPI._setAccessories,false)
     if SilenceAPI._slotsOff then pcall(SilenceAPI._slotsOff) end
     pcall(setSlowmo,1); pcall(stopEmote)
+    -- writes the captured original AnimationIds back, so an unload does not
+    -- leave you walking like a zombie with no panel left to switch it off
+    if SilenceAPI._setAnimPack then pcall(SilenceAPI._setAnimPack, false) end
     pcall(stopTrolling); pcall(setHeadstand,false); pcall(setSpin,false)
     pcall(resetSkin); pcall(restoreFpsBoost)
     pcall(setVcBypass,false)   -- else its 1.5s Heartbeat loop survives unload
