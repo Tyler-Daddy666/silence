@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v131"
+SilenceAPI._version = "v135"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -772,16 +772,41 @@ local State = {
     -- hide=true blanks the body part the slot welds to, which is how Korblox
     -- replaces a leg instead of stacking on top of it.
     accSlots = {
-        { name="8-Bit Crown", id="10159600649", part="Head", hide=false, on=false },
-        { name="Korblox", id="139607718",  part="RightLeg", hide=true,  on=false },
-        { name="Horn 1",  id="1744060292", part="Head",     hide=false, on=false },
-        { name="Horn 2",  id="215718515",  part="Head",     hide=false, on=false },
-        { name="Horn 3",  id="74891470",   part="Head",     hide=false, on=false },
-        { name="Particles 1", id="128217885", part="Head",  hide=false, on=false },
-        { name="Particles 2", id="141742418", part="Head",  hide=false, on=false },
-        { name="Particles 3", id="226189871", part="Head",  hide=false, on=false },
-        { name="Particles 4", id="150381051", part="Head",  hide=false, on=false },
-        { name="Spare 10", id="",          part="Torso",    hide=false, on=false },
+        -- cat is the heading a slot is filed under in the Larp Studio. It is
+        -- purely a label: nothing groups by it except the list itself, so a
+        -- slot can be moved between headings without touching anything else.
+        -- Korblox is the only entry with hide=true, because it REPLACES a
+        -- leg rather than sitting on top of one.
+        { cat="BODY",      name="Korblox",       id="139607718",      part="RightLeg", hide=true,  on=false },
+
+        { cat="CROWNS",    name="8-Bit Crown",   id="10159600649",    part="Head", hide=false, on=false },
+        { cat="CROWNS",    name="Silver King",   id="439945661",      part="Head", hide=false, on=false },
+        { cat="CROWNS",    name="Black Iron King", id="439946249",    part="Head", hide=false, on=false },
+        { cat="CROWNS",    name="Blue Queen",    id="553970606",      part="Head", hide=false, on=false },
+        { cat="CROWNS",    name="Green Queen",   id="553970961",      part="Head", hide=false, on=false },
+        { cat="CROWNS",    name="Purple Queen",  id="553971858",      part="Head", hide=false, on=false },
+        { cat="CROWNS",    name="Pink Queen",    id="553971558",      part="Head", hide=false, on=false },
+
+        { cat="VALKYRIES", name="Blackvalk",     id="124730194",      part="Head", hide=false, on=false },
+        { cat="VALKYRIES", name="Emerald Valk",  id="2830437685",     part="Head", hide=false, on=false },
+        { cat="VALKYRIES", name="Sparkle Valk",  id="1180433861",     part="Head", hide=false, on=false },
+
+        { cat="FEDORAS",   name="Arcane Fedora", id="73030805068953", part="Head", hide=false, on=false },
+        { cat="FEDORAS",   name="Red Sparkle",   id="72082328",       part="Head", hide=false, on=false },
+        { cat="FEDORAS",   name="Midnight Sparkle", id="119916949",   part="Head", hide=false, on=false },
+        { cat="FEDORAS",   name="Black Sparkle", id="259423244",      part="Head", hide=false, on=false },
+
+        { cat="HORNS",     name="Stormbreak Horns", id="76479271580913", part="Head", hide=false, on=false },
+        { cat="HORNS",     name="Poisoned Horns",   id="1744060292", part="Head", hide=false, on=false },
+        { cat="HORNS",     name="Fiery Horns",      id="215718515",  part="Head", hide=false, on=false },
+        { cat="HORNS",     name="Frozen Horns",     id="74891470",   part="Head", hide=false, on=false },
+
+        { cat="PARTICLES", name="Fall Fairy",   id="128217885",      part="Head", hide=false, on=false },
+        { cat="PARTICLES", name="Winter Fairy", id="141742418",      part="Head", hide=false, on=false },
+        { cat="PARTICLES", name="St Patrick's Day Fairy", id="226189871", part="Head", hide=false, on=false },
+        { cat="PARTICLES", name="Spring Fairy", id="150381051",      part="Head", hide=false, on=false },
+
+        { cat="FREE SLOT", name="Spare",         id="",               part="Torso", hide=false, on=false },
     },
     noclip=false,
     antiFling=false, antiVoid=false,
@@ -7936,15 +7961,20 @@ local function slotRow(i)
     SilenceAPI._registerRow(row, sl.name .. " accessory slot")
 
     local lbl = Instance.new("TextLabel", row)
-    lbl.Size = UDim2.new(0, 74, 1, 0); lbl.Position = UDim2.new(0, 14, 0, 0)
+    -- Everything else on this row is anchored to the right edge, so the name
+    -- gets all the space that is left instead of a fixed 74 pixels. Truncate
+    -- rather than overflow: a name that runs under the id box looks broken,
+    -- an ellipsis looks deliberate.
+    lbl.Size = UDim2.new(1, -310, 1, 0); lbl.Position = UDim2.new(0, 14, 0, 0)
     lbl.BackgroundTransparency = 1
+    lbl.TextTruncate = Enum.TextTruncate.AtEnd
     lbl.Text = sl.name
     lbl.Font = Enum.Font.GothamMedium; lbl.TextSize = 12
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     SilenceAPI._theme(lbl, "TextColor3", "text")
 
     local idBox = Instance.new("TextBox", row)
-    idBox.Size = UDim2.new(0, 104, 0, 24); idBox.Position = UDim2.new(0, 92, 0.5, -12)
+    idBox.Size = UDim2.new(0, 104, 0, 24); idBox.Position = UDim2.new(1, -288, 0.5, -12)
     idBox.BorderSizePixel = 0
     idBox.Text = tostring(sl.id or "")
     idBox.PlaceholderText = "asset id"
@@ -7960,7 +7990,7 @@ local function slotRow(i)
     end)
 
     local partBtn = Instance.new("TextButton", row)
-    partBtn.Size = UDim2.new(0, 58, 0, 24); partBtn.Position = UDim2.new(0, 204, 0.5, -12)
+    partBtn.Size = UDim2.new(0, 58, 0, 24); partBtn.Position = UDim2.new(1, -176, 0.5, -12)
     partBtn.BorderSizePixel = 0
     partBtn.Text = PART_SHORT[sl.part] or "HEAD"
     partBtn.Font = Enum.Font.GothamBold; partBtn.TextSize = 10
@@ -7976,7 +8006,7 @@ local function slotRow(i)
     -- HIDE blanks the body part underneath, which is what makes a Korblox
     -- leg look like a replacement rather than a second leg on top
     local hideBtn = Instance.new("TextButton", row)
-    hideBtn.Size = UDim2.new(0, 46, 0, 24); hideBtn.Position = UDim2.new(0, 268, 0.5, -12)
+    hideBtn.Size = UDim2.new(0, 46, 0, 24); hideBtn.Position = UDim2.new(1, -112, 0.5, -12)
     hideBtn.BorderSizePixel = 0
     hideBtn.Text = "HIDE"
     hideBtn.Font = Enum.Font.GothamBold; hideBtn.TextSize = 9
@@ -7999,6 +8029,11 @@ local function slotRow(i)
     sw.Size = UDim2.new(0, 46, 0, 24); sw.Position = UDim2.new(1, -60, 0.5, -12)
     sw.BorderSizePixel = 0; sw.Text = ""
     sw.AutoButtonColor = false
+    -- A TextButton with no BackgroundColor3 starts WHITE, and white is also
+    -- the accent, so an off slot looked identical to an on one until a tween
+    -- happened to move it. Only refresh's tween ever wrote this colour, and a
+    -- tween that starts and ends on the same value shows nothing.
+    sw.BackgroundColor3 = Theme.bg3
     corner(sw, 12)
     local knob = Instance.new("Frame", sw)
     knob.Size = UDim2.new(0, 18, 0, 18); knob.Position = UDim2.new(0, 3, 0.5, -9)
@@ -8031,7 +8066,21 @@ local function slotRow(i)
     return row
 end
 
-for i = 1, #State.accSlots do slotRow(i) end
+-- A heading whenever the group changes. Twenty-four identical rows in a
+-- column is a wall; the breaks are what make it readable at a glance.
+-- Headless lives under BODY too, so the heading is emitted before the loop
+-- rather than by it - the toggle above is not a slot.
+do
+    local lastCat = nil
+    for i = 1, #State.accSlots do
+        local c = State.accSlots[i].cat
+        if c and c ~= lastCat then
+            lastCat = c
+            sectionLabel(pAv, c)
+        end
+        slotRow(i)
+    end
+end
 
 buttonRow(pAv, "All Slots ON", function()
     local n = 0
