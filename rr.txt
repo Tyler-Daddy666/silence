@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v72"
+SilenceAPI._version = "v74"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10850,7 +10850,8 @@ for i, c in ipairs(CARDS) do
     img.BorderSizePixel = 0
     img.ScaleType = Enum.ScaleType.Crop
     img.ImageTransparency = 0.15
-    local mine = loadLocalImage(c.img, ICON_BASE .. c.img[1])
+    local mine = loadLocalImage(c.img, ICON_BASE .. "games/" .. c.img[1])
+                 or loadLocalImage(c.img, ICON_BASE .. c.img[1])
     if mine then
         img.Image = mine
     else
@@ -11322,9 +11323,9 @@ end
 local shelfHint = Instance.new("TextLabel", pGames)
 shelfHint.Size = UDim2.new(1, 0, 0, 46)
 shelfHint.BackgroundTransparency = 1
-shelfHint.Text = "  A card lights up and opens only inside its own game. Put"
-              .. " germanvoice.png or bladeball.png in your Silence folder to"
-              .. " replace the banner with your own picture."
+shelfHint.Text = "  A card lights up and opens only inside its own game. For your"
+              .. " own banner put germanvoice.png or bladeball.png in a games/"
+              .. " folder in the repo, or straight into your Silence folder."
 shelfHint.Font = Enum.Font.Gotham
 shelfHint.TextSize = 10
 shelfHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -16987,12 +16988,57 @@ function SilenceAPI.cleanup()
     if SilenceAPI._setPlayerLog    then pcall(SilenceAPI._setPlayerLog, false) end
     if SilenceAPI._destroyTags     then pcall(SilenceAPI._destroyTags)     end
     if SilenceAPI._disconnectWatch then pcall(SilenceAPI._disconnectWatch) end
-    Workspace.Gravity=origGravity
+    -- The ONE unguarded line in this whole function, and it cost the entire
+    -- teardown: a game that locks Workspace, or an origGravity that never got
+    -- read, made this throw - and everything below it, including the line
+    -- that destroys the GUI, never ran. The floating S and the top-right HUD
+    -- staying on screen after an unload were that single missing pcall.
+    pcall(function() Workspace.Gravity = origGravity end)
+
     -- the blur lives in Lighting, not under Gui, so destroying the ScreenGui
     -- would leave the whole world blurred after an unload
     if SilenceAPI._blur then pcall(function() SilenceAPI._blur:Destroy() end) end
     for _,c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
     if Gui then pcall(function() Gui:Destroy() end) end
+
+    -- Sweep by name as well. Destroying Gui only removes what is parented
+    -- under it right now; anything reparented, or a second ScreenGui made by
+    -- another part of the script, survives it. gethui() is checked FIRST
+    -- because that is where the panel actually lives on most executors and
+    -- it is neither CoreGui nor PlayerGui.
+    pcall(function()
+        local conts = { CoreGui, LocalPlayer:FindFirstChild("PlayerGui") }
+        local okH, hui = pcall(function() return gethui and gethui() end)
+        if okH and hui then table.insert(conts, 1, hui) end
+        for _, cont in ipairs(conts) do
+            if cont then
+                for _, o in ipairs(cont:GetChildren()) do
+                    local nm = (typeof(o.Name) == "string") and o.Name or ""
+                    if nm:sub(1, 16) == "SilenceAdminPane"
+                    or nm:sub(1, 6)  == "__SIL_"
+                    or nm == "NotifyHolder" or nm == "FloatBtn" then
+                        pcall(function() o:Destroy() end)
+                    end
+                end
+            end
+        end
+    end)
+
+    -- and the things that never lived under a ScreenGui at all
+    pcall(function()
+        for _, o in ipairs(Lighting:GetChildren()) do
+            if tostring(o.Name):sub(1, 6) == "__SIL_" then
+                pcall(function() o:Destroy() end)
+            end
+        end
+        for _, o in ipairs(Workspace:GetChildren()) do
+            if tostring(o.Name):sub(1, 6) == "__SIL_" then
+                pcall(function() o:Destroy() end)
+            end
+        end
+    end)
+
+    pcall(function() env.__SilenceAdminPanel = nil end)
 end
 
 notify("Silence", SilenceAPI._version .. " loaded - RightShift toggles GUI", 5)
