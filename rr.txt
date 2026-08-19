@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v48"
+SilenceAPI._version = "v51"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -1863,6 +1863,14 @@ end
 ----------------------------------------------------------------
 ;(function()
     local worn = {}   -- [player] = { keys = {...}, conn = ..., head = ... }
+    -- what each mount actually came back as, so a failure is visible instead
+    -- of being guessed at from an empty leg
+    local larpLog = {}
+    SilenceAPI._larpLog = larpLog
+    -- Players whose costume you personally do not want to see. Local and
+    -- one-sided: they keep wearing it, you just stop drawing it.
+    local larpHidden = {}
+    SilenceAPI._isLarpHidden = function(p) return larpHidden[p] and true or false end
 
     local function clearFor(player)
         local rec = worn[player]
@@ -1891,7 +1899,9 @@ end
 
     local function applyFor(player, cfg)
         clearFor(player)
+        larpLog[player] = nil
         if not player or player == LocalPlayer or not cfg then return end
+        if larpHidden[player] then return end
         local char = player.Character
         if not char or not char.Parent then return end
 
@@ -1959,38 +1969,34 @@ end
                     local key = "sil_p" .. tostring(player.UserId) .. "_s" .. i
                     rec.keys[#rec.keys + 1] = key
 
-                    -- Hide the limb this slot replaces, and remember what it
-                    -- was so clearFor can put it back. Without this the
-                    -- original leg stays solid and the swapped mesh is
-                    -- somewhere inside it - which is exactly why horns showed
-                    -- up and Korblox did not.
-                    if sl.hide then
-                        rec.hidden = rec.hidden or {}
-                        for _, nm in ipairs(groups[sl.part] or {}) do
-                            local bp = char:FindFirstChild(nm)
-                            if bp and bp:IsA("BasePart") then
-                                rec.hidden[#rec.hidden + 1] =
-                                    { part = bp, t = bp.Transparency }
-                                pcall(function() bp.Transparency = 1 end)
-                            end
-                        end
-                    end
-
                     task.spawn(function()
                         addAccessoryToCharacter(n, part, char, key, r6)
-                        -- charmesh and limbmesh REPLACE the limb in place, so
-                        -- a hidden limb would take the new mesh with it. Undo
-                        -- the hide for those two, same rule as _slotHiddenParts
-                        -- applies to your own character.
                         local kind = mountKindByKey[key]
-                        if (kind == "charmesh" or kind == "limbmesh")
-                           and rec.hidden then
-                            for _, h in ipairs(rec.hidden) do
-                                if h.part and h.part.Parent then
-                                    pcall(function() h.part.Transparency = h.t end)
+                        larpLog[player] = larpLog[player] or {}
+                        larpLog[player][#larpLog[player] + 1] =
+                            tostring(sl.part) .. ":" .. tostring(n) .. "=" ..
+                            tostring(kind or "FAILED")
+
+                        -- The hide happens AFTER the mount, and only if
+                        -- something actually arrived. Hiding first meant a
+                        -- failed asset load left an invisible leg with
+                        -- nothing on it - which looks exactly like "Korblox
+                        -- does not show".
+                        --
+                        -- charmesh and limbmesh replace the limb in place, so
+                        -- hiding it would take the new mesh with it. Same
+                        -- rule _slotHiddenParts applies to your own body.
+                        if sl.hide and activeAccessories[key]
+                           and kind ~= "charmesh" and kind ~= "limbmesh" then
+                            rec.hidden = rec.hidden or {}
+                            for _, nm in ipairs(groups[sl.part] or {}) do
+                                local bp = char:FindFirstChild(nm)
+                                if bp and bp:IsA("BasePart") then
+                                    rec.hidden[#rec.hidden + 1] =
+                                        { part = bp, t = bp.Transparency }
+                                    pcall(function() bp.Transparency = 1 end)
                                 end
                             end
-                            rec.hidden = nil
                         end
                     end)
                 end
@@ -2014,6 +2020,16 @@ end
     end
 
     SilenceAPI._applyLarpFor = function(player, cfg) pcall(applyFor, player, cfg) end
+    SilenceAPI._setLarpHidden = function(player, hidden)
+        if not player then return end
+        larpHidden[player] = hidden and true or nil
+        if hidden then
+            pcall(clearFor, player)
+        elseif SilenceAPI._larpOf then
+            -- put it straight back rather than waiting for the next poll
+            pcall(applyFor, player, SilenceAPI._larpOf(player))
+        end
+    end
     SilenceAPI._clearLarpFor = function(player) pcall(clearFor, player) end
 
     -- what travels to everyone else
@@ -7294,6 +7310,19 @@ end)()
 ----------------------------------------------------------------
 ;(function()
 local pAv = addTab("Avatar")
+sectionLabel(pAv, "STUDIO")
+buttonRow(pAv, "OPEN LARP STUDIO", function()
+    if SilenceAPI._openLarpStudio then SilenceAPI._openLarpStudio() end
+end)
+local studioHint = Instance.new("TextLabel", pAv)
+studioHint.Size = UDim2.new(1, 0, 0, 30)
+studioHint.BackgroundTransparency = 1
+studioHint.Text = "  Slots, body switches, a live view of yourself, and who else's"
+               .. " costume you want to see."
+studioHint.Font = Enum.Font.Gotham
+studioHint.TextSize = 10
+studioHint.TextXAlignment = Enum.TextXAlignment.Left
+studioHint.TextColor3 = Theme.textDim
 
 sectionLabel(pAv, "ACCESSORIES")
 local accHeadBox, accTorsoBox
@@ -9777,6 +9806,433 @@ track(LocalPlayer.CharacterAdded:Connect(function()
 end))
 
 ----------------------------------------------------------------
+-- LARP STUDIO
+-- One window for the whole costume: the accessory slots, the body switches,
+-- a live view of what you actually look like, and a list of the other
+-- Silence users whose costume you can switch off for yourself.
+--
+-- The preview is a ViewportFrame with a CLONE of your character in it. It
+-- has to be a clone: a ViewportFrame only renders what is parented inside
+-- it, and moving the real character in there would take it out of the world.
+-- The clone is rebuilt on demand rather than every frame, because copying a
+-- rigged character is not cheap.
+--
+-- An IIFE: a do..end shares the chunk's registers and this file runs at 198
+-- of Luau's 200.
+----------------------------------------------------------------
+;(function()
+local LS = Instance.new("Frame", Gui)
+LS.Name = "LarpStudio"
+LS.Size = UDim2.new(0, 920, 0, 620)
+LS.Position = UDim2.new(0.5, -460, 0.5, -310)
+LS.BackgroundColor3 = Theme.bg
+LS.BorderSizePixel = 0
+LS.Visible = false
+LS.Active = true
+LS.ZIndex = 190
+SilenceAPI._glass(LS, { radius = 18, transparency = 0.2, edge = 0.3,
+                        glowThickness = 2 })
+SilenceAPI._blurWatch(LS)
+
+local hdr = Instance.new("Frame", LS)
+hdr.Size = UDim2.new(1, 0, 0, 46)
+hdr.BackgroundTransparency = 1
+hdr.BorderSizePixel = 0
+hdr.Active = true
+hdr.ZIndex = 191
+
+local ht = Instance.new("TextLabel", hdr)
+ht.Size = UDim2.new(1, -70, 0, 22); ht.Position = UDim2.new(0, 20, 0, 8)
+ht.BackgroundTransparency = 1
+ht.Text = "LARP STUDIO"
+ht.Font = Enum.Font.GothamBold; ht.TextSize = 15
+ht.TextXAlignment = Enum.TextXAlignment.Left
+ht.ZIndex = 192
+SilenceAPI._theme(ht, "TextColor3", "text")
+
+local hs = Instance.new("TextLabel", hdr)
+hs.Size = UDim2.new(1, -70, 0, 12); hs.Position = UDim2.new(0, 20, 0, 28)
+hs.BackgroundTransparency = 1
+hs.Text = "costume, body and who else you want to see"
+hs.Font = Enum.Font.GothamMedium; hs.TextSize = 10
+hs.TextXAlignment = Enum.TextXAlignment.Left
+hs.ZIndex = 192
+SilenceAPI._theme(hs, "TextColor3", "textDim")
+
+local hx = Instance.new("TextButton", hdr)
+hx.Size = UDim2.new(0, 28, 0, 28); hx.Position = UDim2.new(1, -38, 0, 9)
+hx.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+hx.BorderSizePixel = 0
+hx.Text = "X"; hx.Font = Enum.Font.GothamBold; hx.TextSize = 14
+hx.AutoButtonColor = false; hx.ZIndex = 192
+corner(hx, 6); stroke(hx, Theme.accent, 1, 0.5)
+SilenceAPI._theme(hx, "TextColor3", "text")
+hx.MouseButton1Click:Connect(function() LS.Visible = false end)
+makeHeaderDrag(LS, hdr)
+
+------------------------------------------------------------ LEFT: CONTROLS
+local left = Instance.new("ScrollingFrame", LS)
+left.Size = UDim2.new(0, 520, 1, -70)
+left.Position = UDim2.new(0, 16, 0, 56)
+left.BackgroundTransparency = 1
+left.BorderSizePixel = 0
+left.ScrollBarThickness = 4
+left.CanvasSize = UDim2.new(0, 0, 0, 0)
+left.ScrollingDirection = Enum.ScrollingDirection.Y
+left.ZIndex = 191
+SilenceAPI._theme(left, "ScrollBarImageColor3", "accent")
+local lLay = Instance.new("UIListLayout", left)
+lLay.Padding = UDim.new(0, 6)
+lLay.SortOrder = Enum.SortOrder.LayoutOrder
+lLay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    left.CanvasSize = UDim2.new(0, 0, 0, lLay.AbsoluteContentSize.Y + 12)
+end)
+
+local order = 0
+local function cap(text)
+    order = order + 1
+    local l = Instance.new("TextLabel", left)
+    l.Size = UDim2.new(1, -6, 0, 20)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.Font = Enum.Font.GothamBold; l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.LayoutOrder = order
+    l.ZIndex = 192
+    SilenceAPI._theme(l, "TextColor3", "accent2")
+end
+
+local refreshPreview
+local function flatBtn(parent, label, x, y, w, cb)
+    local b = Instance.new("TextButton", parent)
+    b.Size = UDim2.new(0, w, 0, 22)
+    b.Position = UDim2.new(0, x, 0, y)
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.Font = Enum.Font.GothamBold; b.TextSize = 10
+    b.AutoButtonColor = false
+    b.ZIndex = 193
+    corner(b, 6)
+    b.BackgroundColor3 = Theme.bg3
+    SilenceAPI._theme(b, "TextColor3", "textDim")
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.accent }):Play()
+        b.TextColor3 = Theme.bg
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg3 }):Play()
+        b.TextColor3 = Theme.textDim
+    end)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+------------------------------------------------------------ slots
+cap("COSTUME SLOTS")
+local slotPaints = {}
+for i, sl in ipairs(State.accSlots) do
+    order = order + 1
+    local r = Instance.new("Frame", left)
+    r.Size = UDim2.new(1, -6, 0, 62)
+    r.BorderSizePixel = 0
+    r.LayoutOrder = order
+    r.ZIndex = 192
+    corner(r, 9)
+    SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+    local nm = Instance.new("TextBox", r)
+    nm.Size = UDim2.new(0, 130, 0, 20); nm.Position = UDim2.new(0, 12, 0, 8)
+    nm.BackgroundTransparency = 1
+    nm.Text = sl.name
+    nm.Font = Enum.Font.GothamBold; nm.TextSize = 12
+    nm.TextXAlignment = Enum.TextXAlignment.Left
+    nm.ClearTextOnFocus = false
+    nm.ZIndex = 193
+    SilenceAPI._theme(nm, "TextColor3", "text")
+    nm.FocusLost:Connect(function() sl.name = nm.Text:sub(1, 18) end)
+
+    local idb = Instance.new("TextBox", r)
+    idb.Size = UDim2.new(0, 150, 0, 20); idb.Position = UDim2.new(0, 150, 0, 8)
+    idb.BackgroundTransparency = 1
+    idb.Text = tostring(sl.id or "")
+    idb.PlaceholderText = "asset id"
+    idb.Font = Enum.Font.Code; idb.TextSize = 11
+    idb.TextXAlignment = Enum.TextXAlignment.Left
+    idb.ClearTextOnFocus = false
+    idb.ZIndex = 193
+    SilenceAPI._theme(idb, "TextColor3", "textDim")
+    idb.FocusLost:Connect(function()
+        SilenceAPI._setSlotId(i, idb.Text)
+        idb.Text = tostring(State.accSlots[i].id or "")
+        refreshPreview()
+    end)
+
+    local onBtn = flatBtn(r, "OFF", 12, 32, 62, function()
+        SilenceAPI._setSlot(i, not State.accSlots[i].on)
+        for _, fn in ipairs(slotPaints) do fn() end
+        refreshPreview()
+    end)
+    local partBtn = flatBtn(r, sl.part, 82, 32, 74, function()
+        SilenceAPI._setSlotPart(i)
+        for _, fn in ipairs(slotPaints) do fn() end
+        refreshPreview()
+    end)
+    local hideBtn = flatBtn(r, "HIDE", 164, 32, 62, function()
+        SilenceAPI._setSlotHide(i, not State.accSlots[i].hide)
+        for _, fn in ipairs(slotPaints) do fn() end
+        refreshPreview()
+    end)
+
+    local function paint()
+        local d = State.accSlots[i]
+        onBtn.Text = d.on and "ON" or "OFF"
+        onBtn.BackgroundColor3 = d.on and Theme.accent or Theme.bg3
+        onBtn.TextColor3 = d.on and Theme.bg or Theme.textDim
+        partBtn.Text = d.part
+        hideBtn.BackgroundColor3 = d.hide and Theme.accent or Theme.bg3
+        hideBtn.TextColor3 = d.hide and Theme.bg or Theme.textDim
+    end
+    slotPaints[#slotPaints + 1] = paint
+    paint()
+    table.insert(SilenceAPI._toggleRefreshers, paint)
+end
+
+------------------------------------------------------------ body
+cap("BODY")
+do
+    order = order + 1
+    local r = Instance.new("Frame", left)
+    r.Size = UDim2.new(1, -6, 0, 76)
+    r.BorderSizePixel = 0
+    r.LayoutOrder = order
+    r.ZIndex = 192
+    corner(r, 9)
+    SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+    local defs = {
+        { "HEADLESS", function() return State.headless end,
+          function(v) SilenceAPI._setHeadless(v) end },
+        { "INVIS LIMBS", function() return State.invisParts end,
+          function(v) SilenceAPI._setInvisParts(v) end },
+        { "GHOST", function() return State.ghost end,
+          function(v) SilenceAPI._setGhost(v) end },
+        { "ACCESSORIES", function() return State.accessoriesOn end,
+          function(v) SilenceAPI._setAccessories(v) end },
+    }
+    for k, d in ipairs(defs) do
+        local b
+        b = flatBtn(r, d[1], 12 + (k - 1) * 122, 10, 114, function()
+            d[3](not d[2]())
+            refreshPreview()
+        end)
+        local function paint()
+            local on = d[2]()
+            b.BackgroundColor3 = on and Theme.accent or Theme.bg3
+            b.TextColor3 = on and Theme.bg or Theme.textDim
+        end
+        paint()
+        table.insert(SilenceAPI._toggleRefreshers, paint)
+    end
+
+    local scale = Instance.new("TextBox", r)
+    scale.Size = UDim2.new(0, 110, 0, 22); scale.Position = UDim2.new(0, 12, 0, 44)
+    scale.BackgroundTransparency = 1
+    scale.Text = tostring(State.bodyScale or 1)
+    scale.PlaceholderText = "body scale"
+    scale.Font = Enum.Font.Code; scale.TextSize = 11
+    scale.TextXAlignment = Enum.TextXAlignment.Left
+    scale.ClearTextOnFocus = false
+    scale.ZIndex = 193
+    SilenceAPI._theme(scale, "TextColor3", "text")
+    scale.FocusLost:Connect(function()
+        SilenceAPI._setBodyScale(tonumber(scale.Text) or 1)
+        refreshPreview()
+    end)
+
+    local face = Instance.new("TextBox", r)
+    face.Size = UDim2.new(0, 200, 0, 22); face.Position = UDim2.new(0, 134, 0, 44)
+    face.BackgroundTransparency = 1
+    face.Text = tostring(State.faceId or "")
+    face.PlaceholderText = "face asset id"
+    face.Font = Enum.Font.Code; face.TextSize = 11
+    face.TextXAlignment = Enum.TextXAlignment.Left
+    face.ClearTextOnFocus = false
+    face.ZIndex = 193
+    SilenceAPI._theme(face, "TextColor3", "text")
+    face.FocusLost:Connect(function()
+        SilenceAPI._setFace(face.Text)
+        refreshPreview()
+    end)
+end
+
+------------------------------------------------------------ RIGHT: PREVIEW
+local vpBox = Instance.new("Frame", LS)
+vpBox.Size = UDim2.new(0, 350, 0, 300)
+vpBox.Position = UDim2.new(0, 552, 0, 56)
+vpBox.BackgroundColor3 = Theme.bg
+vpBox.BackgroundTransparency = 0.3
+vpBox.BorderSizePixel = 0
+vpBox.ClipsDescendants = true
+vpBox.ZIndex = 191
+corner(vpBox, 12)
+stroke(vpBox, Theme.bg4, 1, 0.5, "bg4")
+do
+    for i = 1, 9 do
+        local v = Instance.new("Frame", vpBox)
+        v.Size = UDim2.new(0, 1, 1, 0); v.Position = UDim2.new(i / 10, 0, 0, 0)
+        v.BackgroundColor3 = Theme.accent
+        v.BackgroundTransparency = 0.94
+        v.BorderSizePixel = 0; v.ZIndex = 191
+    end
+end
+
+local vpCap = Instance.new("TextLabel", vpBox)
+vpCap.Size = UDim2.new(1, -20, 0, 14); vpCap.Position = UDim2.new(0, 12, 0, 8)
+vpCap.BackgroundTransparency = 1
+vpCap.Text = "LIVE PREVIEW"
+vpCap.Font = Enum.Font.GothamBold; vpCap.TextSize = 9
+vpCap.TextXAlignment = Enum.TextXAlignment.Left
+vpCap.ZIndex = 194
+SilenceAPI._theme(vpCap, "TextColor3", "textDim")
+
+local vp = Instance.new("ViewportFrame", vpBox)
+vp.Size = UDim2.new(1, -20, 1, -34)
+vp.Position = UDim2.new(0, 10, 0, 24)
+vp.BackgroundTransparency = 1
+vp.BorderSizePixel = 0
+vp.ZIndex = 192
+vp.LightColor = Color3.fromRGB(255, 255, 255)
+local vpCam = Instance.new("Camera")
+vpCam.Parent = vp
+vp.CurrentCamera = vpCam
+
+local clone, spin = nil, 0
+refreshPreview = function()
+    task.spawn(function()
+        task.wait(0.35)   -- let the setter finish mounting before copying
+        if clone then pcall(function() clone:Destroy() end); clone = nil end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local ok, c = pcall(function() return char:Clone() end)
+        if not ok or not c then return end
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("BaseScript") or d:IsA("Sound") or d:IsA("BillboardGui") then
+                pcall(function() d:Destroy() end)
+            end
+        end
+        c.Parent = vp
+        clone = c
+    end)
+end
+
+track(RunService.Heartbeat:Connect(function(dt)
+    if not LS.Visible or not clone then return end
+    spin = (spin + dt * 0.6) % (math.pi * 2)
+    local root = clone:FindFirstChild("HumanoidRootPart")
+             or clone:FindFirstChildWhichIsA("BasePart")
+    if not root then return end
+    local p = root.Position
+    vpCam.CFrame = CFrame.new(
+        p + Vector3.new(math.sin(spin) * 9, 1.5, math.cos(spin) * 9), p)
+end))
+
+------------------------------------------------------------ RIGHT: OTHERS
+local othCap = Instance.new("TextLabel", LS)
+othCap.Size = UDim2.new(0, 350, 0, 16); othCap.Position = UDim2.new(0, 552, 0, 366)
+othCap.BackgroundTransparency = 1
+othCap.Text = "HIDE SOMEBODY ELSE'S COSTUME  (only for you)"
+othCap.Font = Enum.Font.GothamBold; othCap.TextSize = 10
+othCap.TextXAlignment = Enum.TextXAlignment.Left
+othCap.ZIndex = 192
+SilenceAPI._theme(othCap, "TextColor3", "accent2")
+
+local othList = Instance.new("ScrollingFrame", LS)
+othList.Size = UDim2.new(0, 350, 1, -404)
+othList.Position = UDim2.new(0, 552, 0, 386)
+othList.BackgroundTransparency = 1
+othList.BorderSizePixel = 0
+othList.ScrollBarThickness = 4
+othList.CanvasSize = UDim2.new(0, 0, 0, 0)
+othList.ZIndex = 191
+SilenceAPI._theme(othList, "ScrollBarImageColor3", "accent")
+local oLay = Instance.new("UIListLayout", othList)
+oLay.Padding = UDim.new(0, 4)
+oLay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    othList.CanvasSize = UDim2.new(0, 0, 0, oLay.AbsoluteContentSize.Y + 8)
+end)
+
+local function rebuildOthers()
+    for _, c in ipairs(othList:GetChildren()) do
+        if not c:IsA("UIListLayout") then c:Destroy() end
+    end
+    local n = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            n = n + 1
+            local r = Instance.new("Frame", othList)
+            r.Size = UDim2.new(1, -6, 0, 30)
+            r.BorderSizePixel = 0
+            r.LayoutOrder = n
+            r.ZIndex = 192
+            corner(r, 7)
+            SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+            local l = Instance.new("TextLabel", r)
+            l.Size = UDim2.new(1, -90, 1, 0); l.Position = UDim2.new(0, 10, 0, 0)
+            l.BackgroundTransparency = 1
+            l.Text = p.Name
+            l.Font = Enum.Font.GothamMedium; l.TextSize = 11
+            l.TextXAlignment = Enum.TextXAlignment.Left
+            l.TextTruncate = Enum.TextTruncate.AtEnd
+            l.ZIndex = 193
+            SilenceAPI._theme(l, "TextColor3", "text")
+
+            local b
+            b = flatBtn(r, "SHOWN", 0, 4, 76, function()
+                local hid = SilenceAPI._isLarpHidden and SilenceAPI._isLarpHidden(p)
+                if SilenceAPI._setLarpHidden then
+                    SilenceAPI._setLarpHidden(p, not hid)
+                end
+                local now = SilenceAPI._isLarpHidden and SilenceAPI._isLarpHidden(p)
+                b.Text = now and "HIDDEN" or "SHOWN"
+                b.BackgroundColor3 = now and Theme.accent or Theme.bg3
+                b.TextColor3 = now and Theme.bg or Theme.textDim
+            end)
+            b.Position = UDim2.new(1, -84, 0, 4)
+            local hid = SilenceAPI._isLarpHidden and SilenceAPI._isLarpHidden(p)
+            b.Text = hid and "HIDDEN" or "SHOWN"
+            b.BackgroundColor3 = hid and Theme.accent or Theme.bg3
+            b.TextColor3 = hid and Theme.bg or Theme.textDim
+        end
+    end
+    if n == 0 then
+        local e = Instance.new("TextLabel", othList)
+        e.Size = UDim2.new(1, 0, 0, 26)
+        e.BackgroundTransparency = 1
+        e.Text = "  nobody else here"
+        e.Font = Enum.Font.Gotham; e.TextSize = 11
+        e.TextXAlignment = Enum.TextXAlignment.Left
+        e.ZIndex = 192
+        SilenceAPI._theme(e, "TextColor3", "textDim")
+    end
+end
+rebuildOthers()
+track(Players.PlayerAdded:Connect(function() task.wait(0.5) rebuildOthers() end))
+track(Players.PlayerRemoving:Connect(function() task.wait(0.2) rebuildOthers() end))
+
+LS:GetPropertyChangedSignal("Visible"):Connect(function()
+    if LS.Visible then rebuildOthers(); refreshPreview() end
+end)
+track(LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1.5); if LS.Visible then refreshPreview() end
+end))
+
+SilenceAPI._openLarpStudio = function() LS.Visible = not LS.Visible end
+end)()
+
+----------------------------------------------------------------
 -- SKY
 -- Purely local: Lighting, Atmosphere and post-processing belong to your
 -- client, so none of this is visible to anyone else and none of it touches
@@ -10592,6 +11048,12 @@ local _tagOk, _tagErr = pcall(function()
     -- own name, then whatever the player called themselves.
     -- The aura loop in the Games tab asks this to find out whose settings
     -- apply to whom; only this scope can see styleLook.
+    SilenceAPI._larpOf = function(p)
+        if not p or p == LocalPlayer then return nil end
+        local lk = styleLook[p.UserId]
+        return lk and lk.larp
+    end
+
     SilenceAPI._auraOf = function(p)
         if not p then return nil end
         if p == LocalPlayer then return State.aura end
@@ -13318,6 +13780,20 @@ local _tagOk, _tagErr = pcall(function()
                 titleFor(p))
         end
         out[#out+1] = ""
+        out[#out+1] = "LARP MOUNTS  (part:assetid=result, FAILED = asset never loaded)"
+        local anyL = false
+        for _, p in ipairs(Players:GetPlayers()) do
+            local lg = SilenceAPI._larpLog and SilenceAPI._larpLog[p]
+            if lg and #lg > 0 then
+                anyL = true
+                out[#out+1] = "  " .. tostring(p.Name):sub(1, 14) .. "  "
+                              .. table.concat(lg, "  ")
+            end
+        end
+        if not anyL then
+            out[#out+1] = "  nothing mounted - no larp data arrived for anyone"
+        end
+        out[#out+1] = ""
         out[#out+1] = "SHOWS AS is what THIS client draws over them right now."
         out[#out+1] = "If yours differs from theirs, the title did not travel;"
         out[#out+1] = "check /all in a browser for a title under \"ranks\"."
@@ -14890,13 +15366,14 @@ makeHeaderDrag(CE, hdr)
 ------------------------------------------------------------ LAYOUT
 -- fixed geometry, because the thread between the columns is drawn from row
 -- indices rather than from measured positions
-local COLW, ROWH, GAP, TOP, MIDW = 350, 74, 8, 78
+-- rows start below the toolbar rather than right under the title
+local COLW, ROWH, GAP, TOP, MIDW = 350, 74, 8, 110
 MIDW = 900 - 2 * COLW - 2 * 20 - 20
 
 local function colCaption(x, text)
     local l = Instance.new("TextLabel", CE)
     l.Size = UDim2.new(0, COLW, 0, 16)
-    l.Position = UDim2.new(0, x, 0, 56)
+    l.Position = UDim2.new(0, x, 0, 88)
     l.BackgroundTransparency = 1
     l.Text = text
     l.Font = Enum.Font.GothamBold
@@ -14912,8 +15389,8 @@ colCaption(900 - 20 - COLW, "TAG DESIGNS")
 -- something to read against, the same way the tag editor's preview stage
 -- does for a transparent card.
 local canvas = Instance.new("Frame", CE)
-canvas.Size = UDim2.new(1, -32, 1, -132)
-canvas.Position = UDim2.new(0, 16, 0, 72)
+canvas.Size = UDim2.new(1, -32, 1, -156)
+canvas.Position = UDim2.new(0, 16, 0, 102)
 canvas.BackgroundColor3 = Theme.bg
 canvas.BackgroundTransparency = 0.35
 canvas.BorderSizePixel = 0
@@ -14963,16 +15440,19 @@ local function mini(parent, label, x, y, w, cb)
     b.AutoButtonColor = false
     b.ZIndex = 204
     corner(b, 6)
-    SilenceAPI._theme(b, "BackgroundColor3", "bg3")
-    SilenceAPI._theme(b, "TextColor3", "text")
-    local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+    -- No outline. The fill carries the shape and the hover, which reads far
+    -- calmer once there are two dozen of these on one screen.
+    b.BackgroundColor3 = Theme.bg3
+    SilenceAPI._theme(b, "TextColor3", "textDim")
     b.MouseEnter:Connect(function()
-        TweenService:Create(st, SilenceAPI._twFade,
-            { Color = Theme.accent, Transparency = 0.2 }):Play()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.accent }):Play()
+        b.TextColor3 = Theme.bg
     end)
     b.MouseLeave:Connect(function()
-        TweenService:Create(st, SilenceAPI._twFade,
-            { Color = Theme.bg4, Transparency = 0.6 }):Play()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg3 }):Play()
+        b.TextColor3 = Theme.textDim
     end)
     b.MouseButton1Click:Connect(cb)
     return b
@@ -15151,7 +15631,14 @@ end
 
 -- Hold a pin, drag across, let go on the other one. The live line follows
 -- the cursor so it is obvious what is about to be tied to what.
+-- Mouse position and AbsolutePosition are NOT in the same coordinate space:
+-- GetMouseLocation is measured against the viewport, AbsolutePosition against
+-- a ScreenGui that sits below the topbar. Mixing them left the line end a
+-- fixed inset away from the cursor.
+-- Rather than guess the offset, only DELTAS between two mouse readings are
+-- used - those are in the same space whatever it is, so the maths is exact.
 local dragFrom, hoverTo, liveLine = nil, nil, nil
+local dragOrigin, dragAnchor = nil, nil
 
 local function endDrag()
     if liveLine then pcall(function() liveLine:Destroy() end); liveLine = nil end
@@ -15160,7 +15647,7 @@ local function endDrag()
         saveB()
         notify("Config", cfgs[dragFrom].name .. "  ->  " .. tags[hoverTo].name, 4)
     end
-    dragFrom, hoverTo = nil, nil
+    dragFrom, hoverTo, dragOrigin, dragAnchor = nil, nil, nil, nil
     paintAll()
 end
 
@@ -15171,8 +15658,11 @@ for i = 1, NS do rowsT[i] = makeRow("t", i) end
 for i = 1, NS do
     rowsC[i].pin.MouseButton1Down:Connect(function()
         dragFrom = i
+        dragOrigin = UserInputService:GetMouseLocation()
+        dragAnchor = Vector2.new(0, rowY(i) - TOP)
         if liveLine then pcall(function() liveLine:Destroy() end) end
-        liveLine = segment(thread, 0, rowY(i) - TOP, 0, rowY(i) - TOP, true, true)
+        liveLine = segment(thread, dragAnchor.X, dragAnchor.Y,
+                                   dragAnchor.X, dragAnchor.Y, true, true)
     end)
     rowsT[i].pin.MouseEnter:Connect(function() if dragFrom then hoverTo = i end end)
     rowsT[i].pin.MouseLeave:Connect(function() if hoverTo == i then hoverTo = nil end end)
@@ -15181,16 +15671,18 @@ for i = 1, NS do
 end
 
 SilenceAPI._onDrag(function(inp)
-    if not dragFrom or not liveLine then return end
+    if not dragFrom or not liveLine or not dragOrigin then return end
     local m = UserInputService:GetMouseLocation()
-    local ox = m.X - thread.AbsolutePosition.X
-    local oy = m.Y - thread.AbsolutePosition.Y
-    local y1 = rowY(dragFrom) - TOP
+    -- how far the cursor has moved since the pin was pressed, which is all
+    -- that is needed once the start point is known in canvas coordinates
+    local ex = dragAnchor.X + (m.X - dragOrigin.X)
+    local ey = dragAnchor.Y + (m.Y - dragOrigin.Y)
+    local dx, dy = ex - dragAnchor.X, ey - dragAnchor.Y
+    local len = math.sqrt(dx * dx + dy * dy)
     pcall(function()
-        local dx, dy = ox - 0, oy - y1
-        local len = math.sqrt(dx * dx + dy * dy)
         liveLine.Size = UDim2.new(0, len, 0, 3)
-        liveLine.Position = UDim2.new(0, ox / 2, 0, (y1 + oy) / 2)
+        liveLine.Position = UDim2.new(0, (dragAnchor.X + ex) / 2,
+                                      0, (dragAnchor.Y + ey) / 2)
         liveLine.Rotation = math.deg(math.atan2(dy, dx))
     end)
 end)
@@ -15240,10 +15732,13 @@ paintAll = function()
 end
 
 ------------------------------------------------------------ FOOTER
+-- A toolbar under the title instead of a row of framed buttons along the
+-- bottom: the actions are what you reach for first, and outlines on every
+-- one of them made the window read as a grid of boxes.
 local function footBtn(label, x, w, cb)
     local b = Instance.new("TextButton", CE)
-    b.Size = UDim2.new(0, w, 0, 30)
-    b.Position = UDim2.new(0, x, 1, -62)
+    b.Size = UDim2.new(0, w, 0, 28)
+    b.Position = UDim2.new(0, x, 0, 52)
     b.BorderSizePixel = 0
     b.Text = label
     b.Font = Enum.Font.GothamBold
@@ -15251,14 +15746,17 @@ local function footBtn(label, x, w, cb)
     b.AutoButtonColor = false
     b.ZIndex = 203
     corner(b, 8)
-    SilenceAPI._theme(b, "BackgroundColor3", "bg2")
-    SilenceAPI._theme(b, "TextColor3", "text")
-    local st = stroke(b, Theme.accent, 1, 0.5)
+    b.BackgroundColor3 = Theme.bg2
+    SilenceAPI._theme(b, "TextColor3", "textDim")
     b.MouseEnter:Connect(function()
-        TweenService:Create(st, SilenceAPI._twFade, { Transparency = 0 }):Play()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.accent }):Play()
+        b.TextColor3 = Theme.bg
     end)
     b.MouseLeave:Connect(function()
-        TweenService:Create(st, SilenceAPI._twFade, { Transparency = 0.5 }):Play()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg2 }):Play()
+        b.TextColor3 = Theme.textDim
     end)
     b.MouseButton1Click:Connect(cb)
     return b
@@ -15288,8 +15786,8 @@ footBtn("SAVE BOTH FROM CURRENT", 286, 200, function()
 end)
 
 local foot = Instance.new("TextLabel", CE)
-foot.Size = UDim2.new(0, 340, 0, 30)
-foot.Position = UDim2.new(1, -360, 1, -62)
+foot.Size = UDim2.new(0, 300, 0, 28)
+foot.Position = UDim2.new(1, -320, 0, 52)
 foot.BackgroundTransparency = 1
 foot.Font = Enum.Font.Gotham
 foot.TextSize = 10
