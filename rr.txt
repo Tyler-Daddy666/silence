@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v143"
+SilenceAPI._version = "v144"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -840,6 +840,7 @@ local State = {
     vcBypass = false,         -- auto voice reconnect toggle (Misc tab)
     micHold = false,          -- keep re-opening the mic when something mutes it
     micBtn = false,           -- our own mic button, for when Roblox's vanishes
+    voiceOverlay = false,     -- show who is speaking, over their head
     vcCycleSecs = 120,        -- seconds between voice session cycles
     vcSelfMuted = false,      -- local microphone mute (Voice tab)
     vcAutoMute = false,       -- cut the microphone on every server join
@@ -9219,6 +9220,175 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
     end
     rebuildMics()
     buttonRow(pVcMic, "Refresh Device List", rebuildMics)
+
+    ------------------------------------------------------------ WHO IS TALKING
+    -- A card over the head of whoever is speaking. Purely a readout of the
+    -- voice state Roblox already publishes - it transmits nothing, receives
+    -- nothing and changes nothing about who can hear whom.
+    --
+    -- Two routes, because which one this build allows is not something to
+    -- guess at:
+    --   LEVEL     an AudioAnalyzer wired to the player's AudioDeviceInput,
+    --             giving a live loudness figure
+    --   PRESENCE  the device exists and is Active, so they CAN talk
+    --
+    -- The analyzer is attempted first and the fallback is silent. Which one
+    -- actually produced numbers is reported in the self test, so the answer
+    -- comes from your own client rather than from an assumption.
+    local ovOn, ovRec, ovMode = false, {}, "not started"
+
+    local function ovDevice(p)
+        local ok, d = pcall(function()
+            return p:FindFirstChildOfClass("AudioDeviceInput")
+        end)
+        return ok and d or nil
+    end
+
+    local function ovAnalyzer(dev)
+        local ok, an = pcall(function()
+            local a = Instance.new("AudioAnalyzer")
+            a.Name = "__SIL_VoiceLvl"
+            a.Parent = dev
+            local w = Instance.new("Wire")
+            w.SourceInstance = dev
+            w.TargetInstance = a
+            w.Parent = a
+            return a
+        end)
+        return ok and an or nil
+    end
+
+    local function ovDrop(p)
+        local r = ovRec[p]
+        if not r then return end
+        if r.bb then pcall(function() r.bb:Destroy() end) end
+        if r.an then pcall(function() r.an:Destroy() end) end
+        ovRec[p] = nil
+    end
+
+    local function ovBuild(p)
+        ovDrop(p)
+        local head = p.Character and p.Character:FindFirstChild("Head")
+        local dev = ovDevice(p)
+        if not head or not dev then return end
+
+        local bb = Instance.new("BillboardGui")
+        bb.Name = "__SIL_Voice"
+        bb.Size = UDim2.new(0, 132, 0, 24)
+        bb.StudsOffset = Vector3.new(0, 3.6, 0)
+        bb.AlwaysOnTop = true
+        bb.MaxDistance = 140
+        bb.Enabled = false
+
+        local fr = Instance.new("Frame", bb)
+        fr.Size = UDim2.new(1, 0, 1, 0)
+        fr.BackgroundColor3 = Color3.fromRGB(14, 14, 16)
+        fr.BackgroundTransparency = 0.2
+        fr.BorderSizePixel = 0
+        corner(fr, 11)
+        stroke(fr, Theme.accent, 1, 0.35)
+
+        local dotf = Instance.new("Frame", fr)
+        dotf.Size = UDim2.new(0, 8, 0, 8); dotf.Position = UDim2.new(0, 9, 0.5, -4)
+        dotf.BorderSizePixel = 0
+        dotf.BackgroundColor3 = Color3.fromRGB(90, 230, 130)
+        corner(dotf, 4)
+
+        local nm = Instance.new("TextLabel", fr)
+        nm.Size = UDim2.new(1, -46, 1, 0); nm.Position = UDim2.new(0, 23, 0, 0)
+        nm.BackgroundTransparency = 1
+        nm.Text = p.DisplayName
+        nm.Font = Enum.Font.GothamBold; nm.TextSize = 11
+        nm.TextXAlignment = Enum.TextXAlignment.Left
+        nm.TextColor3 = Color3.fromRGB(255, 255, 255)
+        nm.TextTruncate = Enum.TextTruncate.AtEnd
+
+        -- the loudness bar only appears if an analyzer actually answers
+        local bar = Instance.new("Frame", fr)
+        bar.Size = UDim2.new(0, 3, 0, 4); bar.Position = UDim2.new(1, -16, 0.5, -2)
+        bar.BorderSizePixel = 0
+        bar.BackgroundColor3 = Color3.fromRGB(90, 230, 130)
+        corner(bar, 2)
+
+        -- parented last: built detached, so a throw above leaves nothing
+        -- stranded on the head
+        bb.Parent = head
+        ovRec[p] = { bb = bb, bar = bar, dev = dev, an = ovAnalyzer(dev) }
+    end
+
+    local function ovStop()
+        for p in pairs(ovRec) do ovDrop(p) end
+        ovRec = {}
+        ovOn = false
+    end
+
+    local function ovStart()
+        ovOn = true
+        for _, p in ipairs(Players:GetPlayers()) do pcall(ovBuild, p) end
+    end
+
+    track(RunService.Heartbeat:Connect(function()
+        if not State.voiceOverlay then return end
+        for _, p in ipairs(Players:GetPlayers()) do
+            local r = ovRec[p]
+            if not r or not r.bb or not r.bb.Parent then
+                -- only build when there is something to build from; no
+                -- retry storm for a player with voice switched off
+                if p.Character and ovDevice(p) then pcall(ovBuild, p) end
+            else
+                local lvl, live = nil, false
+                if r.an then
+                    local ok, v = pcall(function()
+                        return r.an.PeakLevel or r.an.RmsLevel
+                    end)
+                    if ok and type(v) == "number" then
+                        lvl = v
+                        live = v > 0.02
+                        if ovMode ~= "level" then ovMode = "level" end
+                    end
+                end
+                if lvl == nil then
+                    local ok, act = pcall(function() return r.dev.Active end)
+                    live = ok and act and true or false
+                    if ovMode == "not started" then ovMode = "presence only" end
+                end
+                if r.bb.Enabled ~= live then r.bb.Enabled = live end
+                if lvl then
+                    local w = 3 + math.clamp(lvl, 0, 1) * 9
+                    r.bar.Size = UDim2.new(0, 3, 0, w)
+                    r.bar.Position = UDim2.new(1, -16, 0.5, -w / 2)
+                end
+            end
+        end
+    end))
+
+    track(Players.PlayerRemoving:Connect(function(p) ovDrop(p) end))
+
+    SilenceAPI._setVoiceOverlay = function(v)
+        State.voiceOverlay = v and true or false
+        if State.voiceOverlay then ovStart() else ovStop() end
+    end
+    SilenceAPI._voiceOverlayMode = function() return ovMode end
+
+    sectionLabel(pVcMic, "WHO IS TALKING")
+    toggleRow(pVcMic, "Show a card over whoever is speaking",
+        function() return State.voiceOverlay end,
+        function(v) SilenceAPI._setVoiceOverlay(v) end)
+
+    local ovLbl = Instance.new("TextLabel", pVcMic)
+    ovLbl.Size = UDim2.new(1, 0, 0, 56)
+    ovLbl.BackgroundTransparency = 1
+    ovLbl.Text = "  Reads the voice state Roblox already publishes and draws"
+              .. " it. It sends nothing and receives nothing - a script cannot"
+              .. " carry audio.\n  If an analyzer can be attached, the bar on"
+              .. " the right shows how loud they are; otherwise the card just"
+              .. " marks who has a live microphone.\n  Which of the two you"
+              .. " got is in Logs -> SELF TEST."
+    ovLbl.Font = Enum.Font.Gotham; ovLbl.TextSize = 10
+    ovLbl.TextWrapped = true
+    ovLbl.TextXAlignment = Enum.TextXAlignment.Left
+    ovLbl.TextYAlignment = Enum.TextYAlignment.Top
+    ovLbl.TextColor3 = Theme.textDim
 
     ------------------------------------------------------------ TAB: VOICE LOG
     sectionLabel(pVcLog, "WHAT THIS BUILD OFFERS")
@@ -18748,6 +18918,10 @@ buttonRow(pLog, "SELF TEST  -  run everything, copy one report", function()
         o[#o+1] = "voice page never built"
     end
 
+    head("VOICE OVERLAY")
+    o[#o+1] = "mode : " .. tostring(SilenceAPI._voiceOverlayMode
+                                    and SilenceAPI._voiceOverlayMode() or "off")
+
     head("WINDOWS")
     o[#o+1] = "registered : " .. tostring(#(SilenceAPI._modalWindows or {}))
     local mo = false
@@ -18915,6 +19089,9 @@ local APPLY = {
     end,
     micBtn       = function(v)
         if SilenceAPI._setMicBtn then SilenceAPI._setMicBtn(v) end
+    end,
+    voiceOverlay = function(v)
+        if SilenceAPI._setVoiceOverlay then SilenceAPI._setVoiceOverlay(v) end
     end,
     vcAutoMute   = function(v) State.vcAutoMute = v end,
     allowJumpscare = function(v) State.allowJumpscare = v end,
@@ -19871,6 +20048,9 @@ function SilenceAPI.cleanup()
     pcall(setVcBypass,false)   -- else its 1.5s Heartbeat loop survives unload
     if SilenceAPI._setMicHold then pcall(SilenceAPI._setMicHold, false) end
     if SilenceAPI._setMicBtn  then pcall(SilenceAPI._setMicBtn,  false) end
+    if SilenceAPI._setVoiceOverlay then
+        pcall(SilenceAPI._setVoiceOverlay, false)
+    end
     if SilenceAPI._larpCleanup     then pcall(SilenceAPI._larpCleanup)     end
     if SilenceAPI._worldCleanup    then pcall(SilenceAPI._worldCleanup)    end
     if SilenceAPI._setPlayerLog    then pcall(SilenceAPI._setPlayerLog, false) end
