@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v71"
+SilenceAPI._version = "v72"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -735,10 +735,15 @@ local State = {
     -- your own loader:  getgenv().SilenceAdminCmd = "/whatever"
     adminCmd = "/sa",
     allowJumpscare = true,    -- let other Silence users send you one
-    -- Which place each game card unlocks in. Filled by pressing BIND while
-    -- you are actually in the game, because guessing a place id wrong means
-    -- a card that never opens and no way to tell why.
-    gameIds = { gv = {}, bb = {} },
+    -- Which places each game card unlocks in. These are the real ids, so the
+    -- cards work out of the box. The auto-binder further down still adds the
+    -- place you are standing in when the name matches, which covers sub
+    -- places: a lobby and the round itself often carry DIFFERENT ids, and
+    -- only one of them can be the one printed in the website URL.
+    gameIds = {
+        gv = { 136162036182779 },   -- German Voice
+        bb = { 13772394625 },       -- Blade Ball
+    },
     aura = { on = false, style = "sparkle", gradient = true, rainbow = false,
              size = 1, rate = 1,
              color  = Color3.fromRGB(255, 60, 60),
@@ -10835,19 +10840,25 @@ for i, c in ipairs(CARDS) do
 
     -- The place thumbnail if Roblox will hand it over, a file from the
     -- Silence folder otherwise, and a flat panel if neither works.
+    -- Roblox will hand over a game's own icon for a place id, which is the
+    -- only banner obtainable without an upload. Cropped to the card so it
+    -- reads as a wide banner rather than a square badge. A file of your own
+    -- in the Silence folder wins over it.
     local img = Instance.new("ImageLabel", card)
-    img.Size = UDim2.new(1, 0, 0, 96)
+    img.Size = UDim2.new(1, 0, 0, 100)
     img.BackgroundTransparency = 1
     img.BorderSizePixel = 0
     img.ScaleType = Enum.ScaleType.Crop
     img.ImageTransparency = 0.15
-    local local_ = loadLocalImage(c.img, ICON_BASE .. c.img[1])
-    if local_ then
-        img.Image = local_
+    local mine = loadLocalImage(c.img, ICON_BASE .. c.img[1])
+    if mine then
+        img.Image = mine
     else
         local id = (State.gameIds[c.key] or {})[1]
-        if id then img.Image = "rbxthumb://type=GameIcon&id=" .. tostring(id)
-                              .. "&w=420&h=420" end
+        if id then
+            img.Image = "rbxthumb://type=GameIcon&id=" .. tostring(id)
+                        .. "&w=420&h=420"
+        end
     end
 
     -- a fade under the text, so a bright thumbnail cannot swallow the title
@@ -10885,21 +10896,10 @@ for i, c in ipairs(CARDS) do
     state.Font = Enum.Font.GothamBold; state.TextSize = 9
     state.TextXAlignment = Enum.TextXAlignment.Left
 
-    local bind = Instance.new("TextButton", card)
-    bind.Size = UDim2.new(0, 54, 0, 20); bind.Position = UDim2.new(1, -64, 0, 132)
-    bind.BorderSizePixel = 0
-    bind.Text = "LINK"
-    bind.Font = Enum.Font.GothamBold; bind.TextSize = 9
-    bind.AutoButtonColor = false
-    corner(bind, 5)
-    bind.BackgroundColor3 = Theme.bg3
-    bind.TextColor3 = Theme.textDim
-
     local function paint()
         local here = inGame(c.key)
-        state.Text = here and "IN THIS GAME" or
-            ((#(State.gameIds[c.key] or {}) == 0) and "not bound yet"
-                                                  or "not in this game")
+        state.Text = here and "IN THIS GAME  -  click to open"
+                          or "not in this game"
         state.TextColor3 = here and Theme.accent or Theme.textDim
         cst.Color = here and Theme.accent or Theme.bg4
         cst.Transparency = here and 0.15 or 0.55
@@ -10907,19 +10907,6 @@ for i, c in ipairs(CARDS) do
     end
     paints[#paints + 1] = paint
     paint()
-
-    bind.MouseButton1Click:Connect(function()
-        local list = State.gameIds[c.key]
-        for _, id in ipairs(list) do
-            if id == game.PlaceId then
-                notify("Games", c.title .. " is already bound to this place.", 3)
-                return
-            end
-        end
-        list[#list + 1] = game.PlaceId
-        for _, fn in ipairs(paints) do fn() end
-        notify("Games", c.title .. " bound to place " .. tostring(game.PlaceId), 5)
-    end)
 
     card.MouseEnter:Connect(function()
         TweenService:Create(cst, SilenceAPI._twFade, { Transparency = 0.1 }):Play()
@@ -10930,12 +10917,7 @@ for i, c in ipairs(CARDS) do
 
     card.MouseButton1Click:Connect(function()
         if not inGame(c.key) then
-            if #(State.gameIds[c.key] or {}) == 0 then
-                notify("Games", "Press BIND while you are in " .. c.title
-                       .. " to link this card to it.", 7)
-            else
-                notify("Games", c.title .. " only opens inside that game.", 5)
-            end
+            notify("Games", c.title .. " only opens inside that game.", 5)
             return
         end
         if c.key == "gv" and SilenceAPI._openGV then SilenceAPI._openGV() end
@@ -11340,10 +11322,9 @@ end
 local shelfHint = Instance.new("TextLabel", pGames)
 shelfHint.Size = UDim2.new(1, 0, 0, 46)
 shelfHint.BackgroundTransparency = 1
-shelfHint.Text = "  A card opens only inside its own game. Normally it links itself"
-              .. " from the place name; LINK is the manual fallback for a"
-              .. " private server or a renamed copy. Press it while you are in"
-              .. " the game and the card remembers that place for good."
+shelfHint.Text = "  A card lights up and opens only inside its own game. Put"
+              .. " germanvoice.png or bladeball.png in your Silence folder to"
+              .. " replace the banner with your own picture."
 shelfHint.Font = Enum.Font.Gotham
 shelfHint.TextSize = 10
 shelfHint.TextXAlignment = Enum.TextXAlignment.Left
