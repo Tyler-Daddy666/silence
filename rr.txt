@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v100"
+SilenceAPI._version = "v104"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -3268,6 +3268,23 @@ local function stopEmote()
     if activeAnimConn   then activeAnimConn:Disconnect()   activeAnimConn=nil   end
     if emoteEnforceConn then emoteEnforceConn:Disconnect() emoteEnforceConn=nil end
     if activeTrack then pcall(function() activeTrack:Stop() end); activeTrack=nil end
+    -- Everything, not just the one we are holding a reference to. The
+    -- enforcer's sweep dies with the connection above, so a track that
+    -- outlived an earlier call would otherwise keep running - looped, at
+    -- Action4 - and beat the re-enabled Animate script, which sits at Core.
+    -- The character would stay owned by an emote nobody can see or stop.
+    pcall(function()
+        local c0 = getChar()
+        local h0 = c0 and c0:FindFirstChildOfClass("Humanoid")
+        local a0 = h0 and h0:FindFirstChildOfClass("Animator")
+        if a0 then
+            for _, t in ipairs(a0:GetPlayingAnimationTracks()) do
+                if t.Priority == Enum.AnimationPriority.Action4 then
+                    pcall(function() t:Stop(0) end)
+                end
+            end
+        end
+    end)
     if activeSound then pcall(function() activeSound:Stop(); activeSound:Destroy() end); activeSound=nil end
     State.currentEmote=nil
     -- Re-enable Animate script
@@ -3307,8 +3324,21 @@ local function tryLoadSound(soundId, loop, pitch)
     return nil
 end
 
+SilenceAPI._emoteGen = 0
 local function playEmote(animId, soundId, loop, pitch)
     stopEmote()
+    -- Callers pass a number, chat commands pass a number, the emote window
+    -- passes the string it matched out of an id. Everything downstream
+    -- compares against State.currentEmote, so normalise once, here, rather
+    -- than hoping every comparison happens to get the same type.
+    animId = tostring(animId)
+    -- This function yields twice below - PreloadAsync, and the wait for
+    -- Length - and stopEmote has already run by then. A second call landing
+    -- in that window used to overwrite emoteEnforceConn without
+    -- disconnecting it, leaking a Heartbeat that nothing could ever reach
+    -- again. The generation makes the older run stand down instead.
+    SilenceAPI._emoteGen = SilenceAPI._emoteGen + 1
+    local myGen = SilenceAPI._emoteGen
     local hum=getHum(); if not hum then notify("Emote","No humanoid") return end
     local char=getChar()
 
@@ -3362,6 +3392,12 @@ local function playEmote(animId, soundId, loop, pitch)
         return
     end
 
+    -- Another playEmote started while we were yielding, so this run is
+    -- stale: drop the track instead of playing it over the newer one.
+    if myGen ~= SilenceAPI._emoteGen then
+        pcall(function() trk:Destroy() end)
+        return
+    end
     trk.Priority = Enum.AnimationPriority.Action4
     trk.Looped   = true
     trk:Play(0.1)
@@ -3425,6 +3461,7 @@ local function playEmote(animId, soundId, loop, pitch)
     local trackAnimId = animId
     local nextCheck = 0
     emoteEnforceConn = RunService.Heartbeat:Connect(function()
+        if myGen ~= SilenceAPI._emoteGen then return end
         if State.currentEmote ~= trackAnimId then return end
         -- a quarter second catches a game re-enabling Animate long before a
         -- human sees it, and takes this off the per-frame budget entirely
@@ -3454,7 +3491,7 @@ local function playEmote(animId, soundId, loop, pitch)
         -- something else stopped us. The enforcer would catch it within a
         -- quarter second anyway - this only makes the recovery instant. The
         -- IsPlaying guard stops the two of them stacking Play calls.
-        if State.currentEmote == animId and activeTrack
+        if myGen == SilenceAPI._emoteGen and State.currentEmote == animId and activeTrack
            and not activeTrack.IsPlaying then
             pcall(function() activeTrack:Play(0.1) end)
         end
@@ -3462,7 +3499,7 @@ local function playEmote(animId, soundId, loop, pitch)
 
     emoteResumeConn = LocalPlayer.CharacterAdded:Connect(function()
         task.wait(0.6)
-        if State.currentEmote == animId then
+        if myGen == SilenceAPI._emoteGen and State.currentEmote == animId then
             playEmote(animId, soundId, loop, pitch)
         end
     end)
@@ -4290,6 +4327,73 @@ local function makeHeaderDrag(popup, header)
         popup.Position = UDim2.new(startPos.X.Scale, newX, startPos.Y.Scale, newY)
     end)
 end
+
+;(function()
+-- 60 frames, 8 columns, 128px cells on a 1024x1024 sheet.
+local COLS, CELL, N, FPS = 8, 128, 60, 30
+local hosts, sheet = {}, nil
+
+-- host is the frame to draw into; letter is the "S" TextLabel or TextButton
+-- already there. The letter stays until the sheet has actually arrived, so a
+-- missing file leaves the panel exactly as it was rather than blank.
+SilenceAPI._spinLogo = function(host, letter)
+    local l = Instance.new("ImageLabel", host)
+    l.Name = "__SIL_Spin"
+    l.Size = UDim2.new(1, 0, 1, 0)
+    l.BackgroundTransparency = 1
+    l.BorderSizePixel = 0
+    l.ScaleType = Enum.ScaleType.Fit
+    l.ImageRectSize = Vector2.new(CELL, CELL)
+    l.Visible = false
+    l.ZIndex = (letter and letter.ZIndex or 8) + 1
+    local rec = { img = l, letter = letter }
+    hosts[#hosts + 1] = rec
+    if sheet then
+        l.Image = sheet
+        l.Visible = true
+        -- cleared rather than hidden: FloatBtn is the button itself and
+        -- cannot be made invisible without taking the button with it
+        if letter then pcall(function() letter.Text = "" end) end
+    end
+    return l
+end
+
+task.spawn(function()
+    local id = loadLocalImage({ "S_spin_sheet.png", "s_spin_sheet.png" },
+                              ICON_BASE .. "logo/S_spin_sheet.png")
+    if not id then
+        print("[Silence] spin sheet not found - the S stays a letter")
+        return
+    end
+    sheet = id
+    for _, h in ipairs(hosts) do
+        if h.img and h.img.Parent then
+            h.img.Image = id
+            h.img.Visible = true
+            if h.letter then pcall(function() h.letter.Text = "" end) end
+        end
+    end
+    print("[Silence] spin sheet loaded for " .. #hosts .. " logo(s)")
+end)
+
+-- One clock for every logo on screen. Four separate Heartbeats each summing
+-- their own dt would drift apart within a minute and show four different
+-- frames of what is supposed to be the same spin.
+track(RunService.Heartbeat:Connect(function(dt)
+    if not sheet then return end
+    SilenceAPI._spinT = (SilenceAPI._spinT or 0) + dt
+    local f = math.floor(SilenceAPI._spinT * FPS) % N
+    local ox, oy = (f % COLS) * CELL, math.floor(f / COLS) * CELL
+    for i = #hosts, 1, -1 do
+        local h = hosts[i]
+        if not (h.img and h.img.Parent) then
+            table.remove(hosts, i)
+        elseif h.img.Visible then
+            h.img.ImageRectOffset = Vector2.new(ox, oy)
+        end
+    end
+end))
+end)()
 
 local Gui=Instance.new("ScreenGui")
 Gui.Name="SilenceAdminPanel_"..tostring(math.random(10000,99999))
@@ -5205,6 +5309,7 @@ local sTxt=Instance.new("TextLabel", mark)
 sTxt.Size=UDim2.new(1,0,1,0); sTxt.BackgroundTransparency=1
 sTxt.Text="S"; sTxt.Font=Enum.Font.GothamBlack; sTxt.TextSize=24; sTxt.ZIndex=8
 SilenceAPI._theme(sTxt,"TextColor3","text")
+SilenceAPI._spinLogo(mark, sTxt)
 
 local wm=Instance.new("TextLabel", Header)
 wm.Size=UDim2.new(0,180,0,22); wm.Position=UDim2.new(0,70,0.5,-17)
@@ -5507,6 +5612,7 @@ local ms = Instance.new("TextLabel", mark)
 ms.Size = UDim2.new(1, 0, 1, 0); ms.BackgroundTransparency = 1
 ms.Text = "S"; ms.Font = Enum.Font.GothamBlack; ms.TextSize = 17; ms.ZIndex = 11
 SilenceAPI._theme(ms, "TextColor3", "text")
+SilenceAPI._spinLogo(mark, ms)
 
 local vals = {}
 local function chip(x, key, caption)
@@ -9846,6 +9952,7 @@ FloatBtn.BackgroundTransparency = 0.32
 FloatBtn.BorderSizePixel = 0
 FloatBtn.Text = "S"; FloatBtn.Font = Enum.Font.GothamBlack; FloatBtn.TextSize = 22
 FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+SilenceAPI._spinLogo(FloatBtn, FloatBtn)
 FloatBtn.Visible = true; FloatBtn.AutoButtonColor = false
 corner(FloatBtn, 25)
 stroke(FloatBtn, Theme.accent, 1, 0.45)
@@ -13674,6 +13781,7 @@ local _tagOk, _tagErr = pcall(function()
         ms.Text = "S"; ms.Font = Enum.Font.GothamBlack; ms.TextSize = 18
         ms.ZIndex = EZ + 3
         SilenceAPI._theme(ms, "TextColor3", "text")
+        SilenceAPI._spinLogo(mark, ms)
 
         local wm = Instance.new("TextLabel", pHdr)
         wm.Size = UDim2.new(0, 260, 0, 18); wm.Position = UDim2.new(0, 56, 0.5, -15)
@@ -17029,9 +17137,9 @@ local EW = SilenceAPI._gameWindow("UGC EMOTES",
 EW.Size = UDim2.new(0, 660, 0, 600)
 EW.Position = UDim2.new(0.5, -330, 0.5, -300)
 
-local function box(y, placeholder)
+local function box(y, placeholder, wOff)
     local t = Instance.new("TextBox", EW)
-    t.Size = UDim2.new(1, -142, 0, 30); t.Position = UDim2.new(0, 20, 0, y)
+    t.Size = UDim2.new(1, wOff or -142, 0, 30); t.Position = UDim2.new(0, 20, 0, y)
     t.BorderSizePixel = 0
     t.Text = ""
     t.PlaceholderText = placeholder
@@ -17046,9 +17154,10 @@ local function box(y, placeholder)
     return t
 end
 
-local function topBtn(label, y, cb)
+local function topBtn(label, y, cb, xOff)
     local b = Instance.new("TextButton", EW)
-    b.Size = UDim2.new(0, 100, 0, 30); b.Position = UDim2.new(1, -120, 0, y)
+    b.Size = UDim2.new(0, 100, 0, 30)
+    b.Position = UDim2.new(1, xOff or -120, 0, y)
     b.BorderSizePixel = 0
     b.Text = label
     b.Font = Enum.Font.GothamBold; b.TextSize = 11
@@ -17070,7 +17179,7 @@ local function topBtn(label, y, cb)
 end
 
 local sBox  = box(54, "search emotes...")
-local idBox = box(92, "paste a catalog or animation id...")
+local idBox = box(92, "paste a catalog or animation id...", -252)
 
 topBtn("STOP", 54, function()
     stopEmote()
@@ -17079,13 +17188,21 @@ end)
 topBtn("PLAY ID", 92, function()
     if tostring(idBox.Text or ""):match("%d+") then play(idBox.Text)
     else notify("Emotes", "Put an id in the box first.", 3) end
-end)
+end, -230)
 idBox.FocusLost:Connect(function(enter)
     if enter and tostring(idBox.Text or ""):match("%d+") then play(idBox.Text) end
 end)
 
+------------------------------------------------------------------ LIST
+-- Twenty rows are built once and refilled on every page turn. Destroying and
+-- re-creating instances per page is fine at forty entries and ruinous at a
+-- few thousand, and the catalog is a few thousand - so the row widgets are
+-- the fixed cost and the data moves through them.
+local PER_PAGE = 20
+local WINDOW   = 5
+
 local list = Instance.new("ScrollingFrame", EW)
-list.Size = UDim2.new(1, -40, 1, -192); list.Position = UDim2.new(0, 20, 0, 132)
+list.Size = UDim2.new(1, -40, 1, -252); list.Position = UDim2.new(0, 20, 0, 132)
 list.BackgroundTransparency = 1
 list.BorderSizePixel = 0
 list.ScrollBarThickness = 4
@@ -17095,12 +17212,35 @@ list.ZIndex = 400
 local lay = Instance.new("UIListLayout", list)
 lay.Padding = UDim.new(0, 4); lay.SortOrder = Enum.SortOrder.LayoutOrder
 
+local countLbl = Instance.new("TextLabel", EW)
+countLbl.Size = UDim2.new(1, -40, 0, 14)
+countLbl.Position = UDim2.new(0, 20, 1, -116)
+countLbl.BackgroundTransparency = 1
+countLbl.Text = ""
+countLbl.Font = Enum.Font.Gotham; countLbl.TextSize = 10
+countLbl.TextXAlignment = Enum.TextXAlignment.Left
+countLbl.ZIndex = 400
+SilenceAPI._theme(countLbl, "TextColor3", "textDim")
+
+local pageBar = Instance.new("Frame", EW)
+pageBar.Size = UDim2.new(1, -40, 0, 30)
+pageBar.Position = UDim2.new(0, 20, 1, -96)
+pageBar.BackgroundTransparency = 1
+pageBar.BorderSizePixel = 0
+pageBar.ZIndex = 400
+local pLay = Instance.new("UIListLayout", pageBar)
+pLay.FillDirection = Enum.FillDirection.Horizontal
+pLay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+pLay.VerticalAlignment = Enum.VerticalAlignment.Center
+pLay.Padding = UDim.new(0, 6)
+pLay.SortOrder = Enum.SortOrder.LayoutOrder
+
 local foot = Instance.new("TextLabel", EW)
-foot.Size = UDim2.new(1, -40, 0, 40); foot.Position = UDim2.new(0, 20, 1, -50)
+foot.Size = UDim2.new(1, -40, 0, 30); foot.Position = UDim2.new(0, 20, 1, -46)
 foot.BackgroundTransparency = 1
-foot.Text = "A catalog emote is a wrapper, not an animation - pasting a catalog"
-         .. " id raw plays nothing. The box above unwraps it, so either kind"
-         .. " of id works.\nRightShift or the STOP button ends an emote."
+foot.Text = "A catalog emote is a wrapper, not an animation - the box above"
+         .. " unwraps it, so either kind of id works."
+         .. "\nE or the STOP button ends an emote."
 foot.Font = Enum.Font.Gotham; foot.TextSize = 10
 foot.TextXAlignment = Enum.TextXAlignment.Left
 foot.TextYAlignment = Enum.TextYAlignment.Top
@@ -17108,14 +17248,17 @@ foot.TextWrapped = true
 foot.ZIndex = 400
 SilenceAPI._theme(foot, "TextColor3", "textDim")
 
-local rows = {}
-for i, e in ipairs(EMOTES) do
+local filtered, page = EMOTES, 1
+local rows, pageBtns = {}, {}
+
+for i = 1, PER_PAGE do
     local b = Instance.new("TextButton", list)
     b.Size = UDim2.new(1, -6, 0, 32)
     b.BorderSizePixel = 0
     b.Text = ""
     b.AutoButtonColor = false
     b.LayoutOrder = i
+    b.Visible = false
     b.ZIndex = 401
     corner(b, 8)
     b.BackgroundColor3 = Theme.bg2
@@ -17123,7 +17266,6 @@ for i, e in ipairs(EMOTES) do
     local nm = Instance.new("TextLabel", b)
     nm.Size = UDim2.new(1, -150, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
     nm.BackgroundTransparency = 1
-    nm.Text = e[1]
     nm.Font = Enum.Font.GothamMedium; nm.TextSize = 12
     nm.TextXAlignment = Enum.TextXAlignment.Left
     nm.ZIndex = 402
@@ -17132,11 +17274,13 @@ for i, e in ipairs(EMOTES) do
     local idl = Instance.new("TextLabel", b)
     idl.Size = UDim2.new(0, 130, 1, 0); idl.Position = UDim2.new(1, -142, 0, 0)
     idl.BackgroundTransparency = 1
-    idl.Text = tostring(e[2])
     idl.Font = Enum.Font.Code; idl.TextSize = 9
     idl.TextXAlignment = Enum.TextXAlignment.Right
     idl.ZIndex = 402
     SilenceAPI._theme(idl, "TextColor3", "textDim")
+
+    local r = { btn = b, nm = nm, idl = idl, id = nil }
+    rows[i] = r
 
     b.MouseEnter:Connect(function()
         TweenService:Create(b, SilenceAPI._twFade,
@@ -17146,17 +17290,203 @@ for i, e in ipairs(EMOTES) do
         TweenService:Create(b, SilenceAPI._twFade,
             { BackgroundColor3 = Theme.bg2 }):Play()
     end)
-    b.MouseButton1Click:Connect(function() play(e[2]) end)
+    -- reads r.id at click time, not a captured entry: the row outlives every
+    -- page it ever shows
+    b.MouseButton1Click:Connect(function()
+        if r.id then play(r.id) end
+    end)
+end
 
-    rows[#rows + 1] = { btn = b, key = string.lower(e[1]) }
+local function pgBtn(order, w, label)
+    local b = Instance.new("TextButton", pageBar)
+    b.Size = UDim2.new(0, w, 0, 26)
+    b.LayoutOrder = order
+    b.BorderSizePixel = 0
+    b.Text = label or ""
+    b.Font = Enum.Font.GothamBold; b.TextSize = 11
+    b.AutoButtonColor = false
+    b.ZIndex = 401
+    corner(b, 7)
+    b.BackgroundColor3 = Theme.bg2
+    b.TextColor3 = Theme.textDim
+    return b
+end
+
+local prevB = pgBtn(1, 30, "<")
+for i = 1, WINDOW do pageBtns[i] = pgBtn(1 + i, 30) end
+local nextB = pgBtn(WINDOW + 2, 30, ">")
+
+local function render()
+    local total = math.max(1, math.ceil(#filtered / PER_PAGE))
+    page = math.clamp(page, 1, total)
+    local base = (page - 1) * PER_PAGE
+
+    for i = 1, PER_PAGE do
+        local e = filtered[base + i]
+        local r = rows[i]
+        if e then
+            r.id = e[2]
+            r.nm.Text = e[1]
+            r.idl.Text = tostring(e[2])
+            r.btn.Visible = true
+        else
+            r.id = nil
+            r.btn.Visible = false
+        end
+    end
+
+    -- The window shifts once the current page reaches its second-to-last
+    -- slot, so there is always one number visible ahead of where you are:
+    -- on page 5 you see 2 through 6, not 1 through 5. Sitting on the last
+    -- slot would mean the page you want next is never on screen.
+    local start = math.clamp(page - (WINDOW - 2), 1,
+                             math.max(1, total - WINDOW + 1))
+    for i = 1, WINDOW do
+        local n = start + i - 1
+        local b = pageBtns[i]
+        if n <= total then
+            b.Visible = true
+            b.Text = tostring(n)
+            b.BackgroundColor3 = (n == page) and Theme.accent or Theme.bg2
+            b.TextColor3      = (n == page) and Theme.bg     or Theme.textDim
+        else
+            b.Visible = false
+        end
+    end
+    prevB.Visible = total > 1
+    nextB.Visible = total > 1
+    prevB.TextColor3 = (page > 1)     and Theme.text or Theme.bg4
+    nextB.TextColor3 = (page < total) and Theme.text or Theme.bg4
+
+    local from = (#filtered == 0) and 0 or (base + 1)
+    local to   = math.min(base + PER_PAGE, #filtered)
+    countLbl.Text = tostring(#filtered) .. " emotes"
+        .. ((#filtered ~= #EMOTES) and (" of " .. #EMOTES) or "")
+        .. "     showing " .. from .. "-" .. to
+        .. "     page " .. page .. " of " .. total
+    -- a page turn that left you scrolled halfway down would look like the
+    -- list simply changed under you
+    list.CanvasPosition = Vector2.new(0, 0)
+end
+
+prevB.MouseButton1Click:Connect(function() page = page - 1; render() end)
+nextB.MouseButton1Click:Connect(function() page = page + 1; render() end)
+for i = 1, WINDOW do
+    pageBtns[i].MouseButton1Click:Connect(function()
+        local n = tonumber(pageBtns[i].Text)
+        if n then page = n; render() end
+    end)
 end
 
 sBox:GetPropertyChangedSignal("Text"):Connect(function()
     local q = string.lower(tostring(sBox.Text or ""))
-    for _, r in ipairs(rows) do
-        r.btn.Visible = (q == "") or (string.find(r.key, q, 1, true) ~= nil)
+    if q == "" then
+        filtered = EMOTES
+    else
+        filtered = {}
+        for _, e in ipairs(EMOTES) do
+            if string.find(string.lower(e[1]), q, 1, true) then
+                filtered[#filtered + 1] = e
+            end
+        end
     end
+    -- a search that left you on page 3 of a one-page result would show an
+    -- empty list and look broken
+    page = 1
+    render()
 end)
+
+------------------------------------------------------------------ CATALOG
+-- Roblox's own catalog, paged in at runtime. Hardcoding thousands of ids
+-- would be a table nobody can maintain and one that is stale the week after.
+--
+-- Four things this endpoint does that will bite anyone who guesses at it:
+--   * Category=12 (AvatarAnimations) with Subcategory=36 (EmoteAnimations).
+--     The obvious Category=11 / Subcategory=61 is rejected outright with
+--     "Category subcategory selection not supported".
+--   * About a quarter of every page is itemType "Bundle" - the animation
+--     PACKAGES - whose ids are container items, not emotes. They have to be
+--     filtered out or the list fills with entries that play nothing.
+--   * Limit accepts only 10, 28 or 30. Any other number is an error.
+--   * Twelve requests per minute, and the 429 comes back with an EMPTY
+--     error message - it reads like a broken response rather than a
+--     throttle. Hence the deliberate wait between pages.
+--
+-- One more limit worth knowing: the cursor runs out after about 34 pages
+-- regardless of how many emotes exist, so a single sort order can only ever
+-- reach roughly a thousand. Different sorts return near-disjoint sets, so
+-- this walks several of them to widen the net.
+local CAT_SORTS = { 0, 1, 3 }
+local catSort, catCursor, catBusy, catStop = 1, nil, false, false
+
+local seenName = {}
+for _, e in ipairs(EMOTES) do seenName[string.lower(e[1])] = true end
+
+local function catalogPage()
+    local url = "https://catalog.roblox.com/v1/search/items/details"
+                .. "?Category=12&Subcategory=36&Limit=30"
+                .. "&SortType=" .. tostring(CAT_SORTS[catSort])
+    if catCursor and catCursor ~= "" then
+        url = url .. "&Cursor=" .. catCursor
+    end
+    local ok, body = pcall(function() return game:HttpGet(url, true) end)
+    if not ok then return nil, "no http access from this executor" end
+    local okJ, data = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+    if not okJ or type(data) ~= "table" then return nil, "bad response" end
+    if data.errors then return nil, "throttled - wait a minute" end
+    return data
+end
+
+local catBtn
+local function loadCatalog()
+    if catBusy then catStop = true; return end
+    catBusy, catStop = true, false
+    catBtn.Text = "STOP LOAD"
+    task.spawn(function()
+        local added, pages = 0, 0
+        while not catStop do
+            local data, err = catalogPage()
+            if not data then
+                countLbl.Text = "catalog: " .. tostring(err)
+                break
+            end
+            pages = pages + 1
+            for _, it in ipairs(data.data or {}) do
+                if it.itemType == "Asset" and it.assetType == 61 and it.id then
+                    local nm = tostring(it.name or ("emote " .. tostring(it.id)))
+                    local k = string.lower(nm)
+                    if not seenName[k] then
+                        seenName[k] = true
+                        EMOTES[#EMOTES + 1] = { nm, it.id }
+                        added = added + 1
+                    end
+                end
+            end
+            countLbl.Text = "catalog: page " .. pages .. "   " .. added
+                            .. " new   " .. #EMOTES .. " total"
+            if filtered == EMOTES then render() end
+            catCursor = data.nextPageCursor
+            if not catCursor or catCursor == "" then
+                catSort = catSort + 1
+                catCursor = nil
+                if catSort > #CAT_SORTS then break end
+            end
+            task.wait(5.5)
+        end
+        catBusy = false
+        catBtn.Text = "CATALOG"
+        render()
+        notify("Emotes", added .. " added, " .. #EMOTES .. " total.", 5)
+    end)
+end
+
+catBtn = topBtn("CATALOG", 92, loadCatalog)
+
+render()
+SilenceAPI._emoteRender = render
+
 
 SilenceAPI._openEmotes = function() EW.Visible = not EW.Visible end
 
@@ -17462,6 +17792,8 @@ buttonRow(pLog, "SELF TEST  -  run everything, copy one report", function()
     head("ASSETS")
     o[#o+1] = "discord icon     : " .. tostring(DISCORD_IMG or "missing")
     o[#o+1] = "settings icon    : " .. tostring(SETTINGS_IMG or "missing")
+    o[#o+1] = "spin sheet       : "
+              .. tostring(SilenceAPI._spinT and "animating" or "letter fallback")
     o[#o+1] = "jumpscare frames : "
               .. tostring(#(SilenceAPI._jumpFrames or {}))
 
