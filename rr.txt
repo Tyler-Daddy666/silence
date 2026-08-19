@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v146"
+SilenceAPI._version = "v148"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -8630,12 +8630,16 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
         return false, "no live voice session"
     end
 
-    -- THE question, and it turns out Roblox will answer it directly.
-    -- IsVoiceEnabledForUserIdAsync is the same check the server does when you
-    -- try to join voice. false means Roblox has voice switched off for this
-    -- account - that IS the ban, and no amount of rejoining changes it.
-    -- true with no session means the session merely dropped, which is the
-    -- case a reset does fix. Returns: enabled, known.
+    -- Careful with this one. IsVoiceEnabledForUserIdAsync answers whether the
+    -- account is ELIGIBLE for voice - age verified, voice switched on in the
+    -- account settings. It is NOT a moderation check, and it keeps returning
+    -- true right through a temporary suspension.
+    --
+    -- This was previously read as a ban check, and it told a user who had
+    -- just been silenced that everything was fine. There is no client-side
+    -- call that reports a suspension; the honest answer is to say so rather
+    -- than to guess from a signal that does not carry it.
+    -- Returns: eligible, known.
     local function voiceEligible()
         local vcv = svcOf("VoiceChatService")
         if not hasM(vcv, "IsVoiceEnabledForUserIdAsync") then return false, false end
@@ -8984,19 +8988,61 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
             end
             out[#out+1] = "others  : " .. others .. " with a mic device"
 
+            -- The channel id is the thing that separates the causes. It only
+            -- exists once a voice session has actually been established, so
+            -- "channel but no device" and "no channel at all" are completely
+            -- different problems - and the earlier version of this report
+            -- called them both "voice is off in this place", which sent the
+            -- user looking in the wrong direction.
+            local chan
+            pcall(function()
+                if hasM(vci, "GetChannelId") then chan = vci:GetChannelId() end
+            end)
+            chan = (chan and tostring(chan) ~= "" and tostring(chan) ~= "nil")
+                   and tostring(chan) or nil
+            out[#out+1] = "channel : " .. (chan and chan:sub(1, 24) or "none")
+
             local live, why = voiceState()
             out[#out+1] = "session : " .. (live and "up" or ("down - " .. tostring(why)))
             out[#out+1] = ""
+
+            local mics = 0
+            pcall(function()
+                if hasM(vci, "GetMicDevices") then
+                    local dv = vci:GetMicDevices()
+                    mics = (type(dv) == "table") and #dv or 0
+                end
+            end)
+            out[#out+1] = "mic devices this machine offers: " .. mics
+
+            out[#out+1] = ""
+            out[#out+1] = "NOTE: 'account' above is ELIGIBILITY, not"
+            out[#out+1] = "moderation. It stays 'allowed' during a temporary"
+            out[#out+1] = "suspension, so it cannot rule one out. Nothing a"
+            out[#out+1] = "client can call reports a suspension directly."
+            out[#out+1] = ""
             if allowed == false then
-                out[#out+1] = "Roblox is not allowing voice on this account."
-                out[#out+1] = "That is decided on their servers. It ends when"
-                out[#out+1] = "it ends; nothing here reaches it. Turn the"
-                out[#out+1] = "session cycle OFF while this is the case - it"
-                out[#out+1] = "will only keep handshaking for nothing."
-            elseif others == 0 and not d then
-                out[#out+1] = "Nobody here has a mic device, yours included."
-                out[#out+1] = "That usually means voice is off for this PLACE,"
-                out[#out+1] = "not for your account."
+                out[#out+1] = "Voice is not enabled for this account at all -"
+                out[#out+1] = "check age verification and the voice setting on"
+                out[#out+1] = "the Roblox website."
+            elseif chan and not d and mics > 0 then
+                out[#out+1] = "A channel exists and this machine offers "
+                              .. mics .. " microphone(s),"
+                out[#out+1] = "but Roblox created no input device for you."
+                out[#out+1] = "Your hardware is fine - the audio side was torn"
+                out[#out+1] = "down at their end. A temporary suspension looks"
+                out[#out+1] = "exactly like this, and so does a voice service"
+                out[#out+1] = "hiccup. Both clear on their own; the first"
+                out[#out+1] = "takes as long as it takes."
+                out[#out+1] = "Turn the session cycle OFF meanwhile."
+            elseif chan and not d then
+                out[#out+1] = "A channel exists but this machine offers no"
+                out[#out+1] = "microphone at all. Check that one is plugged in,"
+                out[#out+1] = "that Windows allows desktop apps to use it, and"
+                out[#out+1] = "that Roblox has a device selected, not None."
+            elseif not chan and others == 0 then
+                out[#out+1] = "No channel, and nobody here has a mic device."
+                out[#out+1] = "Voice is off for this PLACE, not for you."
             end
             local txt = table.concat(out, "\n")
             print(txt)
