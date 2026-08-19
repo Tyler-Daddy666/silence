@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v67"
+SilenceAPI._version = "v70"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -735,6 +735,10 @@ local State = {
     -- your own loader:  getgenv().SilenceAdminCmd = "/whatever"
     adminCmd = "/sa",
     allowJumpscare = true,    -- let other Silence users send you one
+    -- Which place each game card unlocks in. Filled by pressing BIND while
+    -- you are actually in the game, because guessing a place id wrong means
+    -- a card that never opens and no way to tell why.
+    gameIds = { gv = {}, bb = {} },
     aura = { on = false, style = "sparkle", gradient = true, rainbow = false,
              size = 1, rate = 1,
              color  = Color3.fromRGB(255, 60, 60),
@@ -5784,7 +5788,7 @@ local TAB_CATEGORY = {
     Misc      = "System", AntiCheat     = "System", Hotkeys       = "System",
     Config    = "System", Logs          = "System",
     ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
-    ["German Voice"] = "Games",
+    ["German Voice"] = "Games", Games = "Games",
 }
 -- rail order, top to bottom
 local CATEGORIES = {
@@ -5806,7 +5810,7 @@ local TAB_LO_INSIDE = {
     Players = 1, Trolling = 2,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
     ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
-    ["German Voice"] = 1,
+    Games = 0, ["German Voice"] = 1,
 }
 SilenceAPI._catOf     = TAB_CATEGORY
 SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
@@ -5815,6 +5819,7 @@ SilenceAPI._catBadge  = {}   -- [group] = search-hit badge on its tile
 SilenceAPI._tabDesc = {
     Studio        = "Everything about your character, in one window",
     Sky           = "Time of day, custom skies, weather and effects",
+    Games         = "Per-game menus, unlocked by being in the game",
     ["German Voice"] = "Aura and gradients other Silence users can see",
     ["Anti Ban"]  = "Rebuild a dropped voice session",
     Mute          = "Silence yourself or anyone, locally",
@@ -10735,6 +10740,471 @@ SilenceAPI._modalWatch(LS)
 end)()
 
 ----------------------------------------------------------------
+-- GAMES SHELF
+-- One card per game. A card only opens its menu when you are actually in
+-- that place: half of what these menus do is meaningless anywhere else, and
+-- a menu full of switches that quietly do nothing is worse than no menu.
+--
+-- Place ids are BOUND by you rather than hardcoded by me. I do not know the
+-- ids of the games you play, and a wrong one produces a card that refuses to
+-- open with no way to find out why. BIND stamps the place you are standing
+-- in onto the card, and it is carried in your config profile.
+--
+-- An IIFE: a do..end shares the chunk's registers and this file runs at 198
+-- of Luau's 200.
+----------------------------------------------------------------
+;(function()
+local pGames = addTab("Games")
+
+local CARDS = {
+    { key = "gv", title = "GERMAN VOICE", sub = "aura, gradients, emoji tags",
+      img = { "germanvoice.png", "gv.png" } },
+    { key = "bb", title = "BLADE BALL",   sub = "ball tracking and parry timing",
+      img = { "bladeball.png", "bb.png" } },
+}
+
+local function inGame(key)
+    for _, id in ipairs(State.gameIds[key] or {}) do
+        if tonumber(id) == game.PlaceId then return true end
+    end
+    return false
+end
+SilenceAPI._inGame = inGame
+
+sectionLabel(pGames, "GAMES")
+
+local shelf = Instance.new("Frame", pGames)
+shelf.Size = UDim2.new(1, 0, 0, 0)
+shelf.AutomaticSize = Enum.AutomaticSize.Y
+shelf.BackgroundTransparency = 1
+local sLay = Instance.new("UIGridLayout", shelf)
+sLay.CellSize = UDim2.new(0, 236, 0, 156)
+sLay.CellPadding = UDim2.new(0, 10, 0, 10)
+sLay.SortOrder = Enum.SortOrder.LayoutOrder
+SilenceAPI._registerRow(shelf, "games german voice blade ball cards")
+
+local paints = {}
+for i, c in ipairs(CARDS) do
+    local card = Instance.new("TextButton", shelf)
+    card.BorderSizePixel = 0
+    card.Text = ""
+    card.AutoButtonColor = false
+    card.LayoutOrder = i
+    card.ClipsDescendants = true
+    corner(card, 12)
+    SilenceAPI._theme(card, "BackgroundColor3", "bg2")
+    local cst = stroke(card, Theme.bg4, 1, 0.5, "bg4")
+
+    -- The place thumbnail if Roblox will hand it over, a file from the
+    -- Silence folder otherwise, and a flat panel if neither works.
+    local img = Instance.new("ImageLabel", card)
+    img.Size = UDim2.new(1, 0, 0, 96)
+    img.BackgroundTransparency = 1
+    img.BorderSizePixel = 0
+    img.ScaleType = Enum.ScaleType.Crop
+    img.ImageTransparency = 0.15
+    local local_ = loadLocalImage(c.img, ICON_BASE .. c.img[1])
+    if local_ then
+        img.Image = local_
+    else
+        local id = (State.gameIds[c.key] or {})[1]
+        if id then img.Image = "rbxthumb://type=GameIcon&id=" .. tostring(id)
+                              .. "&w=420&h=420" end
+    end
+
+    -- a fade under the text, so a bright thumbnail cannot swallow the title
+    local fade = Instance.new("Frame", card)
+    fade.Size = UDim2.new(1, 0, 0, 70)
+    fade.Position = UDim2.new(0, 0, 0, 40)
+    fade.BorderSizePixel = 0
+    fade.BackgroundColor3 = Theme.bg
+    local fg = Instance.new("UIGradient", fade)
+    fg.Rotation = 90
+    fg.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 1),
+        NumberSequenceKeypoint.new(1, 0.15),
+    })
+
+    local t = Instance.new("TextLabel", card)
+    t.Size = UDim2.new(1, -24, 0, 20); t.Position = UDim2.new(0, 12, 0, 100)
+    t.BackgroundTransparency = 1
+    t.Text = c.title
+    t.Font = Enum.Font.GothamBold; t.TextSize = 14
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    SilenceAPI._theme(t, "TextColor3", "text")
+
+    local sub = Instance.new("TextLabel", card)
+    sub.Size = UDim2.new(1, -24, 0, 14); sub.Position = UDim2.new(0, 12, 0, 120)
+    sub.BackgroundTransparency = 1
+    sub.Text = c.sub
+    sub.Font = Enum.Font.Gotham; sub.TextSize = 10
+    sub.TextXAlignment = Enum.TextXAlignment.Left
+    SilenceAPI._theme(sub, "TextColor3", "textDim")
+
+    local state = Instance.new("TextLabel", card)
+    state.Size = UDim2.new(1, -24, 0, 14); state.Position = UDim2.new(0, 12, 0, 136)
+    state.BackgroundTransparency = 1
+    state.Font = Enum.Font.GothamBold; state.TextSize = 9
+    state.TextXAlignment = Enum.TextXAlignment.Left
+
+    local bind = Instance.new("TextButton", card)
+    bind.Size = UDim2.new(0, 54, 0, 20); bind.Position = UDim2.new(1, -64, 0, 132)
+    bind.BorderSizePixel = 0
+    bind.Text = "BIND"
+    bind.Font = Enum.Font.GothamBold; bind.TextSize = 9
+    bind.AutoButtonColor = false
+    corner(bind, 5)
+    bind.BackgroundColor3 = Theme.bg3
+    bind.TextColor3 = Theme.textDim
+
+    local function paint()
+        local here = inGame(c.key)
+        state.Text = here and "IN THIS GAME" or
+            ((#(State.gameIds[c.key] or {}) == 0) and "not bound yet"
+                                                  or "not in this game")
+        state.TextColor3 = here and Theme.accent or Theme.textDim
+        cst.Color = here and Theme.accent or Theme.bg4
+        cst.Transparency = here and 0.15 or 0.55
+        img.ImageTransparency = here and 0.05 or 0.55
+    end
+    paints[#paints + 1] = paint
+    paint()
+
+    bind.MouseButton1Click:Connect(function()
+        local list = State.gameIds[c.key]
+        for _, id in ipairs(list) do
+            if id == game.PlaceId then
+                notify("Games", c.title .. " is already bound to this place.", 3)
+                return
+            end
+        end
+        list[#list + 1] = game.PlaceId
+        for _, fn in ipairs(paints) do fn() end
+        notify("Games", c.title .. " bound to place " .. tostring(game.PlaceId), 5)
+    end)
+
+    card.MouseEnter:Connect(function()
+        TweenService:Create(cst, SilenceAPI._twFade, { Transparency = 0.1 }):Play()
+    end)
+    card.MouseLeave:Connect(function()
+        for _, fn in ipairs(paints) do fn() end
+    end)
+
+    card.MouseButton1Click:Connect(function()
+        if not inGame(c.key) then
+            if #(State.gameIds[c.key] or {}) == 0 then
+                notify("Games", "Press BIND while you are in " .. c.title
+                       .. " to link this card to it.", 7)
+            else
+                notify("Games", c.title .. " only opens inside that game.", 5)
+            end
+            return
+        end
+        if c.key == "gv" and SilenceAPI._openGV then SilenceAPI._openGV() end
+        if c.key == "bb" and SilenceAPI._openBB then SilenceAPI._openBB() end
+    end)
+end
+
+------------------------------------------------------------ SHARED SHELL
+-- Both game menus are the same window with different contents, so the chrome
+-- is built once.
+local function gameWindow(title, subtitle)
+    local W = Instance.new("Frame", Gui)
+    W.Size = UDim2.new(0, 620, 0, 520)
+    W.Position = UDim2.new(0.5, -310, 0.5, -260)
+    W.BackgroundColor3 = Theme.bg
+    W.BorderSizePixel = 0
+    W.Visible = false
+    W.Active = true
+    W.ZIndex = 195
+    SilenceAPI._glass(W, { radius = 16, transparency = 0.2, edge = 0.3,
+                           glowThickness = 2 })
+    SilenceAPI._blurWatch(W)
+
+    local hdr = Instance.new("Frame", W)
+    hdr.Size = UDim2.new(1, 0, 0, 46)
+    hdr.BackgroundTransparency = 1
+    hdr.BorderSizePixel = 0
+    hdr.Active = true
+    hdr.ZIndex = 196
+
+    local t = Instance.new("TextLabel", hdr)
+    t.Size = UDim2.new(1, -70, 0, 22); t.Position = UDim2.new(0, 20, 0, 8)
+    t.BackgroundTransparency = 1
+    t.Text = title
+    t.Font = Enum.Font.GothamBold; t.TextSize = 15
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.ZIndex = 197
+    SilenceAPI._theme(t, "TextColor3", "text")
+
+    local sb = Instance.new("TextLabel", hdr)
+    sb.Size = UDim2.new(1, -70, 0, 12); sb.Position = UDim2.new(0, 20, 0, 28)
+    sb.BackgroundTransparency = 1
+    sb.Text = subtitle
+    sb.Font = Enum.Font.GothamMedium; sb.TextSize = 10
+    sb.TextXAlignment = Enum.TextXAlignment.Left
+    sb.ZIndex = 197
+    SilenceAPI._theme(sb, "TextColor3", "textDim")
+
+    local x = Instance.new("TextButton", hdr)
+    x.Size = UDim2.new(0, 28, 0, 28); x.Position = UDim2.new(1, -38, 0, 9)
+    x.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    x.BorderSizePixel = 0
+    x.Text = "X"; x.Font = Enum.Font.GothamBold; x.TextSize = 14
+    x.AutoButtonColor = false; x.ZIndex = 197
+    corner(x, 6); stroke(x, Theme.accent, 1, 0.5)
+    SilenceAPI._theme(x, "TextColor3", "text")
+    x.MouseButton1Click:Connect(function() W.Visible = false end)
+    makeHeaderDrag(W, hdr)
+
+    SilenceAPI._modalWatch(W)
+    return W
+end
+
+------------------------------------------------------------ GERMAN VOICE
+do
+    local W = gameWindow("GERMAN VOICE", "aura, gradients and emoji tags")
+    -- The page the panel already built is moved in whole rather than rebuilt.
+    -- Its rows keep working, and the search index still points at them.
+    local pg = SilenceAPI._gvPage
+    if pg then
+        pg.Parent = W
+        pg.Size = UDim2.new(1, -32, 1, -62)
+        pg.Position = UDim2.new(0, 16, 0, 52)
+        pg.Visible = true
+        pg.ZIndex = 196
+        local t = SilenceAPI._tabs and SilenceAPI._tabs["German Voice"]
+        if t and t.btn then t.btn.Visible = false end
+    end
+    SilenceAPI._openGV = function() W.Visible = not W.Visible end
+end
+
+------------------------------------------------------------ BLADE BALL
+do
+    local W = gameWindow("BLADE BALL", "ball tracking and parry timing")
+
+    local body = Instance.new("ScrollingFrame", W)
+    body.Size = UDim2.new(1, -32, 1, -62)
+    body.Position = UDim2.new(0, 16, 0, 52)
+    body.BackgroundTransparency = 1
+    body.BorderSizePixel = 0
+    body.ScrollBarThickness = 4
+    body.CanvasSize = UDim2.new(0, 0, 0, 0)
+    body.ZIndex = 196
+    SilenceAPI._theme(body, "ScrollBarImageColor3", "accent")
+    local lay = Instance.new("UIListLayout", body)
+    lay.Padding = UDim.new(0, 6)
+    lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        body.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 12)
+    end)
+
+    local ord = 0
+    local function cap(txt)
+        ord = ord + 1
+        local l = Instance.new("TextLabel", body)
+        l.Size = UDim2.new(1, -6, 0, 20)
+        l.BackgroundTransparency = 1
+        l.Text = txt
+        l.Font = Enum.Font.GothamBold; l.TextSize = 10
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.LayoutOrder = ord
+        l.ZIndex = 197
+        SilenceAPI._theme(l, "TextColor3", "accent2")
+    end
+    local function row(h)
+        ord = ord + 1
+        local r = Instance.new("Frame", body)
+        r.Size = UDim2.new(1, -6, 0, h)
+        r.BorderSizePixel = 0
+        r.LayoutOrder = ord
+        r.ZIndex = 197
+        corner(r, 9)
+        SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+        return r
+    end
+    local function tog(parent, label, x, y, w, get, set)
+        local b = Instance.new("TextButton", parent)
+        b.Size = UDim2.new(0, w, 0, 24); b.Position = UDim2.new(0, x, 0, y)
+        b.BorderSizePixel = 0
+        b.Text = label
+        b.Font = Enum.Font.GothamBold; b.TextSize = 11
+        b.AutoButtonColor = false
+        b.ZIndex = 198
+        corner(b, 7)
+        local function paint()
+            local on = get()
+            b.BackgroundColor3 = on and Theme.accent or Theme.bg3
+            b.TextColor3 = on and Theme.bg or Theme.textDim
+        end
+        paint()
+        b.MouseButton1Click:Connect(function() set(not get()); paint() end)
+        table.insert(SilenceAPI._toggleRefreshers, paint)
+        return b
+    end
+
+    -- state kept local to this window; nothing here belongs in a config
+    local bb = { esp = false, auto = false, dist = 18, key = Enum.KeyCode.F }
+    local hl, conn = nil, nil
+
+    -- The ball is whatever unanchored round part is closest to the players.
+    -- Blade Ball has renamed it more than once, so matching on a name would
+    -- have quietly stopped working after an update.
+    local function findBall()
+        local best, bestD = nil, math.huge
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return nil end
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if d:IsA("BasePart") and not d.Anchored and d.Size.X < 8
+               and not d:IsDescendantOf(char) then
+                local nm = d.Name:lower()
+                if nm:find("ball") or d.Shape == Enum.PartType.Ball then
+                    local dd = (d.Position - root.Position).Magnitude
+                    if dd < bestD then best, bestD = d, dd end
+                end
+            end
+        end
+        return best, bestD
+    end
+
+    cap("BALL")
+    do
+        local r = row(84)
+        local info = Instance.new("TextLabel", r)
+        info.Size = UDim2.new(1, -24, 0, 20); info.Position = UDim2.new(0, 12, 0, 8)
+        info.BackgroundTransparency = 1
+        info.Text = "searching..."
+        info.Font = Enum.Font.Code; info.TextSize = 11
+        info.TextXAlignment = Enum.TextXAlignment.Left
+        info.ZIndex = 198
+        SilenceAPI._theme(info, "TextColor3", "textDim")
+
+        tog(r, "HIGHLIGHT", 12, 36, 110,
+            function() return bb.esp end,
+            function(v)
+                bb.esp = v
+                if not v and hl then pcall(function() hl:Destroy() end); hl = nil end
+            end)
+
+        tog(r, "AUTO PARRY", 130, 36, 116,
+            function() return bb.auto end,
+            function(v) bb.auto = v end)
+
+        local dbox = Instance.new("TextBox", r)
+        dbox.Size = UDim2.new(0, 90, 0, 24); dbox.Position = UDim2.new(0, 256, 0, 36)
+        dbox.BackgroundTransparency = 1
+        dbox.Text = tostring(bb.dist)
+        dbox.PlaceholderText = "trigger studs"
+        dbox.Font = Enum.Font.Code; dbox.TextSize = 11
+        dbox.ClearTextOnFocus = false
+        dbox.ZIndex = 198
+        SilenceAPI._theme(dbox, "TextColor3", "text")
+        dbox.FocusLost:Connect(function()
+            bb.dist = math.clamp(tonumber(dbox.Text) or 18, 3, 80)
+            dbox.Text = tostring(bb.dist)
+        end)
+
+        -- Sending a key needs an executor hook, and not every one has the
+        -- same. Whichever answers first is used; if none does, say so rather
+        -- than leave a switch that silently does nothing.
+        local function pressParry()
+            local vim = nil
+            pcall(function() vim = game:GetService("VirtualInputManager") end)
+            if vim then
+                local ok = pcall(function()
+                    vim:SendKeyEvent(true,  bb.key, false, game)
+                    task.wait(0.02)
+                    vim:SendKeyEvent(false, bb.key, false, game)
+                end)
+                if ok then return true end
+            end
+            if type(keypress) == "function" and type(keyrelease) == "function" then
+                local ok = pcall(function()
+                    keypress(bb.key.Value); task.wait(0.02); keyrelease(bb.key.Value)
+                end)
+                if ok then return true end
+            end
+            return false
+        end
+
+        local lastParry, warned = 0, false
+        conn = RunService.Heartbeat:Connect(function()
+            if not W.Visible and not bb.esp and not bb.auto then return end
+            local ball, d = findBall()
+            if not ball then
+                info.Text = "no ball found"
+                if hl then pcall(function() hl:Destroy() end); hl = nil end
+                return
+            end
+            info.Text = string.format("%s   %.1f studs", ball.Name, d or 0)
+
+            if bb.esp then
+                if not hl or not hl.Parent then
+                    hl = Instance.new("Highlight")
+                    hl.Name = "__SIL_Ball"
+                    hl.FillTransparency = 0.4
+                    hl.Parent = ball
+                end
+                hl.Adornee = ball
+            elseif hl then
+                pcall(function() hl:Destroy() end); hl = nil
+            end
+
+            if bb.auto and d and d <= bb.dist and tick() - lastParry > 0.25 then
+                lastParry = tick()
+                if not pressParry() and not warned then
+                    warned = true
+                    notify("Blade Ball", "This executor exposes no key sending -"
+                           .. " auto parry cannot press anything.", 8)
+                end
+            end
+        end)
+        track(conn)
+    end
+
+    cap("HOW THIS WORKS")
+    do
+        local h = Instance.new("TextLabel", body)
+        ord = ord + 1
+        h.Size = UDim2.new(1, -6, 0, 76)
+        h.LayoutOrder = ord
+        h.BackgroundTransparency = 1
+        h.Text = "  The ball is found by shape and motion, not by name - Blade"
+              .. " Ball has renamed it before, and a name match would have"
+              .. " quietly stopped working after an update. Auto parry presses"
+              .. " your parry key when the ball comes inside the trigger"
+              .. " distance, at most four times a second."
+        h.Font = Enum.Font.Gotham; h.TextSize = 10
+        h.TextXAlignment = Enum.TextXAlignment.Left
+        h.TextYAlignment = Enum.TextYAlignment.Top
+        h.TextWrapped = true
+        h.ZIndex = 197
+        SilenceAPI._theme(h, "TextColor3", "textDim")
+    end
+
+    SilenceAPI._openBB = function() W.Visible = not W.Visible end
+end
+
+local shelfHint = Instance.new("TextLabel", pGames)
+shelfHint.Size = UDim2.new(1, 0, 0, 46)
+shelfHint.BackgroundTransparency = 1
+shelfHint.Text = "  A card opens only inside its own game. Press BIND while you are"
+              .. " in one to link it - the place id is stored with your config,"
+              .. " so it only has to be done once."
+shelfHint.Font = Enum.Font.Gotham
+shelfHint.TextSize = 10
+shelfHint.TextXAlignment = Enum.TextXAlignment.Left
+shelfHint.TextWrapped = true
+shelfHint.TextColor3 = Theme.textDim
+
+track(RunService.Heartbeat:Connect(function()
+    if (SilenceAPI._shelfNext or 0) > tick() then return end
+    SilenceAPI._shelfNext = tick() + 2
+    for _, fn in ipairs(paints) do pcall(fn) end
+end))
+end)()
+
+----------------------------------------------------------------
 -- SKY
 -- Purely local: Lighting, Atmosphere and post-processing belong to your
 -- client, so none of this is visible to anyone else and none of it touches
@@ -11138,6 +11608,7 @@ end)()
 ----------------------------------------------------------------
 ;(function()
 local pGV = addTab("German Voice")
+SilenceAPI._gvPage = pGV
 
 -- Engine textures only. An uploaded asset id would fail on the first client
 -- whose game has it moderated or unavailable; these ship with Roblox.
@@ -11978,6 +12449,7 @@ local _tagOk, _tagErr = pcall(function()
 
         if player == LocalPlayer then
             local clickArea = Instance.new("TextButton", frame)
+            clickArea.Name = "__SIL_TagClick"
             clickArea.Size = UDim2.new(1, 0, 1, 0)
             clickArea.BackgroundTransparency = 1
             clickArea.BackgroundColor3 = Color3.fromRGB(0,0,0)
@@ -12147,6 +12619,25 @@ local _tagOk, _tagErr = pcall(function()
         local fovTan = math.tan(math.rad(Camera.FieldOfView/2))
         -- computed once per frame, not once per tag
         local now = tick()
+
+        -- The click surface over your own tag is switched off while any of
+        -- our windows or the main panel is on screen. Visible=false takes it
+        -- out of hit testing entirely; a guard inside the handler left it
+        -- absorbing presses meant for whatever is drawn over it.
+        do
+            local myBB = activeTags[LocalPlayer]
+            local fr = myBB and myBB:FindFirstChild("Card")
+            local ca = fr and fr:FindFirstChild("__SIL_TagClick")
+            if ca then
+                local blocked = SilenceAPI._uiBlocking and SilenceAPI._uiBlocking()
+                local want = not blocked
+                if ca.Visible ~= want then
+                    ca.Visible = want
+                    ca.Active  = want
+                end
+            end
+        end
+
         for player, bb in pairs(activeTags) do
             if bb and bb.Parent and player.Character then
                 local head = player.Character:FindFirstChild("Head")
@@ -15489,6 +15980,13 @@ local function buildConfig()
     for i, w in ipairs(State.waypoints) do
         cfg.waypoints[i] = { name = w.name, x = w.x, y = w.y, z = w.z }
     end
+    cfg.gameIds = { gv = {}, bb = {} }
+    for _, v in ipairs(State.gameIds.gv) do
+        cfg.gameIds.gv[#cfg.gameIds.gv + 1] = v
+    end
+    for _, v in ipairs(State.gameIds.bb) do
+        cfg.gameIds.bb[#cfg.gameIds.bb + 1] = v
+    end
     cfg.aura = {
         on = State.aura.on and true or false,
         style = tostring(State.aura.style or "sparkle"),
@@ -15555,6 +16053,17 @@ local function applyConfig(cfg)
             end
         end
         if SilenceAPI._refreshWaypoints then pcall(SilenceAPI._refreshWaypoints) end
+    end
+    if type(cfg.gameIds) == "table" then
+        for _, k in ipairs({ "gv", "bb" }) do
+            if type(cfg.gameIds[k]) == "table" then
+                State.gameIds[k] = {}
+                for _, v in ipairs(cfg.gameIds[k]) do
+                    local n = tonumber(v)
+                    if n then State.gameIds[k][#State.gameIds[k] + 1] = n end
+                end
+            end
+        end
     end
     if type(cfg.aura) == "table" then
         local a = cfg.aura
