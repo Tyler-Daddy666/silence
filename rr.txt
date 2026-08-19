@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v129"
+SilenceAPI._version = "v130"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -13800,9 +13800,18 @@ local _tagOk, _tagErr = pcall(function()
         if player == LocalPlayer then
             bb.MaxDistance = look.maxDist
         elseif look ~= TagSettings and rawget(look, "maxDist") then
-            bb.MaxDistance = look.maxDist
+            -- Their published value, but never BELOW the 1000 stud default.
+            -- rawget already stopped this client's slider leaking onto their
+            -- card; it did nothing about THEIR slider culling their card on
+            -- everybody else's screen. MaxDistance is a hard cull with no
+            -- fade, and the editor's slider bottoms out at 100 - so one
+            -- player who dragged it down pops in and out for everyone every
+            -- time the camera crosses that radius.
+            bb.MaxDistance = math.max(tonumber(look.maxDist) or 1000, 1000)
         end
-        bb.Parent = head
+        -- Deliberately NOT parented here - see the note at the bottom of this
+        -- function. The card is built detached and goes onto the head in the
+        -- same step that registers it.
 
         -- Every part is named, and every optional part exists from the
         -- start. applyLook() below then rewrites this card in place instead
@@ -14035,6 +14044,18 @@ local _tagOk, _tagErr = pcall(function()
         if SilenceAPI._tagsShown == false then
             pcall(function() bb.Enabled = false end)
         end
+        -- Onto the head and into the registry as ONE step. Doing it 233 lines
+        -- apart meant a throw in between left a visible card that nothing
+        -- owned, the sweep rebuilt it every poll, and that loop was the
+        -- blinking. The head is re-resolved because this function is long and
+        -- the character can be swapped underneath it; parenting to a stale
+        -- head is work the next poll would only have to undo.
+        local liveHead = player.Character and player.Character:FindFirstChild("Head")
+        if not liveHead then
+            pcall(function() bb:Destroy() end)
+            return
+        end
+        bb.Parent = liveHead
         activeTags[player] = bb
         return bb
     end
@@ -16338,7 +16359,31 @@ local _tagOk, _tagErr = pcall(function()
                         lost = okD and not inChar
                     end
                     if rhd and lost then
-                        pcall(createTag, p, "reconcile")
+                        -- The error used to be discarded here, and
+                        -- _tagPaintFault is only ever written by tagUser - so
+                        -- a card that threw on every rebuild reported a clean
+                        -- paint while it ran on a five second loop. Record
+                        -- it, and give up after three consecutive failures
+                        -- for the same player: a card that cannot be built is
+                        -- better absent than rebuilt forever. The count
+                        -- clears on the first success, so a transient fault
+                        -- still heals by itself.
+                        SilenceAPI._tagRebuildFail = SilenceAPI._tagRebuildFail or {}
+                        if (SilenceAPI._tagRebuildFail[p] or 0) < 3 then
+                            local okR, errR = pcall(createTag, p, "reconcile")
+                            if okR then
+                                SilenceAPI._tagRebuildFail[p] = nil
+                            else
+                                local nF = (SilenceAPI._tagRebuildFail[p] or 0) + 1
+                                SilenceAPI._tagRebuildFail[p] = nF
+                                SilenceAPI._tagPaintFault = tostring(p.Name)
+                                    .. " (reconcile x" .. nF .. "): " .. tostring(errR)
+                                if SilenceAPI._tagEv then
+                                    pcall(SilenceAPI._tagEv, "FAIL", p,
+                                          tostring(errR):sub(1, 60))
+                                end
+                            end
+                        end
                     end
                 end
             end
