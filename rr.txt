@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v135"
+SilenceAPI._version = "v136"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6344,20 +6344,21 @@ local function makeRailButton(cat)
         px(13, 5, 0, 11, 2)                         -- cross, across  x 0..13
         dot(7, 17, 5)                               -- button, upper right
         dot(7, 18, 14)                              -- button, lower right
-    elseif cat.icon == "anim" then      -- a figure with its arms thrown out
-        -- The arms JOIN the torso here. Floating bars beside a body read as
-        -- two loose blobs, not as limbs - which is what the previous pass
-        -- got wrong. Only the head keeps its gap, the same way self's head
-        -- floats above its shoulders, because a circle touching a bar reads
-        -- as one lump.
+    elseif cat.icon == "anim" then      -- a clapper board
+        -- An object, not a figure. Four attempts at a little dancer failed
+        -- for the same structural reason every time: at 0.8 scale the tile
+        -- is about 21 pixels, and a figure small enough to fit is competing
+        -- with self (head over shoulders) and people (two figures) in the
+        -- same rail - so it reads as "another person icon" no matter how the
+        -- limbs are arranged. A clapper cannot be confused with either.
         --
-        -- The two arms meet the torso at DIFFERENT heights on purpose. Level
-        -- arms read as a standing T; offset ones read as mid-movement, and
-        -- movement is the entire subject of this category.
-        dot(9, 9, 0)                                -- head,  x 9..18, gap 3
-        px(6, 14, 10, 12, 3)                        -- torso, x 10..16
-        px(10, 5, 0, 11, 2)                         -- arm out high, joins left
-        px(9, 5, 16, 16, 2)                         -- arm out low,  joins right
+        -- Three teeth with real gaps, then the slate. Everything is six
+        -- pixels or more and every gap is three, because that is what
+        -- survives the scale.
+        px(6, 6, 1, 4, 1)                           -- tooth  x 1..7
+        px(6, 6, 10, 4, 1)                          -- tooth  x 10..16
+        px(6, 6, 19, 4, 1)                          -- tooth  x 19..25
+        px(24, 12, 1, 13, 3)                        -- slate, gap 3 above
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
