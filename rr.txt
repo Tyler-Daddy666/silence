@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v65"
+SilenceAPI._version = "v66"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -15679,14 +15679,14 @@ do
                 if not SilenceAPI._profRename("cfg", i, nb.Text) then nb.Text = e.name end
             end)
 
-            flat(r, "LOAD", -172, 66, function()
+            flat(r, "LOAD", -206, 62, function()
                 if e.data and SilenceAPI._applyConfigTable then
                     pcall(SilenceAPI._applyConfigTable, e.data)
                     for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
                     notify("Config", e.name .. " restored.", 3)
                 end
             end)
-            flat(r, "-100", 74, function()
+            flat(r, "UPDATE", -140, 68, function()
                 if SilenceAPI._buildConfig then
                     local ok, c = pcall(SilenceAPI._buildConfig)
                     if ok then
@@ -15695,8 +15695,10 @@ do
                         notify("Config", e.name .. " overwritten.", 3)
                     end
                 end
-            end).Text = "UPDATE"
-            flat(r, -20, 66, function() SilenceAPI._profDelete("cfg", i) end).Text = "DELETE"
+            end)
+            flat(r, "DELETE", -68, 62, function()
+                SilenceAPI._profDelete("cfg", i)
+            end)
         end
         if #P.cfg == 0 then
             local t = Instance.new("TextLabel", list)
@@ -15732,128 +15734,6 @@ buttonRow(pCfg, "CONFIG EDITOR  (bundle a config with a tag)", function()
     if SilenceAPI._openConfigEditor then SilenceAPI._openConfigEditor() end
 end)
 
-sectionLabel(pCfg, "PROFILES")
-do
-    -- Five named profiles in one file. The quick SAVE/LOAD above still owns
-    -- silence_config.json and is what auto-load reads on inject; these sit
-    -- beside it so one setup per game can be kept without overwriting it.
-    local PROF_FILE = "silence_config_slots.json"
-    local profs = {}
-    for i = 1, 5 do profs[i] = { name = "Profile " .. i, data = nil } end
-
-    local function saveProfs()
-        if not canFile() then return end
-        local HS = game:GetService("HttpService")
-        pcall(function() writefile(PROF_FILE, HS:JSONEncode(profs)) end)
-    end
-
-    if canFile() then
-        local HS = game:GetService("HttpService")
-        local okR, content = pcall(function() return readfile(PROF_FILE) end)
-        if okR and type(content) == "string" and content ~= "" then
-            local okD, data = pcall(function() return HS:JSONDecode(content) end)
-            if okD and type(data) == "table" then
-                for i = 1, 5 do
-                    local e = data[i]
-                    if type(e) == "table" then
-                        profs[i].name = tostring(e.name or profs[i].name):sub(1, 22)
-                        if type(e.data) == "table" then profs[i].data = e.data end
-                    end
-                end
-            end
-        end
-    end
-
-    local function profRow(i)
-        local r = Instance.new("Frame", pCfg)
-        r.Size = UDim2.new(1, 0, 0, 68)
-        r.BorderSizePixel = 0
-        corner(r, 9)
-        SilenceAPI._theme(r, "BackgroundColor3", "bg2")
-        stroke(r, Theme.bg4, 1, 0.5, "bg4")
-        SilenceAPI._registerRow(r, "profile " .. i)
-
-        local nameBox = Instance.new("TextBox", r)
-        nameBox.Size = UDim2.new(0, 260, 0, 22)
-        nameBox.Position = UDim2.new(0, 14, 0, 10)
-        nameBox.BackgroundTransparency = 1
-        nameBox.Text = profs[i].name
-        nameBox.PlaceholderText = "Profile " .. i
-        nameBox.Font = Enum.Font.GothamBold; nameBox.TextSize = 13
-        nameBox.TextXAlignment = Enum.TextXAlignment.Left
-        nameBox.ClearTextOnFocus = false
-        SilenceAPI._theme(nameBox, "TextColor3", "text")
-
-        local state = Instance.new("TextLabel", r)
-        state.Size = UDim2.new(0, 140, 0, 22)
-        state.Position = UDim2.new(1, -154, 0, 10)
-        state.BackgroundTransparency = 1
-        state.Font = Enum.Font.Code; state.TextSize = 10
-        state.TextXAlignment = Enum.TextXAlignment.Right
-        SilenceAPI._theme(state, "TextColor3", "textDim")
-
-        local function paint()
-            state.Text = profs[i].data and "saved" or "empty"
-        end
-        paint()
-
-        nameBox.FocusLost:Connect(function()
-            local t = tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""
-            if t == "" then t = "Profile " .. i end
-            profs[i].name = t:sub(1, 22)
-            nameBox.Text = profs[i].name
-            saveProfs()
-        end)
-
-        local function mini(label, x, w, cb)
-            local b = Instance.new("TextButton", r)
-            b.Size = UDim2.new(0, w, 0, 24)
-            b.Position = UDim2.new(0, x, 0, 36)
-            b.BorderSizePixel = 0
-            b.Text = label
-            b.Font = Enum.Font.GothamBold; b.TextSize = 11
-            b.AutoButtonColor = false
-            corner(b, 7)
-            SilenceAPI._theme(b, "BackgroundColor3", "bg3")
-            SilenceAPI._theme(b, "TextColor3", "text")
-            local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
-            b.MouseEnter:Connect(function()
-                TweenService:Create(st, SilenceAPI._twFade,
-                    { Color = Theme.accent, Transparency = 0.2 }):Play()
-            end)
-            b.MouseLeave:Connect(function()
-                TweenService:Create(st, SilenceAPI._twFade,
-                    { Color = Theme.bg4, Transparency = 0.6 }):Play()
-            end)
-            b.MouseButton1Click:Connect(cb)
-            return b
-        end
-
-        mini("SAVE", 14, 92, function()
-            if not canFile() then
-                notify("Config", "This executor has no writefile.", 4); return
-            end
-            profs[i].data = buildConfig()
-            saveProfs(); paint()
-            notify("Config", "Stored in " .. profs[i].name, 3)
-        end)
-        mini("LOAD", 112, 92, function()
-            if not profs[i].data then
-                notify("Config", profs[i].name .. " is empty.", 3); return
-            end
-            local okA = pcall(applyConfig, profs[i].data)
-            notify("Config", okA and (profs[i].name .. " restored.")
-                                  or "Restore failed.", 3)
-        end)
-        mini("CLEAR", 210, 92, function()
-            profs[i].data = nil
-            saveProfs(); paint()
-            notify("Config", profs[i].name .. " cleared.", 2)
-        end)
-    end
-
-    for i = 1, 5 do profRow(i) end
-end
 
 sectionLabel(pCfg, "APPEARANCE")
 local _, setScaleBox = inputRow(pCfg, "Panel Scale", State.uiScale or 1, function(v)
