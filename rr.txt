@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v51"
+SilenceAPI._version = "v53"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -9783,9 +9783,16 @@ track(RunService.Heartbeat:Connect(function()
     end
 end))
 
+SilenceAPI._mainVisible    = function() return Container.Visible end
+SilenceAPI._setMainVisible = function(v) Container.Visible = v and true or false end
+
 track(UserInputService.InputBegan:Connect(function(i,gp)
     if gp then return end
     if i.KeyCode == State.hotkeys.toggleGUI then
+        -- With a window up, the toggle key closes THAT rather than the panel
+        -- behind it. Otherwise the only way out of an editor is its X, and
+        -- the key would hide a panel you cannot even see.
+        if SilenceAPI._closeTopModal and SilenceAPI._closeTopModal() then return end
         Container.Visible = not Container.Visible
     elseif i.KeyCode == State.hotkeys.minimize then
         -- collapses to the header bar rather than vanishing, so the panel
@@ -9974,8 +9981,17 @@ for i, sl in ipairs(State.accSlots) do
         for _, fn in ipairs(slotPaints) do fn() end
         refreshPreview()
     end)
+    -- setSlotPart(i, part) wants the NAME of the target. Calling it with
+    -- just the index handed it nil, which fails its validity check and falls
+    -- back to "Head" - so the button silently reset every slot instead of
+    -- cycling it, and a leg slot could never be set at all.
     local partBtn = flatBtn(r, sl.part, 82, 32, 74, function()
-        SilenceAPI._setSlotPart(i)
+        local ordr = SilenceAPI._slotPartOrder or { "Head" }
+        local cur, nxt = State.accSlots[i].part, ordr[1]
+        for k, nm in ipairs(ordr) do
+            if nm == cur then nxt = ordr[(k % #ordr) + 1] break end
+        end
+        SilenceAPI._setSlotPart(i, nxt)
         for _, fn in ipairs(slotPaints) do fn() end
         refreshPreview()
     end)
@@ -10103,7 +10119,11 @@ vp.Position = UDim2.new(0, 10, 0, 24)
 vp.BackgroundTransparency = 1
 vp.BorderSizePixel = 0
 vp.ZIndex = 192
+-- Without these a ViewportFrame lights nothing and the model is a black
+-- silhouette on a black panel, which looks exactly like "nothing is there".
+vp.Ambient = Color3.fromRGB(190, 190, 195)
 vp.LightColor = Color3.fromRGB(255, 255, 255)
+vp.LightDirection = Vector3.new(-0.4, -1, -0.6)
 local vpCam = Instance.new("Camera")
 vpCam.Parent = vp
 vp.CurrentCamera = vpCam
@@ -10118,24 +10138,35 @@ refreshPreview = function()
         local ok, c = pcall(function() return char:Clone() end)
         if not ok or not c then return end
         for _, d in ipairs(c:GetDescendants()) do
-            if d:IsA("BaseScript") or d:IsA("Sound") or d:IsA("BillboardGui") then
+            if d:IsA("BaseScript") or d:IsA("Sound") or d:IsA("BillboardGui")
+            or d:IsA("ParticleEmitter") or d:IsA("Fire") or d:IsA("Smoke") then
                 pcall(function() d:Destroy() end)
+            elseif d:IsA("BasePart") then
+                -- nothing simulates inside a ViewportFrame, but an unanchored
+                -- part still reports oddly and the humanoid keeps ticking
+                d.Anchored = true
+                d.CanCollide = false
             end
         end
+        local hum = c:FindFirstChildOfClass("Humanoid")
+        if hum then pcall(function() hum.DisplayDistanceType =
+            Enum.HumanoidDisplayDistanceType.None end) end
         c.Parent = vp
         clone = c
     end)
 end
 
 track(RunService.Heartbeat:Connect(function(dt)
-    if not LS.Visible or not clone then return end
+    if not LS.Visible or not clone or not clone.Parent then return end
     spin = (spin + dt * 0.6) % (math.pi * 2)
-    local root = clone:FindFirstChild("HumanoidRootPart")
-             or clone:FindFirstChildWhichIsA("BasePart")
-    if not root then return end
-    local p = root.Position
+    -- GetBoundingBox centres on the whole rig rather than on the root part,
+    -- which sits at hip height and left the head cropped off the top.
+    local okB, cf, size = pcall(function() return clone:GetBoundingBox() end)
+    if not okB or not cf then return end
+    local p = cf.Position
+    local dist = math.max(size and size.Magnitude or 8, 6) * 1.1
     vpCam.CFrame = CFrame.new(
-        p + Vector3.new(math.sin(spin) * 9, 1.5, math.cos(spin) * 9), p)
+        p + Vector3.new(math.sin(spin) * dist, dist * 0.15, math.cos(spin) * dist), p)
 end))
 
 ------------------------------------------------------------ RIGHT: OTHERS
@@ -10230,6 +10261,10 @@ track(LocalPlayer.CharacterAdded:Connect(function()
 end))
 
 SilenceAPI._openLarpStudio = function() LS.Visible = not LS.Visible end
+-- A BillboardGui lives in the world, not in this ScreenGui, so no amount of
+-- Active on a Frame stops a click reaching the tag over your head. The tag
+-- has to stand down by itself while a window is open.
+SilenceAPI._modalWatch(LS)
 end)()
 
 ----------------------------------------------------------------
@@ -11445,6 +11480,8 @@ local _tagOk, _tagErr = pcall(function()
             clickArea.Selectable = true
             clickArea.ZIndex = 50
             local function onClick()
+                -- a window is over the screen; this click was meant for it
+                if SilenceAPI._modalOpen and SilenceAPI._modalOpen() then return end
                 if TagSettingsPopup then
                     TagSettingsPopup.Visible = not TagSettingsPopup.Visible
                 end
@@ -13191,6 +13228,8 @@ local _tagOk, _tagErr = pcall(function()
         end)
     end))
 
+    SilenceAPI._modalWatch(TagSettingsPopup)
+
     SilenceAPI._toggleTagEditor = function()
         TagSettingsPopup.Visible = not TagSettingsPopup.Visible
         if TagSettingsPopup.Visible then drawFace() end
@@ -14407,6 +14446,8 @@ local _tagOk, _tagErr = pcall(function()
     AdminPanel:GetPropertyChangedSignal("Visible"):Connect(function()
         if AdminPanel.Visible then rebuildList() end
     end)
+
+    SilenceAPI._modalWatch(AdminPanel)
 
     local function openAdminFlow()
         -- The write key only exists on the machine that sets it via
@@ -15807,6 +15848,7 @@ CE:GetPropertyChangedSignal("Visible"):Connect(function()
 end)
 
 SilenceAPI._openConfigEditor = function() CE.Visible = not CE.Visible end
+SilenceAPI._modalWatch(CE)
 
 task.spawn(function()
     task.wait(4)
@@ -15832,6 +15874,53 @@ end)()
 ----------------------------------------------------------------
 -- CLEANUP
 ----------------------------------------------------------------
+-- true while any Silence window is open. Anything that lives outside the
+-- ScreenGui stack - the overhead tag, world click handlers - asks this
+-- before acting on a click.
+function SilenceAPI._modalOpen()
+    for _, w in ipairs(SilenceAPI._modalWindows or {}) do
+        if w and w.Parent and w.Visible then return true end
+    end
+    return false
+end
+
+-- Registering a window here does three things: it counts towards
+-- _modalOpen, it tucks the main panel away while the window is up, and it
+-- brings the panel back when the LAST window closes. Whether the panel was
+-- even open is remembered, so opening the editor from a hidden panel does
+-- not conjure the panel back afterwards.
+function SilenceAPI._modalWatch(w)
+    if not w then return end
+    SilenceAPI._modalWindows = SilenceAPI._modalWindows or {}
+    table.insert(SilenceAPI._modalWindows, w)
+    w:GetPropertyChangedSignal("Visible"):Connect(function()
+        if w.Visible then
+            if SilenceAPI._mainWasOpen == nil then
+                SilenceAPI._mainWasOpen = SilenceAPI._mainVisible
+                                      and SilenceAPI._mainVisible() or false
+            end
+            if SilenceAPI._setMainVisible then SilenceAPI._setMainVisible(false) end
+        else
+            -- another window may still be up; only the last one restores
+            if SilenceAPI._modalOpen() then return end
+            if SilenceAPI._mainWasOpen and SilenceAPI._setMainVisible then
+                SilenceAPI._setMainVisible(true)
+            end
+            SilenceAPI._mainWasOpen = nil
+        end
+    end)
+end
+
+-- closes the topmost open window; returns true if it closed something
+function SilenceAPI._closeTopModal()
+    local list = SilenceAPI._modalWindows or {}
+    for i = #list, 1, -1 do
+        local w = list[i]
+        if w and w.Parent and w.Visible then w.Visible = false return true end
+    end
+    return false
+end
+
 function SilenceAPI.cleanup()
     if SilenceAPI._leave then pcall(SilenceAPI._leave) end
     if SilenceAPI._skyCleanup then pcall(SilenceAPI._skyCleanup) end
