@@ -387,8 +387,8 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v92"
-SilenceAPI._built   = "2026-08-18"
+SilenceAPI._version = "v93"
+SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
 -- source of a downloaded copy is the only way to learn somebody else's.
@@ -1985,6 +1985,11 @@ end
 local function setSlotHide(i, on)
     local sl = State.accSlots[i]; if not sl then return end
     sl.hide = on and true or false
+    -- Editing a slot has to republish, exactly like switching one on does.
+    -- Without this the payload other clients read still described the slot
+    -- as it was BEFORE you touched it, and the only way to make a change
+    -- travel was to toggle the slot off and on again.
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
     if SilenceAPI._applyBodyVisuals then pcall(SilenceAPI._applyBodyVisuals) end
 end
 
@@ -1992,6 +1997,7 @@ local function setSlotId(i, v)
     local sl = State.accSlots[i]; if not sl then return end
     sl.id = tostring(v or ""):match("%d+") or ""
     if sl.on then unmountSlot(i); mountSlotInto(getChar(), i) end
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
 end
 
 local SLOT_PART_ORDER = { "Head", "Torso", "RightLeg", "LeftLeg" }
@@ -2003,6 +2009,7 @@ local function setSlotPart(i, part)
     for _, p in ipairs(SLOT_PART_ORDER) do if p == part then valid = true break end end
     sl.part = valid and part or "Head"
     if sl.on then unmountSlot(i); mountSlotInto(getChar(), i) end
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
     if SilenceAPI._applyBodyVisuals then pcall(SilenceAPI._applyBodyVisuals) end
 end
 
@@ -5194,6 +5201,7 @@ do
     vb.Position=UDim2.new(0,200,0.5,-15)
     vb.BackgroundTransparency=0.55
     vb.Text=SilenceAPI._version
+    SilenceAPI._verBadge = vb
     vb.Font=Enum.Font.Code; vb.TextSize=10
     vb.TextXAlignment=Enum.TextXAlignment.Center
     vb.ZIndex=7
@@ -5305,6 +5313,119 @@ refresh()
 table.insert(SilenceAPI._toggleRefreshers, refresh)
 table.insert(SilenceAPI._hdrWide, f)
 end
+
+;(function()
+-- PANIC. Everything off, every connection cut, every instance destroyed -
+-- the same teardown a re-execute performs, without the re-execute.
+--
+-- Hold to fire, not click to fire, and deliberately so: this sits between
+-- two chips you click constantly, and one stray click would cost you the
+-- panel until you paste the loader again. A third of a second is still
+-- faster than reaching for a menu, and no accidental brush can reach it.
+local b = Instance.new("TextButton", Header)
+b.Name = "PanicChip"
+b.Size = UDim2.new(0, 50, 0, 36); b.Position = UDim2.new(0, 676, 0.5, -18)
+b.Text = ""; b.AutoButtonColor = false
+b.BorderSizePixel = 0; b.ZIndex = 7
+b.BackgroundColor3 = Color3.fromRGB(40, 14, 16)
+b.ClipsDescendants = true
+corner(b, 9)
+local st = stroke(b, Color3.fromRGB(235, 60, 60), 1, 0.45)
+
+-- the bar that tracks the hold, drawn behind the glyph
+local fill = Instance.new("Frame", b)
+fill.Size = UDim2.new(0, 0, 1, 0)
+fill.BackgroundColor3 = Color3.fromRGB(200, 40, 40)
+fill.BackgroundTransparency = 0.4
+fill.BorderSizePixel = 0
+fill.ZIndex = 7
+-- ClipsDescendants clips to the rectangle, never to the UICorner, so the
+-- fill needs its own rounding or its square corner pokes out of the chip's
+-- rounded one at the left edge.
+corner(fill, 9)
+
+-- A power symbol drawn rather than typed: a ring, a notch cut out of its
+-- top, a bar through the gap. The word PANIC does not fit at 50 pixels
+-- wide, and this reads at a glance in a way a letter never would.
+local ring = Instance.new("Frame", b)
+ring.Size = UDim2.new(0, 17, 0, 17)
+ring.Position = UDim2.new(0.5, -8.5, 0.5, -12)
+ring.BackgroundTransparency = 1
+ring.BorderSizePixel = 0
+ring.ZIndex = 8
+corner(ring, 9)
+local rst = Instance.new("UIStroke", ring)
+rst.Color = Color3.fromRGB(255, 205, 205)
+rst.Thickness = 2
+
+local notch = Instance.new("Frame", b)
+notch.Size = UDim2.new(0, 7, 0, 5)
+notch.Position = UDim2.new(0.5, -3.5, 0.5, -13)
+notch.BackgroundColor3 = Color3.fromRGB(40, 14, 16)
+notch.BorderSizePixel = 0
+notch.ZIndex = 9
+
+local bar = Instance.new("Frame", b)
+bar.Size = UDim2.new(0, 2, 0, 9)
+bar.Position = UDim2.new(0.5, -1, 0.5, -15)
+bar.BackgroundColor3 = Color3.fromRGB(255, 205, 205)
+bar.BorderSizePixel = 0
+bar.ZIndex = 10
+
+local cap = Instance.new("TextLabel", b)
+cap.Size = UDim2.new(1, 0, 0, 10); cap.Position = UDim2.new(0, 0, 1, -12)
+cap.BackgroundTransparency = 1
+cap.Text = "PANIC"
+cap.Font = Enum.Font.GothamBold; cap.TextSize = 8
+cap.TextColor3 = Color3.fromRGB(255, 165, 165)
+cap.ZIndex = 10
+
+local holding, held = false, 0
+
+local function reset()
+    holding, held = false, 0
+    fill.Size = UDim2.new(0, 0, 1, 0)
+    cap.Text = "PANIC"
+    st.Transparency = 0.45
+end
+
+b.MouseButton1Down:Connect(function() holding = true; held = 0 end)
+b.MouseButton1Up:Connect(reset)
+b.MouseEnter:Connect(function()
+    TweenService:Create(b, SilenceAPI._twFade,
+        { BackgroundColor3 = Color3.fromRGB(64, 20, 22) }):Play()
+end)
+b.MouseLeave:Connect(function()
+    -- dragging off the chip cancels: MouseButton1Up never arrives out here
+    if holding then reset() end
+    TweenService:Create(b, SilenceAPI._twFade,
+        { BackgroundColor3 = Color3.fromRGB(40, 14, 16) }):Play()
+end)
+
+track(RunService.Heartbeat:Connect(function(dt)
+    if not holding then return end
+    held = held + dt
+    local f = math.clamp(held / 0.35, 0, 1)
+    fill.Size = UDim2.new(f, 0, 1, 0)
+    st.Transparency = 0.45 - f * 0.45
+    cap.Text = (f < 1) and "HOLD" or "BYE"
+    if f >= 1 then
+        holding = false
+        -- cleanup destroys this button along with everything else, so
+        -- nothing after this call is guaranteed to run
+        task.spawn(function()
+            if not SilenceAPI.cleanup then return end
+            local ok, err = pcall(SilenceAPI.cleanup)
+            if not ok then
+                warn("[Silence] panic cleanup error: " .. tostring(err))
+            end
+            print("[Silence] PANIC - unloaded.")
+        end)
+    end
+end))
+
+table.insert(SilenceAPI._hdrWide, b)
+end)()
 
 local FloatBtn
 local FloatWrap
@@ -9035,6 +9156,8 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
         notify("Voice", ok and "Copied." or "No clipboard access in this executor.", 4)
     end)
 
+    SilenceAPI._vcProbe = probe
+
     -- rows created after this block belong to Misc again, or the search index
     -- would file them under the last tab opened here
     SilenceAPI._currentTabName = "Misc"
@@ -10563,12 +10686,21 @@ refreshPreview = function()
         -- Archivable=false anywhere in the rig makes Clone return nothing,
         -- and some games set it on purpose. Say so instead of showing an
         -- empty box.
+        -- Archivable is per instance and is NOT inherited. Setting it on
+        -- the model alone leaves every descendant that carries
+        -- Archivable = false behind, and games set exactly that on
+        -- accessories and on the root part to stop rigs being copied. The
+        -- result was a clone missing its hats, or missing everything.
         local ok, c = pcall(function()
             char.Archivable = true
+            for _, d in ipairs(char:GetDescendants()) do
+                pcall(function() d.Archivable = true end)
+            end
             return char:Clone()
         end)
         if not ok or not c then
             vpCap.Text = "LIVE PREVIEW   character could not be copied"
+            SilenceAPI._vpState = "clone refused: " .. tostring(c)
             return
         end
         for _, d in ipairs(c:GetDescendants()) do
@@ -10595,9 +10727,11 @@ refreshPreview = function()
             if d:IsA("BasePart") then parts = parts + 1 end
         end
         vpCap.Text = "LIVE PREVIEW   " .. parts .. " parts"
+        SilenceAPI._vpState = parts .. " parts cloned"
         print("[Silence] preview clone: " .. parts .. " parts")
         if parts == 0 then
             vpCap.Text = "LIVE PREVIEW   clone came back empty"
+            SilenceAPI._vpState = "clone came back empty"
         end
     end)
 end
@@ -15469,14 +15603,22 @@ local _tagOk, _tagErr = pcall(function()
             -- dragging a slider ends on the value it started from often
             -- enough that this alone removes most of the writes
             if code == "" or code == lastStyleCode then return end
-            lastStyleCode = code
+            -- lastStyleCode used to be written BEFORE the request went out.
+            -- One dropped HttpGet - a hiccup, a rate limit, a dead worker -
+            -- and the change was filed as published forever: the guard above
+            -- then skipped it on every later attempt, so it never went out
+            -- again until some unrelated setting happened to change the code
+            -- string. Record it only once it actually landed.
+            local sent = false
             pcall(function()
                 game:HttpGet(SYNC_BASE .. "style?id=" .. tostring(LocalPlayer.UserId)
                     .. "&name=" .. urlEnc(LocalPlayer.Name)
                     .. "&code=" .. urlEnc(code)
                     .. "&title=" .. urlEnc(customTitles[LocalPlayer.UserId] or "")
                     .. "&t=" .. tostring(math.random(1, 1000000)), true)
+                sent = true
             end)
+            if sent then lastStyleCode = code end
         end)
     end
 
@@ -16488,6 +16630,82 @@ buttonRow(pLog, "Test Tag On Someone Else", function()
 end)
 buttonRow(pLog, "Copy Tag Report", function()
     copyOut(tagView.Text, "Tag report")
+end)
+
+-- Every check in this file, run in order, handed back as one block of text.
+-- All of these existed already - they were just spread over five tabs, so
+-- reporting a problem meant a scavenger hunt through the panel first.
+buttonRow(pLog, "SELF TEST  -  run everything, copy one report", function()
+    local o = {}
+    local function head(x) o[#o+1] = ""; o[#o+1] = "===== " .. x .. " =====" end
+
+    o[#o+1] = "SILENCE SELF TEST"
+    o[#o+1] = "running  " .. tostring(SilenceAPI._version)
+              .. "   built " .. tostring(SilenceAPI._built)
+              .. "   " .. os.date("%Y-%m-%d %H:%M:%S")
+
+    head("BUILD")
+    o[#o+1] = "on github : " .. tostring(SilenceAPI._verCheck or "not checked yet")
+    o[#o+1] = "place id  : " .. tostring(game.PlaceId)
+    o[#o+1] = "job id    : " .. tostring(game.JobId)
+
+    head("EXECUTOR")
+    -- Half the "it does not work for me" reports are a missing global. Ask
+    -- the environment directly rather than guessing from behaviour.
+    for _, n in ipairs({ "writefile", "readfile", "isfile", "makefolder",
+                         "getcustomasset", "gethui", "setclipboard",
+                         "getgenv", "hookfunction", "queue_on_teleport" }) do
+        local found = false
+        pcall(function()
+            local g = (type(getgenv) == "function") and getgenv() or nil
+            if g and type(g[n]) == "function" then found = true end
+        end)
+        if not found then
+            pcall(function()
+                if type(getfenv(0)[n]) == "function" then found = true end
+            end)
+        end
+        o[#o+1] = string.format("%-19s %s", n, found and "yes" or "MISSING")
+    end
+
+    head("SYNC AND TAGS")
+    if SilenceAPI._tagFault then
+        o[#o+1] = "THE TAG BLOCK CRASHED WHILE LOADING:"
+        o[#o+1] = tostring(SilenceAPI._tagFault)
+    elseif SilenceAPI._tagReport then
+        local okR, txt = pcall(SilenceAPI._tagReport)
+        o[#o+1] = okR and tostring(txt) or ("report failed: " .. tostring(txt))
+    else
+        o[#o+1] = "tag system never loaded"
+    end
+
+    head("ASSETS")
+    o[#o+1] = "discord icon     : " .. tostring(DISCORD_IMG or "missing")
+    o[#o+1] = "settings icon    : " .. tostring(SETTINGS_IMG or "missing")
+    o[#o+1] = "jumpscare frames : "
+              .. tostring(#(SilenceAPI._jumpFrames or {}))
+
+    head("LIVE PREVIEW")
+    o[#o+1] = tostring(SilenceAPI._vpState
+                       or "larp studio has not been opened yet")
+
+    head("VOICE API")
+    if SilenceAPI._vcProbe then
+        local okV, txt = pcall(SilenceAPI._vcProbe)
+        o[#o+1] = okV and tostring(txt) or "probe failed"
+    else
+        o[#o+1] = "voice page never built"
+    end
+
+    head("WINDOWS")
+    o[#o+1] = "registered : " .. tostring(#(SilenceAPI._modalWindows or {}))
+    local mo = false
+    pcall(function() mo = SilenceAPI._modalOpen and SilenceAPI._modalOpen() end)
+    o[#o+1] = "one open   : " .. tostring(mo and true or false)
+
+    local txt = table.concat(o, string.char(10))
+    print(txt)
+    copyOut(txt, "Self test")
 end)
 
 buttonRow(pLog, "Copy Chat Log", function()
@@ -17627,6 +17845,78 @@ function SilenceAPI.cleanup()
 
     pcall(function() env.__SilenceAdminPanel = nil end)
 end
+
+;(function()
+-- Which build is on GitHub versus which one is actually running. Two whole
+-- sessions went into chasing bugs that turned out to be "the file was never
+-- uploaded", so this asks once, in the background, and says it out loud.
+--
+--   getgenv().SilenceVersionURL     = "<the raw URL your loader uses>"
+--   getgenv().SilenceNoVersionCheck = true
+task.delay(12, function()
+    local url, off = ICON_BASE .. "rr.txt", false
+    pcall(function()
+        local g = getgenv()
+        if g then
+            if g.SilenceNoVersionCheck then off = true end
+            if type(g.SilenceVersionURL) == "string"
+               and g.SilenceVersionURL ~= "" then
+                url = g.SilenceVersionURL
+            end
+        end
+    end)
+    if off then return end
+
+    local function grab(u)
+        local ok, body = pcall(function()
+            return game:HttpGet(u .. (u:find("?") and "&" or "?")
+                                .. "t=" .. tostring(math.random(1, 1000000)), true)
+        end)
+        -- raw.githubusercontent answers a miss with the 14 byte body
+        -- "404: Not Found", which reaches HttpGet as a perfectly valid reply
+        if ok and type(body) == "string" and #body > 40 then return body end
+        return nil
+    end
+
+    -- a one line version.txt if the repo carries one, the whole script if not
+    local body = grab(ICON_BASE .. "version.txt")
+    local remote = body and body:match("v%d+")
+    if not remote then
+        body = grab(url)
+        remote = body and body:match("_version%s*=%s*\"(v%d+)\"")
+    end
+    if not remote then
+        SilenceAPI._verCheck = "GitHub could not be read"
+        return
+    end
+
+    local mine   = tonumber(tostring(SilenceAPI._version):match("%d+")) or 0
+    local theirs = tonumber(tostring(remote):match("%d+")) or 0
+    SilenceAPI._verCheck = "running " .. tostring(SilenceAPI._version)
+                           .. ", GitHub has " .. remote
+    print("[Silence] version check: " .. SilenceAPI._verCheck)
+    if theirs == mine then return end
+
+    -- the badge in the header turns amber, so the mismatch is visible
+    -- without opening anything
+    pcall(function()
+        local vb = SilenceAPI._verBadge
+        if vb and vb.Parent then
+            vb.Text = SilenceAPI._version .. "!"
+            vb.TextColor3 = Color3.fromRGB(255, 190, 80)
+        end
+    end)
+    if theirs > mine then
+        notify("Update", "GitHub has " .. remote .. ", you are running "
+               .. tostring(SilenceAPI._version)
+               .. ". Re-execute the loader to pick it up.", 12)
+    else
+        notify("Update", "You are running " .. tostring(SilenceAPI._version)
+               .. " but GitHub still has " .. remote
+               .. " - that upload never happened.", 12)
+    end
+end)
+end)()
 
 notify("Silence", SilenceAPI._version .. " loaded - RightShift toggles GUI", 5)
 print("[Silence Admin Panel] loaded - re-execute to reload.")
