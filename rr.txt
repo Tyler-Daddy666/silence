@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v136"
+SilenceAPI._version = "v138"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10504,6 +10504,21 @@ local function cap(text)
 end
 
 local refreshPreview
+-- b:SetAttribute("SilOn", true/false) marks a button that carries a STATE.
+-- Hover still brightens it, but leaving asks the state what to go back to
+-- instead of assuming dark - which is what used to wipe a freshly set ON.
+local function flatRest(b)
+    local on = b:GetAttribute("SilOn")
+    if on == nil then
+        b.BackgroundColor3 = Theme.bg3
+        b.TextColor3 = Theme.textDim
+    else
+        b.BackgroundColor3 = on and Theme.accent or Theme.bg3
+        b.TextColor3 = on and Theme.bg or Theme.textDim
+    end
+end
+SilenceAPI._flatRest = flatRest
+
 local function flatBtn(parent, label, x, y, w, cb)
     local b = Instance.new("TextButton", parent)
     b.Size = UDim2.new(0, w, 0, 22)
@@ -10522,9 +10537,18 @@ local function flatBtn(parent, label, x, y, w, cb)
         b.TextColor3 = Theme.bg
     end)
     b.MouseLeave:Connect(function()
-        TweenService:Create(b, SilenceAPI._twFade,
-            { BackgroundColor3 = Theme.bg3 }):Play()
-        b.TextColor3 = Theme.textDim
+        -- resting look, not a hardcoded dark one
+        local on = b:GetAttribute("SilOn")
+        TweenService:Create(b, SilenceAPI._twFade, {
+            BackgroundColor3 = (on == true) and Theme.accent or Theme.bg3,
+        }):Play()
+        b.TextColor3 = (on == true) and Theme.bg or Theme.textDim
+    end)
+    -- A state button repaints itself when the theme is recoloured. Without
+    -- this the accent pass would leave an ON button showing grey text on a
+    -- white pill, because only the text is in the theme registry.
+    table.insert(SilenceAPI._toggleRefreshers, function()
+        if b.Parent and b:GetAttribute("SilOn") ~= nil then flatRest(b) end
     end)
     b.MouseButton1Click:Connect(cb)
     return b
@@ -10532,7 +10556,52 @@ end
 
 ------------------------------------------------------------ slots
 cap("COSTUME SLOTS")
-local slotPaints = {}
+
+-- Twenty-four rows in one column is a scroll, not a list. Small tabs across
+-- the top, one per category, and only that category's rows are shown. ALL is
+-- there because sometimes you do want the whole thing.
+local slotPaints, slotRows = {}, {}
+local catTabs, curCat = {}, "ALL"
+
+local function showCat(c)
+    curCat = c
+    for _, e in ipairs(slotRows) do
+        e.frame.Visible = (c == "ALL") or (e.cat == c)
+    end
+    for name, b in pairs(catTabs) do
+        local on = (name == c)
+        b:SetAttribute("SilOn", on)
+        SilenceAPI._flatRest(b)
+    end
+end
+
+order = order + 1
+do
+    local bar = Instance.new("Frame", left)
+    bar.Size = UDim2.new(1, -6, 0, 56)
+    bar.BackgroundTransparency = 1
+    bar.BorderSizePixel = 0
+    bar.LayoutOrder = order
+    bar.ZIndex = 192
+
+    -- the categories in the order they appear in the slot list, deduped
+    local cats, seen = { "ALL" }, { ALL = true }
+    for _, sl in ipairs(State.accSlots) do
+        local c = sl.cat or "OTHER"
+        if not seen[c] then seen[c] = true; cats[#cats + 1] = c end
+    end
+
+    local cx, cy = 0, 0
+    for _, c in ipairs(cats) do
+        local w = math.max(38, #c * 7 + 14)
+        if cx + w > 330 then cx = 0; cy = cy + 26 end
+        local b = flatBtn(bar, c, cx, cy, w, function() showCat(c) end)
+        b.TextSize = 9
+        catTabs[c] = b
+        cx = cx + w + 4
+    end
+end
+
 for i, sl in ipairs(State.accSlots) do
     order = order + 1
     local r = Instance.new("Frame", left)
@@ -10542,6 +10611,7 @@ for i, sl in ipairs(State.accSlots) do
     r.ZIndex = 192
     corner(r, 9)
     SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+    slotRows[#slotRows + 1] = { frame = r, cat = sl.cat or "OTHER" }
 
     local nm = Instance.new("TextBox", r)
     nm.Size = UDim2.new(0, 130, 0, 20); nm.Position = UDim2.new(0, 12, 0, 8)
@@ -10598,16 +10668,21 @@ for i, sl in ipairs(State.accSlots) do
     local function paint()
         local d = State.accSlots[i]
         onBtn.Text = d.on and "ON" or "OFF"
-        onBtn.BackgroundColor3 = d.on and Theme.accent or Theme.bg3
-        onBtn.TextColor3 = d.on and Theme.bg or Theme.textDim
+        -- The attribute is what MouseLeave reads. Painting the colour without
+        -- publishing the state is exactly how a freshly switched ON button
+        -- got wiped back to dark the moment the cursor moved off it.
+        onBtn:SetAttribute("SilOn", d.on and true or false)
+        hideBtn:SetAttribute("SilOn", d.hide and true or false)
+        SilenceAPI._flatRest(onBtn)
+        SilenceAPI._flatRest(hideBtn)
         partBtn.Text = d.part
-        hideBtn.BackgroundColor3 = d.hide and Theme.accent or Theme.bg3
-        hideBtn.TextColor3 = d.hide and Theme.bg or Theme.textDim
     end
     slotPaints[#slotPaints + 1] = paint
     paint()
     table.insert(SilenceAPI._toggleRefreshers, paint)
 end
+
+showCat("ALL")
 
 ------------------------------------------------------------ body
 cap("BODY")
