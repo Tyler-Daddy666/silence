@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v77"
+SilenceAPI._version = "v78"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -11211,6 +11211,9 @@ do
         lead = 0.13, pingComp = true, adaptive = true,
         maxD = 90, retry = true, key = Enum.KeyCode.F,
         jitter = true, minGap = 0.28,
+        -- deliberately imperfect: the ONLY lever here that touches the signal
+        -- an anti-cheat is most likely counting
+        hitRate = 100, warmup = 0,
     }
     local hl, balls = nil, {}
     local presses, saves, throughs, lastParry = 0, 0, 0, 0
@@ -11352,6 +11355,41 @@ do
         function() return bb.jitter end,
         function(v) bb.jitter = v end)
 
+    cap("BLENDING IN")
+    do
+        ord = ord + 1
+        local h = Instance.new("TextLabel", body)
+        h.Size = UDim2.new(1, -6, 0, 62)
+        h.LayoutOrder = ord
+        h.BackgroundTransparency = 1
+        h.Text = "  Nothing below hides anything. It makes the auto parry play"
+              .. " WORSE on purpose, because a rate no player reaches is the"
+              .. " one thing a server can count without looking at your"
+              .. " machine at all. Everything else in this window is timing."
+        h.Font = Enum.Font.Gotham; h.TextSize = 10
+        h.TextXAlignment = Enum.TextXAlignment.Left
+        h.TextYAlignment = Enum.TextYAlignment.Top
+        h.TextWrapped = true
+        h.ZIndex = 197
+        SilenceAPI._theme(h, "TextColor3", "textDim")
+    end
+
+    number("Parry this share of balls",
+        "100 parries everything, which is what nobody human does. At 75 one"
+        .. " ball in four is skipped at random, and the ones that are skipped"
+        .. " are chosen per ball rather than in a pattern. Lower is quieter"
+        .. " and costs you rounds - that is the whole trade and there is no"
+        .. " version of this without it.",
+        "%", function() return bb.hitRate end,
+        function(v) bb.hitRate = math.clamp(tonumber(v) or 100, 10, 100) end)
+
+    number("Stay off for the first",
+        "Seconds after you spawn where the auto parry does nothing. A player"
+        .. " who parries perfectly from the very first frame of every round"
+        .. " stands out more than the parries themselves.",
+        "sec", function() return bb.warmup end,
+        function(v) bb.warmup = math.clamp(tonumber(v) or 0, 0, 30) end)
+
     cap("TIMING")
     number("Parry this long before impact",
         "The core setting. 0.13 suits most connections. Too low parries late"
@@ -11412,10 +11450,11 @@ do
               .. " every cause of a miss that lives on this side - ping,"
               .. " tracking the wrong ball, a mistimed press.\n"
               .. "  On being noticed: varied timing and a human press rate"
-              .. " remove the obvious tells. They cannot hide a hit rate no"
-              .. " player reaches - that is counted on the server and no"
-              .. " setting here reaches it. Lower the lead a little and let"
-              .. " some through if you want to stay unremarkable."
+              .. " remove the obvious tells, and BLENDING IN above lowers the"
+              .. " one signal a server can count on its own. None of it makes"
+              .. " anything undetected - an executor is often spotted on its"
+              .. " own, whatever the script does. If you are being kicked,"
+              .. " drop the share to 70 first; that is the lever that moves."
         h.Font = Enum.Font.Gotham; h.TextSize = 10
         h.TextXAlignment = Enum.TextXAlignment.Left
         h.TextYAlignment = Enum.TextYAlignment.Top
@@ -11426,6 +11465,10 @@ do
 
     ------------------------------------------------------------ LOOP
     local warned = false
+    SilenceAPI._bbSpawnT = tick()
+    track(LocalPlayer.CharacterAdded:Connect(function()
+        SilenceAPI._bbSpawnT = tick()
+    end))
     track(RunService.Heartbeat:Connect(function()
         if not (W.Visible or bb.esp or bb.auto) then return end
         local char = LocalPlayer.Character
@@ -11478,7 +11521,17 @@ do
         local fireAt = lead
         if bb.jitter then fireAt = lead + (math.random() - 0.5) * 0.03 end
 
-        if bb.auto and bestEta <= fireAt then
+        -- Decided ONCE per ball, not per frame: rolling every frame would
+        -- skip and un-skip the same ball dozens of times and end up parrying
+        -- everything anyway.
+        if best ~= SilenceAPI._bbRolled then
+            SilenceAPI._bbRolled = best
+            SilenceAPI._bbTakeIt = (math.random(1, 100) <= bb.hitRate)
+        end
+        local warm = (SilenceAPI._bbSpawnT or 0) + bb.warmup
+        local mayFire = SilenceAPI._bbTakeIt and tick() >= warm
+
+        if bb.auto and mayFire and bestEta <= fireAt then
             -- One press per approach. The retry is a second attempt after a
             -- pause, not a burst - and the floor between any two presses is
             -- a reaction time a person could actually produce.
