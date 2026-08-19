@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v91"
+SilenceAPI._version = "v92"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -13170,6 +13170,11 @@ local _tagOk, _tagErr = pcall(function()
             clickArea.Activated:Connect(onClick)
         end
 
+        -- built while a window is up: start hidden, the loop above puts it
+        -- back the moment everything is closed
+        if SilenceAPI._uiBlocking and SilenceAPI._uiBlocking() then
+            pcall(function() bb.Enabled = false end)
+        end
         activeTags[player] = bb
         return bb
     end
@@ -13320,21 +13325,29 @@ local _tagOk, _tagErr = pcall(function()
         -- computed once per frame, not once per tag
         local now = tick()
 
-        -- The click surface over your own tag is switched off while any of
-        -- our windows or the main panel is on screen. Visible=false takes it
-        -- out of hit testing entirely; a guard inside the handler left it
-        -- absorbing presses meant for whatever is drawn over it.
+        -- Every tag in the server steps aside while any of our windows or
+        -- the main panel is on screen. A BillboardGui lives in the world,
+        -- outside the ScreenGui stack, so no amount of layering stops a click
+        -- reaching it - the card itself has to go. Enabled is used rather
+        -- than destroying: it leaves rendering and hit testing at once and
+        -- costs nothing to undo.
         do
+            local blocked = SilenceAPI._uiBlocking and SilenceAPI._uiBlocking()
+            local want = not blocked
+            if SilenceAPI._tagsShown ~= want then
+                SilenceAPI._tagsShown = want
+                for _, bb in pairs(activeTags) do
+                    if bb and bb.Parent then
+                        pcall(function() bb.Enabled = want end)
+                    end
+                end
+            end
             local myBB = activeTags[LocalPlayer]
             local fr = myBB and myBB:FindFirstChild("Card")
             local ca = fr and fr:FindFirstChild("__SIL_TagClick")
-            if ca then
-                local blocked = SilenceAPI._uiBlocking and SilenceAPI._uiBlocking()
-                local want = not blocked
-                if ca.Visible ~= want then
-                    ca.Visible = want
-                    ca.Active  = want
-                end
+            if ca and ca.Visible ~= want then
+                ca.Visible = want
+                ca.Active  = want
             end
         end
 
