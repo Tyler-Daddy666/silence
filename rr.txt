@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v123"
+SilenceAPI._version = "v124"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -14959,9 +14959,15 @@ local _tagOk, _tagErr = pcall(function()
                function(c) TagSettings.sub = c end)
 
         eCaption(p, "SHAPE")
-        eSlider(p, "Corner rounding", 0, 21,
+        -- The number IS the corner radius in pixels, so no conversion is
+        -- needed and every design saved under the old 0..21 slider still
+        -- means exactly what it meant. UICorner clamps the radius to half
+        -- the shorter side by itself, so anything past roughly 40 is a
+        -- finished pill however tall the card happens to be - which is why
+        -- the top of the range can be a round 100 without a special case.
+        eSlider(p, "Shape   0 = square,  100 = round", 0, 100,
             function() return TagSettings.radius end,
-            function(v) TagSettings.radius = v; touched("radius " .. v) end, true)
+            function(v) TagSettings.radius = v; touched("shape " .. v) end, true)
         eSlider(p, "Background opacity", 0, 1,
             function() return 1 - TagSettings.bgAlpha end,
             function(v) TagSettings.bgAlpha = 1 - v; touched("opacity") end)
