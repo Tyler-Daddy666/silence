@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v87"
+SilenceAPI._version = "v88"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -744,6 +744,8 @@ local State = {
         gv = { 136162036182779 },   -- German Voice
         bb = { 13772394625 },       -- Blade Ball
     },
+    -- one key per game menu, set from the gear on its card
+    gameKeys = {},
     aura = { on = false, style = "sparkle", gradient = true, rainbow = false,
              size = 1, rate = 1,
              color  = Color3.fromRGB(255, 60, 60),
@@ -10935,7 +10937,11 @@ for i, c in ipairs(CARDS) do
     local img = Instance.new("ImageLabel", card)
     img.AnchorPoint = Vector2.new(0.5, 0.5)
     img.Position = UDim2.new(0.5, 0, 0.5, 0)
-    img.Size = UDim2.new(1, 0, 1, 0)
+    -- Deliberately larger than the card even at rest. Parallax shifts the
+    -- art by up to 16px, and an image sized exactly to the frame slides its
+    -- own edge into view the moment it moves. 20px of overscan means there
+    -- is always more picture than there is card.
+    img.Size = UDim2.new(1, 20, 1, 20)
     img.BackgroundTransparency = 1
     img.BorderSizePixel = 0
     img.ScaleType = Enum.ScaleType.Crop
@@ -11012,6 +11018,81 @@ for i, c in ipairs(CARDS) do
     pillTxt.Font = Enum.Font.GothamBold; pillTxt.TextSize = 9
     pillTxt.ZIndex = 5
 
+    -- The gear. Same icon the rest of the panel uses - the PNG from the repo
+    -- if it loaded, the drawn one otherwise - so it matches whatever the
+    -- other settings buttons ended up showing.
+    local gear = Instance.new("TextButton", card)
+    gear.Size = UDim2.new(0, 30, 0, 30)
+    gear.Position = UDim2.new(1, -38, 0, 8)
+    gear.BorderSizePixel = 0
+    gear.Text = ""
+    gear.AutoButtonColor = false
+    gear.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    gear.BackgroundTransparency = 0.35
+    gear.ZIndex = 6
+    corner(gear, 15)
+    local gst = Instance.new("UIStroke", gear)
+    gst.Color = Color3.fromRGB(255, 255, 255)
+    gst.Thickness = 1
+    gst.Transparency = 0.7
+    pcall(function() SilenceAPI._gearIcon(gear) end)
+
+    local keyTag = Instance.new("TextLabel", card)
+    keyTag.Size = UDim2.new(0, 120, 0, 14)
+    keyTag.Position = UDim2.new(1, -132, 0, 40)
+    keyTag.BackgroundTransparency = 1
+    keyTag.Font = Enum.Font.Code
+    keyTag.TextSize = 10
+    keyTag.TextXAlignment = Enum.TextXAlignment.Right
+    keyTag.TextColor3 = Color3.fromRGB(220, 220, 225)
+    keyTag.ZIndex = 6
+
+    local binding = false
+    local function paintKey()
+        local k = State.gameKeys[c.key]
+        if binding then
+            keyTag.Text = "press a key..."
+        elseif k then
+            keyTag.Text = "key: " .. tostring(k):gsub("Enum%.KeyCode%.", "")
+        else
+            keyTag.Text = "no key"
+        end
+    end
+    paintKey()
+
+    gear.MouseEnter:Connect(function() gst.Transparency = 0.15 end)
+    gear.MouseLeave:Connect(function() gst.Transparency = 0.7 end)
+    gear.MouseButton1Click:Connect(function()
+        binding = not binding
+        paintKey()
+        if binding then
+            notify("Games", "Press a key for " .. c.title
+                   .. ", or Backspace to clear it.", 6)
+        end
+    end)
+
+    track(UserInputService.InputBegan:Connect(function(i, gp)
+        if not binding then return end
+        if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        binding = false
+        if i.KeyCode == Enum.KeyCode.Backspace then
+            State.gameKeys[c.key] = nil
+            notify("Games", c.title .. " key cleared.", 3)
+        else
+            -- one key per game; the same key on two cards would open both
+            for other, kc in pairs(State.gameKeys) do
+                if kc == i.KeyCode and other ~= c.key then
+                    State.gameKeys[other] = nil
+                end
+            end
+            State.gameKeys[c.key] = i.KeyCode
+            notify("Games", c.title .. "  ->  "
+                   .. tostring(i.KeyCode):gsub("Enum%.KeyCode%.", ""), 4)
+        end
+        paintKey()
+        for _, fn in ipairs(paints) do pcall(fn) end
+    end))
+
     local TW  = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
     local TWs = TweenInfo.new(0.34, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
@@ -11029,8 +11110,8 @@ for i, c in ipairs(CARDS) do
         TweenService:Create(img, TWs, {
             ImageTransparency = here and (hovering and 0 or 0.1) or 0.64,
             -- zoom lives in Size because the frame around it clips
-            Size = (here and hovering) and UDim2.new(1, 26, 1, 26)
-                                       or UDim2.new(1, 0, 1, 0),
+            Size = (here and hovering) and UDim2.new(1, 48, 1, 48)
+                                       or UDim2.new(1, 20, 1, 20),
         }):Play()
         TweenService:Create(cst, TW, {
             Transparency = hovering and 0.08 or (here and 0.55 or 0.8),
@@ -11055,6 +11136,11 @@ for i, c in ipairs(CARDS) do
         }):Play()
         t.TextColor3 = here and Color3.fromRGB(255, 255, 255)
                             or Color3.fromRGB(185, 185, 190)
+        -- the gear stays usable on a locked card: binding a key for a game
+        -- you are not in yet is exactly when you would want to
+        gear.BackgroundTransparency = hovering and 0.2 or 0.35
+        keyTag.TextTransparency = here and 0.1 or 0.45
+        paintKey()
     end
     paints[#paints + 1] = paint
     paint()
@@ -11085,7 +11171,8 @@ for i, c in ipairs(CARDS) do
         hovering = false
         -- everything back to centre, or the art keeps the last tilt
         TweenService:Create(img, TWs, {
-            Position = UDim2.new(0.5, 0, 0.5, 0) }):Play()
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, 20, 1, 20) }):Play()
         TweenService:Create(shadow, TWs, {
             Position = UDim2.new(0.5, 0, 0.5, 5) }):Play()
         paint()
@@ -11748,6 +11835,19 @@ shelfHint.TextSize = 10
 shelfHint.TextXAlignment = Enum.TextXAlignment.Left
 shelfHint.TextWrapped = true
 shelfHint.TextColor3 = Theme.textDim
+
+-- One listener for every card. Only fires inside the matching game, so a
+-- key bound to Blade Ball does nothing while you are somewhere else.
+track(UserInputService.InputBegan:Connect(function(i, gp)
+    if gp or i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    for key, kc in pairs(State.gameKeys) do
+        if kc == i.KeyCode and inGame(key) then
+            if key == "gv" and SilenceAPI._openGV then SilenceAPI._openGV() end
+            if key == "bb" and SilenceAPI._openBB then SilenceAPI._openBB() end
+            return
+        end
+    end
+end))
 
 track(RunService.Heartbeat:Connect(function()
     if (SilenceAPI._shelfNext or 0) > tick() then return end
@@ -16532,6 +16632,8 @@ local function buildConfig()
     for i, w in ipairs(State.waypoints) do
         cfg.waypoints[i] = { name = w.name, x = w.x, y = w.y, z = w.z }
     end
+    cfg.gameKeys = {}
+    for k, v in pairs(State.gameKeys) do cfg.gameKeys[k] = keyName(v) end
     cfg.gameIds = { gv = {}, bb = {} }
     for _, v in ipairs(State.gameIds.gv) do
         cfg.gameIds.gv[#cfg.gameIds.gv + 1] = v
@@ -16605,6 +16707,13 @@ local function applyConfig(cfg)
             end
         end
         if SilenceAPI._refreshWaypoints then pcall(SilenceAPI._refreshWaypoints) end
+    end
+    if type(cfg.gameKeys) == "table" then
+        State.gameKeys = {}
+        for k, v in pairs(cfg.gameKeys) do
+            local kc = keyFromName(v)
+            if kc then State.gameKeys[k] = kc end
+        end
     end
     if type(cfg.gameIds) == "table" then
         for _, k in ipairs({ "gv", "bb" }) do
