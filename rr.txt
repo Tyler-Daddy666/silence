@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v47"
+SilenceAPI._version = "v48"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -1880,6 +1880,12 @@ end
                 if d:IsA("Decal") then pcall(function() d.Transparency = 0 end) end
             end
         end
+        -- limbs this player's slots hid go back to whatever they were
+        for _, h in ipairs(rec.hidden or {}) do
+            if h.part and h.part.Parent then
+                pcall(function() h.part.Transparency = h.t end)
+            end
+        end
         worn[player] = nil
     end
 
@@ -1935,19 +1941,57 @@ end
         -- distinction mountSlotInto makes for your own character.
         if type(cfg.slots) == "table" then
             local hum = char:FindFirstChildOfClass("Humanoid")
+            local groups = SilenceAPI._partGroups or {}
             for i, sl in ipairs(cfg.slots) do
                 local n = tonumber(tostring(sl.id or ""):match("%d+") or "")
                 local part = n and attachPartFor(char, sl.part)
                 if part then
+                    -- A limb bundle is shaped for whatever rig it came from.
+                    -- On a single-part R6 limb the loader must repaint that
+                    -- part; welding an R15-shaped segment on leaves the
+                    -- third-length stub floating mid-thigh.
+                    local isLimb = (sl.part == "RightLeg" or sl.part == "LeftLeg")
                     local r6 = nil
-                    if (sl.part == "RightLeg" or sl.part == "LeftLeg")
-                       and hum and hum.RigType == Enum.HumanoidRigType.R6 then
+                    if isLimb and hum
+                       and hum.RigType == Enum.HumanoidRigType.R6 then
                         r6 = part
                     end
                     local key = "sil_p" .. tostring(player.UserId) .. "_s" .. i
                     rec.keys[#rec.keys + 1] = key
+
+                    -- Hide the limb this slot replaces, and remember what it
+                    -- was so clearFor can put it back. Without this the
+                    -- original leg stays solid and the swapped mesh is
+                    -- somewhere inside it - which is exactly why horns showed
+                    -- up and Korblox did not.
+                    if sl.hide then
+                        rec.hidden = rec.hidden or {}
+                        for _, nm in ipairs(groups[sl.part] or {}) do
+                            local bp = char:FindFirstChild(nm)
+                            if bp and bp:IsA("BasePart") then
+                                rec.hidden[#rec.hidden + 1] =
+                                    { part = bp, t = bp.Transparency }
+                                pcall(function() bp.Transparency = 1 end)
+                            end
+                        end
+                    end
+
                     task.spawn(function()
                         addAccessoryToCharacter(n, part, char, key, r6)
+                        -- charmesh and limbmesh REPLACE the limb in place, so
+                        -- a hidden limb would take the new mesh with it. Undo
+                        -- the hide for those two, same rule as _slotHiddenParts
+                        -- applies to your own character.
+                        local kind = mountKindByKey[key]
+                        if (kind == "charmesh" or kind == "limbmesh")
+                           and rec.hidden then
+                            for _, h in ipairs(rec.hidden) do
+                                if h.part and h.part.Parent then
+                                    pcall(function() h.part.Transparency = h.t end)
+                                end
+                            end
+                            rec.hidden = nil
+                        end
                     end)
                 end
             end
