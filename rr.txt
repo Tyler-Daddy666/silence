@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v53"
+SilenceAPI._version = "v55"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -396,6 +396,53 @@ SilenceAPI._built   = "2026-08-18"
 print("[Silence] ======== " .. SilenceAPI._version
       .. "  built " .. SilenceAPI._built
       .. "  loaded " .. os.date("%H:%M:%S") .. " ========")
+-- true while any Silence window is open. Anything that lives outside the
+-- ScreenGui stack - the overhead tag, world click handlers - asks this
+-- before acting on a click.
+function SilenceAPI._modalOpen()
+    for _, w in ipairs(SilenceAPI._modalWindows or {}) do
+        if w and w.Parent and w.Visible then return true end
+    end
+    return false
+end
+
+-- Registering a window here does three things: it counts towards
+-- _modalOpen, it tucks the main panel away while the window is up, and it
+-- brings the panel back when the LAST window closes. Whether the panel was
+-- even open is remembered, so opening the editor from a hidden panel does
+-- not conjure the panel back afterwards.
+function SilenceAPI._modalWatch(w)
+    if not w then return end
+    SilenceAPI._modalWindows = SilenceAPI._modalWindows or {}
+    table.insert(SilenceAPI._modalWindows, w)
+    w:GetPropertyChangedSignal("Visible"):Connect(function()
+        if w.Visible then
+            if SilenceAPI._mainWasOpen == nil then
+                SilenceAPI._mainWasOpen = SilenceAPI._mainVisible
+                                      and SilenceAPI._mainVisible() or false
+            end
+            if SilenceAPI._setMainVisible then SilenceAPI._setMainVisible(false) end
+        else
+            -- another window may still be up; only the last one restores
+            if SilenceAPI._modalOpen() then return end
+            if SilenceAPI._mainWasOpen and SilenceAPI._setMainVisible then
+                SilenceAPI._setMainVisible(true)
+            end
+            SilenceAPI._mainWasOpen = nil
+        end
+    end)
+end
+
+-- closes the topmost open window; returns true if it closed something
+function SilenceAPI._closeTopModal()
+    local list = SilenceAPI._modalWindows or {}
+    for i = #list, 1, -1 do
+        local w = list[i]
+        if w and w.Parent and w.Visible then w.Visible = false return true end
+    end
+    return false
+end
+
 print("[Silence] env initialized, building GUI...")
 
 -- DIAGNOSTIC: catch any uncaught error and display in StarterGui so the
@@ -10695,9 +10742,31 @@ local auraFor = {}   -- [player] = { instances }
 
 local function killAura(player)
     local set = auraFor[player]
-    if not set then return end
-    for _, o in ipairs(set) do pcall(function() o:Destroy() end) end
+    if set then
+        for _, o in ipairs(set) do
+            pcall(function()
+                -- stop emitting, wipe what is already in the air, then go
+                if o:IsA("ParticleEmitter") then o.Enabled = false; o:Clear() end
+                o:Destroy()
+            end)
+        end
+    end
     auraFor[player] = nil
+
+    -- Sweep by name as well. The registry only knows what the last build put
+    -- in it; an orphan from any other path would otherwise sit there forever
+    -- with nothing holding a reference to it.
+    local char = player and player.Character
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d.Name == "__SIL_Aura" or d.Name == "__SIL_AuraLight" then
+                pcall(function()
+                    if d:IsA("ParticleEmitter") then d.Enabled = false; d:Clear() end
+                    d:Destroy()
+                end)
+            end
+        end
+    end
 end
 
 -- cfg is the same shape whether it came from State.aura or off the endpoint
@@ -15874,53 +15943,6 @@ end)()
 ----------------------------------------------------------------
 -- CLEANUP
 ----------------------------------------------------------------
--- true while any Silence window is open. Anything that lives outside the
--- ScreenGui stack - the overhead tag, world click handlers - asks this
--- before acting on a click.
-function SilenceAPI._modalOpen()
-    for _, w in ipairs(SilenceAPI._modalWindows or {}) do
-        if w and w.Parent and w.Visible then return true end
-    end
-    return false
-end
-
--- Registering a window here does three things: it counts towards
--- _modalOpen, it tucks the main panel away while the window is up, and it
--- brings the panel back when the LAST window closes. Whether the panel was
--- even open is remembered, so opening the editor from a hidden panel does
--- not conjure the panel back afterwards.
-function SilenceAPI._modalWatch(w)
-    if not w then return end
-    SilenceAPI._modalWindows = SilenceAPI._modalWindows or {}
-    table.insert(SilenceAPI._modalWindows, w)
-    w:GetPropertyChangedSignal("Visible"):Connect(function()
-        if w.Visible then
-            if SilenceAPI._mainWasOpen == nil then
-                SilenceAPI._mainWasOpen = SilenceAPI._mainVisible
-                                      and SilenceAPI._mainVisible() or false
-            end
-            if SilenceAPI._setMainVisible then SilenceAPI._setMainVisible(false) end
-        else
-            -- another window may still be up; only the last one restores
-            if SilenceAPI._modalOpen() then return end
-            if SilenceAPI._mainWasOpen and SilenceAPI._setMainVisible then
-                SilenceAPI._setMainVisible(true)
-            end
-            SilenceAPI._mainWasOpen = nil
-        end
-    end)
-end
-
--- closes the topmost open window; returns true if it closed something
-function SilenceAPI._closeTopModal()
-    local list = SilenceAPI._modalWindows or {}
-    for i = #list, 1, -1 do
-        local w = list[i]
-        if w and w.Parent and w.Visible then w.Visible = false return true end
-    end
-    return false
-end
-
 function SilenceAPI.cleanup()
     if SilenceAPI._leave then pcall(SilenceAPI._leave) end
     if SilenceAPI._skyCleanup then pcall(SilenceAPI._skyCleanup) end
