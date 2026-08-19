@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v46"
+SilenceAPI._version = "v47"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -4697,6 +4697,10 @@ Panel.Position=UDim2.new(0.5,0,0.5,0)
 Panel.Size=UDim2.new(1,0,1,0)
 Panel.BorderSizePixel=0
 SilenceAPI._theme(Panel,"BackgroundColor3","bg")
+-- A Frame only swallows mouse input when it is Active. Without this every
+-- click on an empty patch of the panel went straight through to the game
+-- underneath - so dragging a slider could also swing a tool.
+Panel.Active=true
 Panel.ClipsDescendants=true
 -- less see-through than the little bar: a full page of rows needs the
 -- contrast, and the blur behind is doing half the work already
@@ -14860,6 +14864,40 @@ end
 colCaption(20, "PANEL CONFIGS")
 colCaption(900 - 20 - COLW, "TAG DESIGNS")
 
+-- A node canvas rather than a plain background: the grid gives the threads
+-- something to read against, the same way the tag editor's preview stage
+-- does for a transparent card.
+local canvas = Instance.new("Frame", CE)
+canvas.Size = UDim2.new(1, -32, 1, -132)
+canvas.Position = UDim2.new(0, 16, 0, 72)
+canvas.BackgroundColor3 = Theme.bg
+canvas.BackgroundTransparency = 0.35
+canvas.BorderSizePixel = 0
+canvas.ClipsDescendants = true
+canvas.ZIndex = 199
+corner(canvas, 12)
+stroke(canvas, Theme.bg4, 1, 0.5, "bg4")
+do
+    for i = 1, 17 do
+        local v = Instance.new("Frame", canvas)
+        v.Size = UDim2.new(0, 1, 1, 0)
+        v.Position = UDim2.new(i / 18, 0, 0, 0)
+        v.BackgroundColor3 = Theme.accent
+        v.BackgroundTransparency = 0.94
+        v.BorderSizePixel = 0
+        v.ZIndex = 199
+    end
+    for i = 1, 11 do
+        local h = Instance.new("Frame", canvas)
+        h.Size = UDim2.new(1, 0, 0, 1)
+        h.Position = UDim2.new(0, 0, i / 12, 0)
+        h.BackgroundColor3 = Theme.accent
+        h.BackgroundTransparency = 0.94
+        h.BorderSizePixel = 0
+        h.ZIndex = 199
+    end
+end
+
 local thread = Instance.new("Frame", CE)
 thread.Size = UDim2.new(0, MIDW + 20, 1, -150)
 thread.Position = UDim2.new(0, 20 + COLW, 0, TOP)
@@ -15015,12 +15053,23 @@ local function makeRow(side, i)
         end)
     end
 
-    return { frame = r, stroke = rst, status = st, box = nameBox }
-end
+    -- The pin. Configs carry theirs on the right edge, designs on the left,
+    -- so a thread always runs outward from one into the other.
+    local pin = Instance.new("TextButton", r)
+    pin.Size = UDim2.new(0, 16, 0, 16)
+    pin.Position = isCfg and UDim2.new(1, -9, 0.5, -8) or UDim2.new(0, -7, 0.5, -8)
+    pin.BorderSizePixel = 0
+    pin.Text = ""
+    pin.AutoButtonColor = false
+    pin.ZIndex = 206
+    local pc = Instance.new("UICorner", pin); pc.CornerRadius = UDim.new(1, 0)
+    local pst = Instance.new("UIStroke", pin)
+    pst.Thickness = 2
+    pst.Color = Theme.accent
 
-local rowsC, rowsT = {}, {}
-for i = 1, NS do rowsC[i] = makeRow("c", i) end
-for i = 1, NS do rowsT[i] = makeRow("t", i) end
+    return { frame = r, stroke = rst, status = st, box = nameBox,
+             pin = pin, pinStroke = pst }
+end
 
 ------------------------------------------------------------ THE THREAD
 local lines = {}
@@ -15029,23 +15078,85 @@ local function clearLines()
     lines = {}
 end
 
-local function drawLine(y1, y2, strong)
-    local dx = thread.AbsoluteSize.X > 0 and thread.AbsoluteSize.X or (MIDW + 20)
-    local dy = y2 - y1
+-- One line drawn between two points inside `thread`. Rotation plus a
+-- computed length is the only way to get a diagonal out of a Frame.
+local function segment(parent, x1, y1, x2, y2, strong, keep)
+    local dx, dy = x2 - x1, y2 - y1
     local len = math.sqrt(dx * dx + dy * dy)
-    local l = Instance.new("Frame", thread)
+    local l = Instance.new("Frame", parent)
     l.AnchorPoint = Vector2.new(0.5, 0.5)
     l.Size = UDim2.new(0, len, 0, strong and 3 or 2)
-    l.Position = UDim2.new(0.5, 0, 0, (y1 + y2) / 2 - TOP)
+    l.Position = UDim2.new(0, (x1 + x2) / 2, 0, (y1 + y2) / 2)
     l.Rotation = math.deg(math.atan2(dy, dx))
     l.BorderSizePixel = 0
     l.BackgroundColor3 = strong and Theme.accent or Theme.bg4
     l.BackgroundTransparency = strong and 0.15 or 0.6
     l.ZIndex = 201
     corner(l, 2)
-    lines[#lines + 1] = l
+    if not keep then lines[#lines + 1] = l end
     return l
 end
+
+local function threadW()
+    return thread.AbsoluteSize.X > 0 and thread.AbsoluteSize.X or (MIDW + 20)
+end
+
+local function drawLine(y1, y2, strong)
+    return segment(thread, 0, y1 - TOP, threadW(), y2 - TOP, strong)
+end
+
+-- Hold a pin, drag across, let go on the other one. The live line follows
+-- the cursor so it is obvious what is about to be tied to what.
+local dragFrom, hoverTo, liveLine = nil, nil, nil
+
+local function endDrag()
+    if liveLine then pcall(function() liveLine:Destroy() end); liveLine = nil end
+    if dragFrom and hoverTo then
+        cfgs[dragFrom].link = hoverTo
+        saveB()
+        notify("Config", cfgs[dragFrom].name .. "  ->  " .. tags[hoverTo].name, 4)
+    end
+    dragFrom, hoverTo = nil, nil
+    paintAll()
+end
+
+local rowsC, rowsT = {}, {}
+for i = 1, NS do rowsC[i] = makeRow("c", i) end
+for i = 1, NS do rowsT[i] = makeRow("t", i) end
+
+for i = 1, NS do
+    rowsC[i].pin.MouseButton1Down:Connect(function()
+        dragFrom = i
+        if liveLine then pcall(function() liveLine:Destroy() end) end
+        liveLine = segment(thread, 0, rowY(i) - TOP, 0, rowY(i) - TOP, true, true)
+    end)
+    rowsT[i].pin.MouseEnter:Connect(function() if dragFrom then hoverTo = i end end)
+    rowsT[i].pin.MouseLeave:Connect(function() if hoverTo == i then hoverTo = nil end end)
+    -- dropping on the row itself counts too; a 16px circle is a small target
+    rowsT[i].frame.MouseEnter:Connect(function() if dragFrom then hoverTo = i end end)
+end
+
+SilenceAPI._onDrag(function(inp)
+    if not dragFrom or not liveLine then return end
+    local m = UserInputService:GetMouseLocation()
+    local ox = m.X - thread.AbsolutePosition.X
+    local oy = m.Y - thread.AbsolutePosition.Y
+    local y1 = rowY(dragFrom) - TOP
+    pcall(function()
+        local dx, dy = ox - 0, oy - y1
+        local len = math.sqrt(dx * dx + dy * dy)
+        liveLine.Size = UDim2.new(0, len, 0, 3)
+        liveLine.Position = UDim2.new(0, ox / 2, 0, (y1 + oy) / 2)
+        liveLine.Rotation = math.deg(math.atan2(dy, dx))
+    end)
+end)
+
+track(UserInputService.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1
+       or inp.UserInputType == Enum.UserInputType.Touch then
+        if dragFrom then endDrag() end
+    end
+end))
 
 paintAll = function()
     for i = 1, NS do
@@ -15064,6 +15175,15 @@ paintAll = function()
         rowsT[i].stroke.Color = onT and Theme.accent or Theme.bg4
         rowsT[i].stroke.Transparency = onT and 0.1 or 0.55
         rowsT[i].frame.BackgroundColor3 = onT and Theme.bg3 or Theme.bg2
+
+        -- a filled pin means a thread is attached to it
+        local cLinked = c.link ~= nil
+        rowsC[i].pin.BackgroundColor3 = cLinked and Theme.accent or Theme.bg
+        rowsC[i].pinStroke.Transparency = cLinked and 0 or 0.4
+        local tLinked = false
+        for k = 1, NS do if cfgs[k].link == i then tLinked = true break end end
+        rowsT[i].pin.BackgroundColor3 = tLinked and Theme.accent or Theme.bg
+        rowsT[i].pinStroke.Transparency = tLinked and 0 or 0.4
     end
 
     clearLines()
@@ -15132,8 +15252,8 @@ foot.TextSize = 10
 foot.TextXAlignment = Enum.TextXAlignment.Right
 foot.TextYAlignment = Enum.TextYAlignment.Center
 foot.TextWrapped = true
-foot.Text = "Click a row on each side to pick it. Loading a config on the left"
-         .. " also applies whatever design it is tied to."
+foot.Text = "Drag from a config's right pin onto a design's left pin to tie"
+         .. " them. Loading a config also applies the design it is tied to."
 foot.ZIndex = 203
 SilenceAPI._theme(foot, "TextColor3", "textDim")
 
