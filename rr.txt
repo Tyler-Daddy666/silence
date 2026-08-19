@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v96"
+SilenceAPI._version = "v97"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6336,7 +6336,7 @@ local function toggleRow(parent,label,getter,setter)
     corner(row,9)
     SilenceAPI._registerRow(row, label)
     SilenceAPI._theme(row,"BackgroundColor3","bg2")
-    local rs=stroke(row, Theme.bg4, 1, 0.5, "bg4")
+    local rs=stroke(row, Theme.bg4, 1, 1, "bg4")
 
     local l=Instance.new("TextLabel",row)
     l.Size=UDim2.new(1,-80,1,0); l.Position=UDim2.new(0,14,0,0)
@@ -6376,9 +6376,11 @@ local function toggleRow(parent,label,getter,setter)
             Position        = on and UDim2.new(0,25,0.5,-9) or UDim2.new(0,3,0.5,-9),
             BackgroundColor3 = on and Theme.bg or Theme.textDim,
         }):Play()
+        -- the switch itself already goes accent when it is on, so the row
+        -- needs no ring to say the same thing a second time
         TweenService:Create(rs, SilenceAPI._twFade, {
             Color        = on and Theme.accent or Theme.bg4,
-            Transparency = on and 0.6 or 0.5,
+            Transparency = 1,
         }):Play()
     end
     local function flip()
@@ -6406,7 +6408,7 @@ local function buttonRow(parent,label,cb)
     corner(b,9); padding(b,0,0,14,36)
     SilenceAPI._theme(b,"BackgroundColor3","bg2"); SilenceAPI._theme(b,"TextColor3","text")
     SilenceAPI._registerRow(b, label)
-    local bs=stroke(b, Theme.bg4, 1, 0.5, "bg4")
+    local bs=stroke(b, Theme.bg4, 1, 1, "bg4")
 
     local arrow=Instance.new("TextLabel", b)
     arrow.Size=UDim2.new(0,18,1,0); arrow.Position=UDim2.new(1,-4,0,0)
@@ -6416,13 +6418,13 @@ local function buttonRow(parent,label,cb)
 
     b.MouseEnter:Connect(function()
         TweenService:Create(b,     SilenceAPI._twFade, { BackgroundColor3 = Theme.bg3 }):Play()
-        TweenService:Create(bs,    SilenceAPI._twFade, { Color = Theme.accent, Transparency = 0.5 }):Play()
+        TweenService:Create(bs,    SilenceAPI._twFade, { Color = Theme.accent, Transparency = 1 }):Play()
         TweenService:Create(arrow, SilenceAPI._twFade,
             { Position = UDim2.new(1,2,0,0), TextColor3 = Theme.text }):Play()
     end)
     b.MouseLeave:Connect(function()
         TweenService:Create(b,     SilenceAPI._twFade, { BackgroundColor3 = Theme.bg2 }):Play()
-        TweenService:Create(bs,    SilenceAPI._twFade, { Color = Theme.bg4, Transparency = 0.5 }):Play()
+        TweenService:Create(bs,    SilenceAPI._twFade, { Color = Theme.bg4, Transparency = 1 }):Play()
         TweenService:Create(arrow, SilenceAPI._twFade,
             { Position = UDim2.new(1,-4,0,0), TextColor3 = Theme.textDim }):Play()
     end)
@@ -6445,7 +6447,7 @@ local function inputRow(parent, label, default, cb, opts)
     corner(row, 9)
     SilenceAPI._registerRow(row, label)
     SilenceAPI._theme(row,"BackgroundColor3","bg2")
-    stroke(row, Theme.bg4, 1, 0.5, "bg4")
+    stroke(row, Theme.bg4, 1, 1, "bg4")
 
     local l = Instance.new("TextLabel", row)
     l.Size = UDim2.new(0.55, 0, 0, hasSlider and 22 or 40)
@@ -6864,7 +6866,7 @@ local function hexColorPickerRow(parent, label, initial, onChange)
     row.ZIndex = z
     corner(row, 9)
     SilenceAPI._theme(row, "BackgroundColor3", "bg2")
-    local rs = stroke(row, Theme.bg4, 1, 0.5, "bg4")
+    local rs = stroke(row, Theme.bg4, 1, 1, "bg4")
     SilenceAPI._registerRow(row, label)
 
     local lbl = Instance.new("TextLabel", row)
@@ -7591,7 +7593,7 @@ wearingLbl.TextXAlignment = Enum.TextXAlignment.Left
 corner(wearingLbl, 9); padding(wearingLbl, 0,0,12,12)
 SilenceAPI._theme(wearingLbl, "BackgroundColor3", "bg2")
 SilenceAPI._theme(wearingLbl, "TextColor3", "text")
-stroke(wearingLbl, Theme.bg4, 1, 0.5, "bg4")
+stroke(wearingLbl, Theme.bg4, 1, 1, "bg4")
 
 local resetSkinBtn = Instance.new("TextButton", pSkins)
 resetSkinBtn.Size = UDim2.new(1,0,0,42); resetSkinBtn.BackgroundColor3 = Color3.fromRGB(180,50,90)
@@ -7745,7 +7747,7 @@ local function slotRow(i)
     row.BorderSizePixel = 0
     corner(row, 9)
     SilenceAPI._theme(row, "BackgroundColor3", "bg2")
-    stroke(row, Theme.bg4, 1, 0.5, "bg4")
+    stroke(row, Theme.bg4, 1, 1, "bg4")
     SilenceAPI._registerRow(row, sl.name .. " accessory slot")
 
     local lbl = Instance.new("TextLabel", row)
@@ -8934,7 +8936,7 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
                 b.TextSize = 10
                 b.AutoButtonColor = false
                 corner(b, 6)
-                local bs = stroke(b, Theme.bg4, 1, 0.5, "bg4")
+                local bs = stroke(b, Theme.bg4, 1, 1, "bg4")
 
                 local function paint()
                     local on = isMutedFor(p)
@@ -13951,7 +13953,7 @@ local _tagOk, _tagErr = pcall(function()
         r.ZIndex = EZ + 2
         corner(r, 9)
         SilenceAPI._theme(r, "BackgroundColor3", "bg2")
-        stroke(r, Theme.bg4, 1, 0.5, "bg4")
+        stroke(r, Theme.bg4, 1, 1, "bg4")
         local l = Instance.new("TextLabel", r)
         l.Size = UDim2.new(0.5, 0, 0, 38); l.Position = UDim2.new(0, 14, 0, 0)
         l.BackgroundTransparency = 1
@@ -14122,7 +14124,7 @@ local _tagOk, _tagErr = pcall(function()
         corner(b, 9); padding(b, 0, 0, 14, 14)
         SilenceAPI._theme(b, "BackgroundColor3", "bg2")
         SilenceAPI._theme(b, "TextColor3", "text")
-        local st = stroke(b, Theme.bg4, 1, 0.5, "bg4")
+        local st = stroke(b, Theme.bg4, 1, 1, "bg4")
         b.MouseEnter:Connect(function()
             TweenService:Create(b,  SilenceAPI._twFade, { BackgroundColor3 = Theme.bg3 }):Play()
             TweenService:Create(st, SilenceAPI._twFade, { Color = Theme.accent }):Play()
@@ -14920,7 +14922,7 @@ local _tagOk, _tagErr = pcall(function()
         outRow.ZIndex = EZ + 2
         corner(outRow, 9)
         SilenceAPI._theme(outRow, "BackgroundColor3", "bg2")
-        stroke(outRow, Theme.bg4, 1, 0.5, "bg4")
+        stroke(outRow, Theme.bg4, 1, 1, "bg4")
 
         local outBox = Instance.new("TextBox", outRow)
         outBox.Size = UDim2.new(1, -20, 1, -20); outBox.Position = UDim2.new(0, 10, 0, 10)
@@ -14957,7 +14959,7 @@ local _tagOk, _tagErr = pcall(function()
         inRow.ZIndex = EZ + 2
         corner(inRow, 9)
         SilenceAPI._theme(inRow, "BackgroundColor3", "bg2")
-        stroke(inRow, Theme.bg4, 1, 0.5, "bg4")
+        stroke(inRow, Theme.bg4, 1, 1, "bg4")
 
         local inBox = Instance.new("TextBox", inRow)
         inBox.Size = UDim2.new(1, -20, 1, -20); inBox.Position = UDim2.new(0, 10, 0, 10)
@@ -16613,7 +16615,9 @@ SilenceAPI._theme(search, "BackgroundColor3", "bg2")
 SilenceAPI._theme(search, "TextColor3", "text")
 SilenceAPI._theme(search, "PlaceholderColor3", "textDim")
 
-local function topBtn(label, xFromRight, w, cb)
+-- plain = this button paints its own colours, so no theme registration and
+-- no hover handler fights the state paint below
+local function topBtn(label, xFromRight, w, cb, plain)
     local b = Instance.new("TextButton", AW)
     b.Size = UDim2.new(0, w, 0, 30)
     b.Position = UDim2.new(1, xFromRight, 0, 54)
@@ -16623,11 +16627,18 @@ local function topBtn(label, xFromRight, w, cb)
     b.AutoButtonColor = false
     b.ZIndex = 400
     corner(b, 8)
-    local bs = stroke(b, Theme.accent, 1, 0.6)
-    SilenceAPI._theme(b, "BackgroundColor3", "bg2")
-    SilenceAPI._theme(b, "TextColor3", "text")
-    b.MouseEnter:Connect(function() bs.Transparency = 0.1 end)
-    b.MouseLeave:Connect(function() bs.Transparency = 0.6 end)
+    if not plain then
+        SilenceAPI._theme(b, "BackgroundColor3", "bg2")
+        SilenceAPI._theme(b, "TextColor3", "text")
+        b.MouseEnter:Connect(function()
+            TweenService:Create(b, SilenceAPI._twFade,
+                { BackgroundColor3 = Theme.bg3 }):Play()
+        end)
+        b.MouseLeave:Connect(function()
+            TweenService:Create(b, SilenceAPI._twFade,
+                { BackgroundColor3 = Theme.bg2 }):Play()
+        end)
+    end
     b.MouseButton1Click:Connect(cb)
     return b
 end
@@ -16697,10 +16708,22 @@ local function setPack(on)
 end
 SilenceAPI._setAnimPack = setPack
 
-local offBtn = topBtn("OFF", -290, 84, function()
-    if State.animPack then setPack(false)
-    else notify("Anim Pack", "Already on your default animations.", 3) end
-end)
+-- Reads out the state it is in rather than the action it performs. A button
+-- labelled OFF that still says OFF after you press it tells you nothing about
+-- whether anything happened.
+local stateBtn = topBtn("OFF", -290, 84, function()
+    setPack(not State.animPack)
+end, true)
+paints[#paints + 1] = function()
+    local on = State.animPack and true or false
+    stateBtn.Text = on and "ON" or "OFF"
+    stateBtn.BackgroundColor3 = on and Theme.accent or Theme.bg2
+    stateBtn.TextColor3 = on and Theme.bg or Theme.textDim
+end
+-- plain = true skipped the theme pass, so nothing has painted this button
+-- yet. Without this it renders as a default white TextButton until the
+-- first toggle.
+paints[#paints]()
 
 local busy = false
 topBtn("VERIFY ALL", -196, 92, function()
@@ -16747,8 +16770,9 @@ for i, p in ipairs(PACKS) do
     row.LayoutOrder = i
     row.ZIndex = 401
     corner(row, 8)
-    SilenceAPI._theme(row, "BackgroundColor3", "bg2")
+    row.BackgroundColor3 = Theme.bg2
     local rs = stroke(row, Theme.accent, 1, 1)
+    rs.Enabled = false
 
     local nm = Instance.new("TextLabel", row)
     nm.Size = UDim2.new(1, -170, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
@@ -16776,7 +16800,7 @@ for i, p in ipairs(PACKS) do
 
     local function paint()
         local worn = State.animPack and State.animPackName == p.n
-        rs.Transparency = worn and 0.1 or 1
+        row.BackgroundColor3 = worn and Theme.bg4 or Theme.bg2
         wear.Text = worn and "WORN" or "WEAR"
         wear.BackgroundColor3 = worn and Theme.accent or Theme.bg3
         wear.TextColor3 = worn and Theme.bg or Theme.textDim
@@ -16809,12 +16833,14 @@ for i, p in ipairs(PACKS) do
 
     row.MouseEnter:Connect(function()
         if not (State.animPack and State.animPackName == p.n) then
-            rs.Transparency = 0.55
+            TweenService:Create(row, SilenceAPI._twFade,
+                { BackgroundColor3 = Theme.bg3 }):Play()
         end
     end)
     row.MouseLeave:Connect(function()
         if not (State.animPack and State.animPackName == p.n) then
-            rs.Transparency = 1
+            TweenService:Create(row, SilenceAPI._twFade,
+                { BackgroundColor3 = Theme.bg2 }):Play()
         end
     end)
 
@@ -18007,7 +18033,7 @@ local function buildRow(isCfg, i, e)
     r.ZIndex = 202
     corner(r, 8)
     r.BackgroundColor3 = Theme.bg2
-    local rst = stroke(r, Theme.bg4, 1, 0.5, "bg4")
+    local rst = stroke(r, Theme.bg4, 1, 1, "bg4")
     if (isCfg and pendC == i) or ((not isCfg) and pendT == i) then
         rst.Color = Theme.accent; rst.Transparency = 0.1
     end
@@ -18107,7 +18133,7 @@ rebuild = function()
         r.ZIndex = 202
         corner(r, 8)
         r.BackgroundColor3 = Theme.bg2
-        local st = stroke(r, Theme.bg4, 1, 0.5, "bg4")
+        local st = stroke(r, Theme.bg4, 1, 1, "bg4")
         if pr.auto then st.Color = Theme.accent; st.Transparency = 0.1 end
 
         local n = Instance.new("TextLabel", r)
