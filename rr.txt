@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v130"
+SilenceAPI._version = "v131"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -19225,9 +19225,17 @@ local function applyConfig(cfg)
             end
         end
         for i, sl in ipairs(State.accSlots) do
-            local c = byName[sl.name] or cfg.accSlots[i]
+            -- Name only. Falling back to the index was the bug it was meant
+            -- to fix: a config saved before 8-Bit Crown existed has no entry
+            -- under that name, so the fallback handed it whatever sat at
+            -- position 1 - Horn 1 - and switching the crown on produced a
+            -- horn. A slot the saved config has never heard of keeps its
+            -- built-in id instead.
+            local c = byName[sl.name]
             if type(c) == "table" then
-                sl.name = tostring(c.name or sl.name)
+                -- name is NOT restored: a saved config may carry a slot's
+                -- id, part and switches, but it must never be able to rename
+                -- a built-in slot out from under the list it was matched by
                 sl.id   = tostring(c.id or ""):match("%d+") or ""
                 sl.part = c.part or sl.part
                 sl.hide = c.hide and true or false
