@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v144"
+SilenceAPI._version = "v145"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -8947,6 +8947,62 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
     mbLbl.TextXAlignment = Enum.TextXAlignment.Left
     mbLbl.TextYAlignment = Enum.TextYAlignment.Top
     mbLbl.TextColor3 = Theme.textDim
+
+    sectionLabel(pVcBan, "WHY IS VOICE DOWN")
+    buttonRow(pVcBan, "Diagnose", function()
+        task.spawn(function()
+            local out = {}
+            local vcv, vci = svcOf("VoiceChatService"), svcOf("VoiceChatInternal")
+            out[#out+1] = "service : " .. ((vcv or vci) and "present" or "MISSING")
+
+            -- the account-level question, and the only one that separates a
+            -- moderation action from every other cause
+            local allowed, err = nil, nil
+            pcall(function()
+                if hasM(vcv, "IsVoiceEnabledForUserIdAsync") then
+                    allowed = vcv:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId)
+                end
+            end)
+            out[#out+1] = "account : " .. (allowed == nil and "could not ask"
+                          or (allowed and "voice allowed" or "VOICE NOT ALLOWED"))
+
+            local d = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
+            out[#out+1] = "my mic  : " .. (d and "device present" or "no device")
+            if d then
+                pcall(function()
+                    out[#out+1] = "  active: " .. tostring(d.Active)
+                end)
+            end
+
+            local others = 0
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer
+                   and p:FindFirstChildOfClass("AudioDeviceInput") then
+                    others = others + 1
+                end
+            end
+            out[#out+1] = "others  : " .. others .. " with a mic device"
+
+            local live, why = voiceState()
+            out[#out+1] = "session : " .. (live and "up" or ("down - " .. tostring(why)))
+            out[#out+1] = ""
+            if allowed == false then
+                out[#out+1] = "Roblox is not allowing voice on this account."
+                out[#out+1] = "That is decided on their servers. It ends when"
+                out[#out+1] = "it ends; nothing here reaches it. Turn the"
+                out[#out+1] = "session cycle OFF while this is the case - it"
+                out[#out+1] = "will only keep handshaking for nothing."
+            elseif others == 0 and not d then
+                out[#out+1] = "Nobody here has a mic device, yours included."
+                out[#out+1] = "That usually means voice is off for this PLACE,"
+                out[#out+1] = "not for your account."
+            end
+            local txt = table.concat(out, "\n")
+            print(txt)
+            pcall(function() setclipboard(txt) end)
+            notify("Voice", txt, 14)
+        end)
+    end)
 
     sectionLabel(pVcBan, "LAST RESORT")
     buttonRow(pVcBan, "Rejoin Server", function()
