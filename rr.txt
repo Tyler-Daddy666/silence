@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v88"
+SilenceAPI._version = "v89"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10860,6 +10860,123 @@ local sLay = Instance.new("UIGridLayout", shelf)
 sLay.CellSize = UDim2.new(0, 268, 0, 178)
 sLay.CellPadding = UDim2.new(0, 10, 0, 10)
 sLay.SortOrder = Enum.SortOrder.LayoutOrder
+------------------------------------------------------------ KEYBIND POPUP
+-- One window, retargeted, rather than one per card. Two of them would mean
+-- two "press a key" listeners alive at once, and whichever fired first would
+-- steal the key from the other.
+local KP = Instance.new("Frame", Gui)
+KP.Name = "GameKeyPopup"
+KP.Size = UDim2.new(0, 340, 0, 190)
+KP.Position = UDim2.new(0.5, -170, 0.5, -95)
+KP.BackgroundColor3 = Theme.bg
+KP.BorderSizePixel = 0
+KP.Visible = false
+KP.Active = true
+KP.ZIndex = 300
+SilenceAPI._glass(KP, { radius = 14, transparency = 0.15, edge = 0.3,
+                        glowThickness = 2 })
+
+local kpTitle = Instance.new("TextLabel", KP)
+kpTitle.Size = UDim2.new(1, -30, 0, 20); kpTitle.Position = UDim2.new(0, 16, 0, 14)
+kpTitle.BackgroundTransparency = 1
+kpTitle.Font = Enum.Font.GothamBold; kpTitle.TextSize = 14
+kpTitle.TextXAlignment = Enum.TextXAlignment.Left
+kpTitle.ZIndex = 301
+SilenceAPI._theme(kpTitle, "TextColor3", "text")
+
+local kpSub = Instance.new("TextLabel", KP)
+kpSub.Size = UDim2.new(1, -30, 0, 14); kpSub.Position = UDim2.new(0, 16, 0, 34)
+kpSub.BackgroundTransparency = 1
+kpSub.Text = "opens and closes this game's menu"
+kpSub.Font = Enum.Font.Gotham; kpSub.TextSize = 10
+kpSub.TextXAlignment = Enum.TextXAlignment.Left
+kpSub.ZIndex = 301
+SilenceAPI._theme(kpSub, "TextColor3", "textDim")
+
+local kpKey = Instance.new("TextButton", KP)
+kpKey.Size = UDim2.new(1, -32, 0, 46); kpKey.Position = UDim2.new(0, 16, 0, 60)
+kpKey.BorderSizePixel = 0
+kpKey.Text = ""
+kpKey.Font = Enum.Font.GothamBold; kpKey.TextSize = 16
+kpKey.AutoButtonColor = false
+kpKey.ZIndex = 301
+corner(kpKey, 9)
+SilenceAPI._theme(kpKey, "BackgroundColor3", "bg2")
+SilenceAPI._theme(kpKey, "TextColor3", "text")
+
+local function kpBtn(label, x, w, cb)
+    local b = Instance.new("TextButton", KP)
+    b.Size = UDim2.new(0, w, 0, 30); b.Position = UDim2.new(0, x, 1, -46)
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.Font = Enum.Font.GothamBold; b.TextSize = 11
+    b.AutoButtonColor = false
+    b.ZIndex = 301
+    corner(b, 8)
+    b.BackgroundColor3 = Theme.bg3
+    b.TextColor3 = Theme.textDim
+    b.MouseEnter:Connect(function()
+        b.BackgroundColor3 = Theme.accent; b.TextColor3 = Theme.bg
+    end)
+    b.MouseLeave:Connect(function()
+        b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim
+    end)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+local kpFor, kpArmed = nil, false
+local kpRepaint = {}
+
+local function kpPaint()
+    if not kpFor then return end
+    local k = State.gameKeys[kpFor]
+    if kpArmed then
+        kpKey.Text = "press any key..."
+        kpKey.BackgroundColor3 = Theme.accent
+        kpKey.TextColor3 = Theme.bg
+    else
+        kpKey.Text = k and tostring(k):gsub("Enum%.KeyCode%.", "") or "no key set"
+        kpKey.BackgroundColor3 = Theme.bg2
+        kpKey.TextColor3 = k and Theme.text or Theme.textDim
+    end
+    for _, fn in ipairs(kpRepaint) do pcall(fn) end
+end
+
+kpKey.MouseButton1Click:Connect(function() kpArmed = not kpArmed; kpPaint() end)
+kpBtn("SET KEY", 16, 100, function() kpArmed = true; kpPaint() end)
+kpBtn("CLEAR", 124, 90, function()
+    if kpFor then State.gameKeys[kpFor] = nil end
+    kpArmed = false
+    kpPaint()
+end)
+kpBtn("CLOSE", 222, 102, function()
+    kpArmed = false
+    KP.Visible = false
+end)
+
+track(UserInputService.InputBegan:Connect(function(i, gp)
+    if not (KP.Visible and kpArmed) then return end
+    if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    kpArmed = false
+    if i.KeyCode == Enum.KeyCode.Escape then kpPaint() return end
+    -- one key per game, or the same press would open two menus
+    for other, kc in pairs(State.gameKeys) do
+        if kc == i.KeyCode and other ~= kpFor then State.gameKeys[other] = nil end
+    end
+    State.gameKeys[kpFor] = i.KeyCode
+    kpPaint()
+end))
+
+SilenceAPI._modalWatch(KP)
+
+local function openKeyPopup(key, title)
+    kpFor, kpArmed = key, false
+    kpTitle.Text = title
+    KP.Visible = true
+    kpPaint()
+end
+
 SilenceAPI._registerRow(shelf, "games german voice blade ball cards")
 
 local paints = {}
@@ -10881,26 +10998,6 @@ for i, c in ipairs(CARDS) do
     local lift = Instance.new("UIScale", wrap)
     lift.Scale = 1
 
-    -- Roblox has no drop shadow, so it is faked: a black rounded frame a few
-    -- pixels down and out, behind the card, faded with a gradient. Cheap, and
-    -- it is the difference between a card lying ON the panel and a hole cut
-    -- INTO it.
-    local shadow = Instance.new("Frame", wrap)
-    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
-    shadow.Position = UDim2.new(0.5, 0, 0.5, 5)
-    shadow.Size = UDim2.new(1, 10, 1, 10)
-    shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    shadow.BackgroundTransparency = 0.72
-    shadow.BorderSizePixel = 0
-    shadow.ZIndex = 0
-    corner(shadow, 18)
-    local shg = Instance.new("UIGradient", shadow)
-    shg.Rotation = 90
-    shg.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0,   0.55),
-        NumberSequenceKeypoint.new(1,   0),
-    })
-
     local card = Instance.new("TextButton", wrap)
     card.Size = UDim2.new(1, 0, 1, 0)
     card.BorderSizePixel = 0
@@ -10909,7 +11006,7 @@ for i, c in ipairs(CARDS) do
     card.ClipsDescendants = true
     card.BackgroundColor3 = Theme.bg
     corner(card, 14)
-    local cst = stroke(card, Color3.fromRGB(255, 255, 255), 1.5, 0.62)
+    local cst = stroke(card, Color3.fromRGB(255, 255, 255), 2.5, 0.45)
 
     -- A second hairline a pixel inside the first. Two thin lines read as a
     -- crisp edge where one thick line just reads as a border.
@@ -10929,7 +11026,7 @@ for i, c in ipairs(CARDS) do
     -- The travelling sheen, in white and faintly on at rest. A card that
     -- only lights up under the cursor looks dead until you find it.
     local glow = addAnimatedGlow(card, {
-        thickness = 2.5, transparency = 0.78, window = 0.22,
+        thickness = 4.5, transparency = 0.6, window = 0.26,
         color = Color3.fromRGB(255, 255, 255) })
 
     -- AnchorPoint at the centre so the hover zoom grows from the middle
@@ -11047,12 +11144,9 @@ for i, c in ipairs(CARDS) do
     keyTag.TextColor3 = Color3.fromRGB(220, 220, 225)
     keyTag.ZIndex = 6
 
-    local binding = false
     local function paintKey()
         local k = State.gameKeys[c.key]
-        if binding then
-            keyTag.Text = "press a key..."
-        elseif k then
+        if k then
             keyTag.Text = "key: " .. tostring(k):gsub("Enum%.KeyCode%.", "")
         else
             keyTag.Text = "no key"
@@ -11063,35 +11157,10 @@ for i, c in ipairs(CARDS) do
     gear.MouseEnter:Connect(function() gst.Transparency = 0.15 end)
     gear.MouseLeave:Connect(function() gst.Transparency = 0.7 end)
     gear.MouseButton1Click:Connect(function()
-        binding = not binding
-        paintKey()
-        if binding then
-            notify("Games", "Press a key for " .. c.title
-                   .. ", or Backspace to clear it.", 6)
-        end
+        openKeyPopup(c.key, c.title)
     end)
-
-    track(UserInputService.InputBegan:Connect(function(i, gp)
-        if not binding then return end
-        if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
-        binding = false
-        if i.KeyCode == Enum.KeyCode.Backspace then
-            State.gameKeys[c.key] = nil
-            notify("Games", c.title .. " key cleared.", 3)
-        else
-            -- one key per game; the same key on two cards would open both
-            for other, kc in pairs(State.gameKeys) do
-                if kc == i.KeyCode and other ~= c.key then
-                    State.gameKeys[other] = nil
-                end
-            end
-            State.gameKeys[c.key] = i.KeyCode
-            notify("Games", c.title .. "  ->  "
-                   .. tostring(i.KeyCode):gsub("Enum%.KeyCode%.", ""), 4)
-        end
-        paintKey()
-        for _, fn in ipairs(paints) do pcall(fn) end
-    end))
+    -- the card's own tag follows whatever the popup does
+    table.insert(kpRepaint, paintKey)
 
     local TW  = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
     local TWs = TweenInfo.new(0.34, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
@@ -11114,25 +11183,21 @@ for i, c in ipairs(CARDS) do
                                        or UDim2.new(1, 20, 1, 20),
         }):Play()
         TweenService:Create(cst, TW, {
-            Transparency = hovering and 0.08 or (here and 0.55 or 0.8),
-            Thickness = hovering and 2 or 1.5,
+            Transparency = hovering and 0 or (here and 0.35 or 0.68),
+            Thickness = hovering and 3.5 or 2.5,
         }):Play()
         TweenService:Create(innerSt, TW, {
-            Transparency = hovering and 0.6 or (here and 0.88 or 0.95),
+            Transparency = hovering and 0.45 or (here and 0.8 or 0.92),
         }):Play()
         TweenService:Create(glow, TW, {
-            Transparency = hovering and 0.15 or (here and 0.72 or 0.94),
+            Transparency = hovering and 0.05 or (here and 0.5 or 0.85),
+            Thickness = hovering and 6 or 4.5,
         }):Play()
         TweenService:Create(lift, TW, {
             Scale = hovering and (here and 1.035 or 1.012) or 1,
         }):Play()
         TweenService:Create(sheen, TW, {
             BackgroundTransparency = hovering and 0.7 or 0.86,
-        }):Play()
-        -- a lifted card casts a wider, softer shadow
-        TweenService:Create(shadow, TW, {
-            Size = hovering and UDim2.new(1, 22, 1, 22) or UDim2.new(1, 10, 1, 10),
-            BackgroundTransparency = hovering and 0.6 or 0.72,
         }):Play()
         t.TextColor3 = here and Color3.fromRGB(255, 255, 255)
                             or Color3.fromRGB(185, 185, 190)
@@ -11159,11 +11224,6 @@ for i, c in ipairs(CARDS) do
             Enum.EasingDirection.Out), {
             Position = UDim2.new(0.5, -rx * 16, 0.5, -ry * 12),
         }):Play()
-        TweenService:Create(shadow, TweenInfo.new(0.28, Enum.EasingStyle.Quart,
-            Enum.EasingDirection.Out), {
-            -- the shadow leans the other way, as if the light stayed put
-            Position = UDim2.new(0.5, rx * 8, 0.5, 5 + ry * 5),
-        }):Play()
     end)
 
     card.MouseEnter:Connect(function() hovering = true;  paint() end)
@@ -11173,8 +11233,6 @@ for i, c in ipairs(CARDS) do
         TweenService:Create(img, TWs, {
             Position = UDim2.new(0.5, 0, 0.5, 0),
             Size = UDim2.new(1, 20, 1, 20) }):Play()
-        TweenService:Create(shadow, TWs, {
-            Position = UDim2.new(0.5, 0, 0.5, 5) }):Play()
         paint()
     end)
 
