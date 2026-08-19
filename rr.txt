@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v128"
+SilenceAPI._version = "v129"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -772,15 +772,16 @@ local State = {
     -- hide=true blanks the body part the slot welds to, which is how Korblox
     -- replaces a leg instead of stacking on top of it.
     accSlots = {
+        { name="8-Bit Crown", id="10159600649", part="Head", hide=false, on=false },
+        { name="Korblox", id="139607718",  part="RightLeg", hide=true,  on=false },
         { name="Horn 1",  id="1744060292", part="Head",     hide=false, on=false },
         { name="Horn 2",  id="215718515",  part="Head",     hide=false, on=false },
         { name="Horn 3",  id="74891470",   part="Head",     hide=false, on=false },
-        { name="Korblox", id="139607718",  part="RightLeg", hide=true,  on=false },
         { name="Particles 1", id="128217885", part="Head",  hide=false, on=false },
         { name="Particles 2", id="141742418", part="Head",  hide=false, on=false },
         { name="Particles 3", id="226189871", part="Head",  hide=false, on=false },
         { name="Particles 4", id="150381051", part="Head",  hide=false, on=false },
-        { name="Spare 9", id="",           part="Torso",    hide=false, on=false },
+        { name="Spare 10", id="",          part="Torso",    hide=false, on=false },
     },
     noclip=false,
     antiFling=false, antiVoid=false,
@@ -19169,8 +19170,17 @@ local function applyConfig(cfg)
     end
 
     if type(cfg.accSlots) == "table" then
+        -- name first, index only as a fallback: a saved config must not be
+        -- able to reorder or rename the built-in slots just because the list
+        -- grew a new entry at the top since it was written
+        local byName = {}
+        for _, c in ipairs(cfg.accSlots) do
+            if type(c) == "table" and type(c.name) == "string" then
+                byName[c.name] = c
+            end
+        end
         for i, sl in ipairs(State.accSlots) do
-            local c = cfg.accSlots[i]
+            local c = byName[sl.name] or cfg.accSlots[i]
             if type(c) == "table" then
                 sl.name = tostring(c.name or sl.name)
                 sl.id   = tostring(c.id or ""):match("%d+") or ""
