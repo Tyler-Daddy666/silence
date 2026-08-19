@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v140"
+SilenceAPI._version = "v142"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -838,6 +838,7 @@ local State = {
     nametagsOn = true,
     espTeamCheck = false,
     vcBypass = false,         -- auto voice reconnect toggle (Misc tab)
+    micHold = false,          -- keep re-opening the mic when something mutes it
     vcSelfMuted = false,      -- local microphone mute (Voice tab)
     vcAutoMute = false,       -- cut the microphone on every server join
     -- Chat command that opens the admin panel. Deliberately NOT shown or
@@ -2081,6 +2082,16 @@ end
 
 local function setSlot(i, on)
     local sl = State.accSlots[i]; if not sl then return end
+    -- Refuse the switch rather than latching it. sl.on used to be set before
+    -- the id was checked and was never rolled back, so an empty slot went ON,
+    -- painted itself white, published itself to every other Silence user and
+    -- mounted nothing - indistinguishable on screen from a slot that really
+    -- is on.
+    if on and not tostring(sl.id or ""):match("%d+") then
+        sl.on = false
+        notify(sl.name, "No asset ID set for this slot", 3)
+        return
+    end
     sl.on = on and true or false
     syncCharConns()
     if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
@@ -8777,6 +8788,132 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
     SilenceAPI._vcAutoOn  = autoOn
     SilenceAPI._vcAutoOff = autoOff
 
+    ------------------------------------------------------------ HOLD MIC OPEN
+    -- The reconnect above is the wrong tool for a mute. It leaves, cycles the
+    -- microphone permission and rejoins - which is what you do for a DEAD
+    -- session. Being silenced is not a dead session: the session is fine and
+    -- something has simply paused your publish side or switched your input
+    -- device off.
+    --
+    -- Two mechanisms, and this watches both:
+    --   VoiceChatInternal:PublishPause(true)  - the old way
+    --   AudioDeviceInput.Active = false       - how modern Roblox does it
+    --
+    -- Neither is undone by rejoining. Both are undone by setting them back,
+    -- and by continuing to set them back, because whatever muted you may keep
+    -- trying. That tug of war is the whole feature.
+    local holdConns, holdN = {}, 0
+
+    local function micDevice()
+        local ok, d = pcall(function()
+            return LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
+        end)
+        return ok and d or nil
+    end
+
+    -- returns what it had to undo, or nil when nothing was wrong
+    local function unmuteOnce()
+        local did = nil
+        pcall(function()
+            local vci = svcOf("VoiceChatInternal")
+            if hasM(vci, "IsPublishPaused") and hasM(vci, "PublishPause") then
+                if vci:IsPublishPaused() then
+                    vci:PublishPause(false)
+                    did = "publish was paused"
+                end
+            end
+        end)
+        local d = micDevice()
+        if d then
+            pcall(function()
+                if d.Active == false then
+                    d.Active = true
+                    did = did or "input device was off"
+                end
+            end)
+            pcall(function()
+                if d.Muted == true then
+                    d.Muted = false
+                    did = did or "input device was muted"
+                end
+            end)
+        end
+        return did
+    end
+
+    local function holdOff()
+        for _, c in ipairs(holdConns) do pcall(function() c:Disconnect() end) end
+        holdConns = {}
+    end
+
+    local function holdOn()
+        holdOff()
+        -- React to the change rather than only polling for it, so the gap
+        -- between being muted and being unmuted is a frame and not a second.
+        pcall(function()
+            local d = micDevice()
+            if d then
+                holdConns[#holdConns+1] =
+                    d:GetPropertyChangedSignal("Active"):Connect(function()
+                        if State.micHold then unmuteOnce() end
+                    end)
+            end
+        end)
+        -- The device is replaced on respawn and when voice restarts, so the
+        -- signal above dies with it. This is what notices that and rebuilds.
+        task.spawn(function()
+            local lastDev = micDevice()
+            while State.micHold do
+                task.wait(0.5)
+                if not State.micHold then break end
+                local d = micDevice()
+                if d ~= lastDev then lastDev = d; holdOn(); return end
+                local why = unmuteOnce()
+                if why then
+                    holdN = holdN + 1
+                    SilenceAPI._micHoldNote =
+                        holdN .. "x  (last: " .. why .. ")"
+                end
+            end
+        end)
+    end
+
+    local function setMicHold(on)
+        State.micHold = on and true or false
+        holdN = 0
+        SilenceAPI._micHoldNote = nil
+        if State.micHold then holdOn() else holdOff() end
+    end
+    SilenceAPI._setMicHold = setMicHold
+    SilenceAPI._micHoldCount = function() return holdN end
+
+    sectionLabel(pVcBan, "HOLD MIC OPEN")
+    toggleRow(pVcBan, "Undo mutes as they happen",
+        function() return State.micHold end,
+        function(v) setMicHold(v) end)
+
+    local holdLbl = Instance.new("TextLabel", pVcBan)
+    holdLbl.Size = UDim2.new(1, 0, 0, 56)
+    holdLbl.BackgroundTransparency = 1
+    holdLbl.Text = "  Watches the two things that actually silence you - a"
+                .. " paused publish side, and an input device switched off -\n"
+                .. "  and sets them back. Reconnecting does not undo either,"
+                .. " which is why the switch above it does not help.\n"
+                .. "  This defeats a mute applied by THIS GAME. A voice ban on"
+                .. " the account is enforced where the audio is relayed, and"
+                .. " nothing on a client reaches that."
+    holdLbl.Font = Enum.Font.Gotham
+    holdLbl.TextSize = 10
+    holdLbl.TextWrapped = true
+    holdLbl.TextXAlignment = Enum.TextXAlignment.Left
+    holdLbl.TextYAlignment = Enum.TextYAlignment.Top
+    holdLbl.TextColor3 = Theme.textDim
+
+    buttonRow(pVcBan, "How often has it stepped in?", function()
+        notify("Voice", SilenceAPI._micHoldNote
+               or "Nothing has tried to mute you yet.", 6)
+    end)
+
     sectionLabel(pVcBan, "IS THIS ACCOUNT ALLOWED TO TALK")
     local elRow = Instance.new("Frame", pVcBan)
     elRow.Size = UDim2.new(1, 0, 0, 52)
@@ -10548,9 +10685,18 @@ local function flatBtn(parent, label, x, y, w, cb)
     -- A state button repaints itself when the theme is recoloured. Without
     -- this the accent pass would leave an ON button showing grey text on a
     -- white pill, because only the text is in the theme registry.
-    table.insert(SilenceAPI._toggleRefreshers, function()
-        if b.Parent and b:GetAttribute("SilOn") ~= nil then flatRest(b) end
-    end)
+    -- Releases its own slot the first time the button is found detached, so
+    -- a rebuilt player list does not pile up refreshers for buttons that no
+    -- longer exist.
+    SilenceAPI._noop = SilenceAPI._noop or function() end
+    local rslot = #SilenceAPI._toggleRefreshers + 1
+    SilenceAPI._toggleRefreshers[rslot] = function()
+        if not b.Parent then
+            SilenceAPI._toggleRefreshers[rslot] = SilenceAPI._noop
+            return
+        end
+        if b:GetAttribute("SilOn") ~= nil then flatRest(b) end
+    end
     b.MouseButton1Click:Connect(cb)
     return b
 end
@@ -10940,18 +11086,25 @@ local function rebuildOthers()
 
         for k, h in ipairs(HIDES) do
             local b
+            -- Publish the state as an attribute, the same way the slot rows
+            -- do. Painting the colours by hand is why these three went dark
+            -- again on hover-out and came back dim after every recolour:
+            -- flatBtn's MouseLeave and its theme refresher both read SilOn,
+            -- and neither could find one here.
+            local function hpaint()
+                local on = h.get(p) and true or false
+                b:SetAttribute("SilOn", on)
+                SilenceAPI._flatRest(b)
+                -- HIDDEN states what is true now. "HATS OFF" read equally as
+                -- a label and as the action the button would perform.
+                b.Text = on and (h.key .. " HIDDEN") or h.key
+            end
             b = flatBtn(r, h.key, 0, 7, 80, function()
-                local now = not h.get(p)
-                h.set(p, now)
-                b.BackgroundColor3 = now and Theme.accent or Theme.bg3
-                b.TextColor3 = now and Theme.bg or Theme.textDim
-                b.Text = now and (h.key .. " OFF") or h.key
+                h.set(p, not h.get(p))
+                hpaint()
             end)
             b.Position = UDim2.new(1, -262 + (k - 1) * 86, 0, 7)
-            local on = h.get(p)
-            b.BackgroundColor3 = on and Theme.accent or Theme.bg3
-            b.TextColor3 = on and Theme.bg or Theme.textDim
-            b.Text = on and (h.key .. " OFF") or h.key
+            hpaint()
         end
     end
     if n == 0 then
@@ -18990,6 +19143,9 @@ local APPLY = {
     headless     = function(v) SilenceAPI._setHeadless(v) end,
     accessoriesOn= function(v) SilenceAPI._setAccessories(v) end,
     vcBypass     = setVcBypass,
+    micHold      = function(v)
+        if SilenceAPI._setMicHold then SilenceAPI._setMicHold(v) end
+    end,
     vcAutoMute   = function(v) State.vcAutoMute = v end,
     allowJumpscare = function(v) State.allowJumpscare = v end,
     playerLog    = function(v) if SilenceAPI._setPlayerLog then SilenceAPI._setPlayerLog(v) end end,
@@ -19943,6 +20099,7 @@ function SilenceAPI.cleanup()
     pcall(stopTrolling); pcall(setHeadstand,false); pcall(setSpin,false)
     pcall(resetSkin); pcall(restoreFpsBoost)
     pcall(setVcBypass,false)   -- else its 1.5s Heartbeat loop survives unload
+    if SilenceAPI._setMicHold then pcall(SilenceAPI._setMicHold, false) end
     if SilenceAPI._larpCleanup     then pcall(SilenceAPI._larpCleanup)     end
     if SilenceAPI._worldCleanup    then pcall(SilenceAPI._worldCleanup)    end
     if SilenceAPI._setPlayerLog    then pcall(SilenceAPI._setPlayerLog, false) end
