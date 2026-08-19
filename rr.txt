@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v95"
+SilenceAPI._version = "v96"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -11402,6 +11402,10 @@ local function gameWindow(title, subtitle)
     SilenceAPI._modalWatch(W)
     return W
 end
+-- Reachable from later IIFEs. gameWindow is a local inside this block, and
+-- the animation-pack window wants the same shell - copying the chrome to
+-- get it would be the worse trade.
+SilenceAPI._gameWindow = gameWindow
 
 ------------------------------------------------------------ GERMAN VOICE
 do
@@ -16376,40 +16380,103 @@ if not _tagOk then
 end
 
 ----------------------------------------------------------------
--- TAB: ANIMPACK  -  wear a Roblox animation package
+-- TAB: ANIMPACK  ->  its own window
 --
--- There is no API for "equip this bundle" from a client. A Roblox animation
--- package is seven separate animation assets, and the way to wear one is to
--- overwrite the AnimationId on the Animation objects inside the character's
--- Animate script, then restart that script so it re-reads them. Animate
--- caches the ids once, in configureAnimationSet, and never looks again -
--- which is why writing the ids alone changes nothing until it reloads.
+-- There is no client API for "equip this bundle". A Roblox animation package
+-- is seven separate animation assets, and wearing one means overwriting the
+-- AnimationId on the Animation objects inside the character's Animate script,
+-- then restarting that script. Animate caches the ids once, in
+-- configureAnimationSet, and never looks again - which is why writing them
+-- alone changes nothing until it reloads.
+--
+-- On the ids themselves: a bundle page lists CONTAINER items (asset types
+-- 48-55, "Zombie Idle"), not animations. Assigning a container id to
+-- AnimationId gives you a character that silently does not animate - the
+-- single most common way these lists are wrong. Every number below is the
+-- type-24 animation id read out of the container the bundle actually ships.
 ----------------------------------------------------------------
 ;(function()
 local pAnim = addTab("AnimPack")
 
 local PACKS = {
-    -- R15 asset ids for the stock Roblox packages
-    { name = "Zombie",
-      idle = 616158929, walk = 616168032, run   = 616163682,
-      jump = 616161997, fall = 616157476, climb = 616156119,
-      swim = 616165109 },
+    -- the 2017 launch batch
+    { n="Zombie",     idle=616158929,  walk=616168032,  run=616163682,
+      jump=616161997,  fall=616157476,  climb=616156119,  swim=616165109  },
+    { n="Robot",      idle=616088211,  walk=616095330,  run=616091570,
+      jump=616090535,  fall=616087089,  climb=616086039,  swim=616092998  },
+    { n="Levitation", idle=616006778,  walk=616013216,  run=616010382,
+      jump=616008936,  fall=616005863,  climb=616003713,  swim=616011509  },
+    { n="Stylish",    idle=616136790,  walk=616146177,  run=616140816,
+      jump=616139451,  fall=616134815,  climb=616133594,  swim=616143378  },
+    { n="Ninja",      idle=656117400,  walk=656121766,  run=656118852,
+      jump=656117878,  fall=656115606,  climb=656114359,  swim=656119721  },
+    { n="Cartoony",   idle=742637544,  walk=742640026,  run=742638842,
+      jump=742637942,  fall=742637151,  climb=742636889,  swim=742639220  },
+    { n="Pirate",     idle=750781874,  walk=750785693,  run=750783738,
+      jump=750782230,  fall=750780242,  climb=750779899,  swim=750784579  },
+    { n="Toy",        idle=782841498,  walk=782843345,  run=782842708,
+      jump=782847020,  fall=782846423,  climb=782843869,  swim=782844582  },
+    { n="Elder",      idle=845397899,  walk=845403856,  run=845386501,
+      jump=845398858,  fall=845396048,  climb=845392038,  swim=845401742  },
+    { n="Astronaut",  idle=891621366,  walk=891667138,  run=891636393,
+      jump=891627522,  fall=891617961,  climb=891609353,  swim=891639666  },
+    { n="Bubbly",     idle=910004836,  walk=910034870,  run=910025107,
+      jump=910016857,  fall=910001910,  climb=909997997,  swim=910028158  },
+    { n="Princess",   idle=941003647,  walk=941028902,  run=941015281,
+      jump=941008832,  fall=941000007,  climb=940996062,  swim=941018893  },
+    { n="Confident",  idle=1069977950, walk=1070017263, run=1070001516,
+      jump=1069984524, fall=1069973677, climb=1069946257, swim=1070009914 },
+    { n="Sneaky",     idle=1132473842, walk=1132510133, run=1132494274,
+      jump=1132489853, fall=1132469004, climb=1132461372, swim=1132500520 },
+    { n="Popstar",    idle=1212900985, walk=1212980338, run=1212980348,
+      jump=1212954642, fall=1212900995, climb=1213044953, swim=1212852603 },
+    { n="Rthro",      idle=2510196951, walk=2510202577, run=2510198475,
+      jump=2510197830, fall=2510195892, climb=2510192778, swim=2510199791 },
+    -- the 2022 re-upload batch: Roblox repointed these bundles at new
+    -- Locomotion_* assets, so the numbers circulating for them are stale
+    { n="Knight",     idle=10921117521, walk=10921127095, run=10921121197,
+      jump=10921123517, fall=10921122579, climb=10921116196, swim=10921125160 },
+    { n="Mage",       idle=10921144709, walk=10921152678, run=10921148209,
+      jump=10921149743, fall=10921148939, climb=10921143404, swim=10921150788 },
+    { n="Old School", idle=10921230744, walk=10921244891, run=10921240218,
+      jump=10921242013, fall=10921241244, climb=10921229866, swim=10921243048 },
+    { n="Superhero",  idle=10921288909, walk=10921298616, run=10921291831,
+      jump=10921294559, fall=10921293373, climb=10921286911, swim=10921295495 },
+    { n="Vampire",    idle=10921315373, walk=10921326949, run=10921320299,
+      jump=10921322186, fall=10921321317, climb=10921314188, swim=10921324408 },
+    -- Werewolf jump is the one slot Roblox forgot to repoint when it
+    -- re-uploaded the rest, so the bundle still serves the 2017 asset here.
+    -- Deliberate, not a typo.
+    { n="Werewolf",   idle=10921330408, walk=10921342074, run=10921336997,
+      jump=1083218792,  fall=10921337907, climb=10921329322, swim=10921340419 },
+    { n="Bold",       idle=16738333868, walk=16738340646, run=16738337225,
+      jump=16738336650, fall=16738333171, climb=16738332169, swim=16738339158 },
+    { n="Adidas",     idle=18537376492, walk=18537392113, run=18537384940,
+      jump=18537380791, fall=18537367238, climb=18537363391, swim=18537389531 },
+    { n="Wicked",     idle=118832222982049, walk=92072849924640,
+      run=72301599441680, jump=104325245285198, fall=121152442762481,
+      climb=131326830509784, swim=99384245425157 },
+    { n="Catwalk Glam", idle=133806214992291, walk=109168724482748,
+      run=81024476153754, jump=116936326516985, fall=92294537340807,
+      climb=119377220967554, swim=134591743181628 },
 }
 SilenceAPI._animPacks = PACKS
 
+local SLOTS = { "idle", "walk", "run", "jump", "fall", "climb", "swim" }
+
 -- Animate's children are named after the movement state. swimidle has no id
--- of its own in these packages, so it borrows the swim one rather than being
--- left on the default and standing out mid-water.
+-- of its own here, so it borrows the swim one rather than being left on the
+-- default and standing out mid-water.
 local MAP = {
     idle = "idle", walk = "walk", run = "run", jump = "jump",
     fall = "fall", climb = "climb", swim = "swim", swimidle = "swim",
 }
 
--- What the character had before we ever touched it. Captured once, from the
--- first Animate script we see, and keyed by name rather than by instance:
--- a respawn hands you brand new objects, and holding references to the old
--- ones would make the OFF switch a one-way door.
+-- What the character had before we touched it. Captured once and keyed by
+-- name, not by instance: a respawn hands you brand new objects, and holding
+-- references to the old ones would make the OFF switch a one-way door.
 local orig = nil
+local score = {}   -- [pack name] = { ok = n, bad = { "run", ... } }
 
 local function capture(an)
     if orig then return end
@@ -16424,7 +16491,7 @@ local function capture(an)
 end
 
 local function packByName(n)
-    for _, p in ipairs(PACKS) do if p.name == n then return p end end
+    for _, p in ipairs(PACKS) do if p.n == n then return p end end
     return nil
 end
 
@@ -16471,34 +16538,151 @@ local function applyPack()
     if not an then
         return false, "this game replaced the Animate script - nothing to edit"
     end
-    -- An emote has Animate disabled on purpose and is driving the rig
-    -- itself. Restarting Animate underneath it would cut the emote off.
+    -- An emote has Animate disabled on purpose and is driving the rig itself.
+    -- Restarting Animate underneath it would cut the emote off mid-play.
     if State.currentEmote then
         return false, "stop the emote first, it is driving the rig"
     end
     capture(an)
     local pack = State.animPack and packByName(State.animPackName) or nil
-    if State.animPack and not pack then
-        return false, "no pack selected"
-    end
+    if State.animPack and not pack then return false, "no pack selected" end
     writeIds(an, pack)
     restart(char, an)
     return true
 end
 SilenceAPI._applyAnimPack = applyPack
 
+-- Roblox leaves AnimationTrack.Length at 0 when it refuses an asset - wrong
+-- type, wrong rig, or an id that does not exist. That is the only signal a
+-- client gets, and without it a bad id is indistinguishable from a working
+-- one that simply looks similar. All seven load at once and wait together,
+-- so a pack costs one timeout rather than seven.
+local function verifyPack(p, done)
+    task.spawn(function()
+        local char = getChar()
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local animator = hum and hum:FindFirstChildOfClass("Animator")
+        if not animator then done(nil) return end
+        local trks = {}
+        for _, k in ipairs(SLOTS) do
+            local a = Instance.new("Animation")
+            a.AnimationId = "rbxassetid://" .. tostring(p[k])
+            local okL, t = pcall(function() return animator:LoadAnimation(a) end)
+            trks[k] = (okL and t) or false
+            pcall(function() a:Destroy() end)
+        end
+        local waited = 0
+        while waited < 3 do
+            local pending = false
+            for _, k in ipairs(SLOTS) do
+                local t = trks[k]
+                if t and (t.Length == nil or t.Length == 0) then pending = true end
+            end
+            if not pending then break end
+            task.wait(0.15); waited = waited + 0.15
+        end
+        local ok, bad = 0, {}
+        for _, k in ipairs(SLOTS) do
+            local t = trks[k]
+            if t and t.Length and t.Length > 0 then ok = ok + 1
+            else bad[#bad + 1] = k end
+            if t then pcall(function() t:Destroy() end) end
+        end
+        score[p.n] = { ok = ok, bad = bad }
+        done(ok, bad)
+    end)
+end
+
+----------------------------------------------------------------- WINDOW
+local AW = SilenceAPI._gameWindow("ANIMATION PACKS",
+    #PACKS .. " stock Roblox packages, written into your Animate script")
+AW.Size = UDim2.new(0, 660, 0, 580)
+AW.Position = UDim2.new(0.5, -330, 0.5, -290)
+
+local search = Instance.new("TextBox", AW)
+search.Size = UDim2.new(1, -320, 0, 30); search.Position = UDim2.new(0, 20, 0, 54)
+search.BorderSizePixel = 0
+search.Text = ""
+search.PlaceholderText = "search packs..."
+search.Font = Enum.Font.Gotham; search.TextSize = 12
+search.TextXAlignment = Enum.TextXAlignment.Left
+search.ClearTextOnFocus = false
+search.ZIndex = 400
+corner(search, 8); padding(search, 0, 0, 10, 10)
+SilenceAPI._theme(search, "BackgroundColor3", "bg2")
+SilenceAPI._theme(search, "TextColor3", "text")
+SilenceAPI._theme(search, "PlaceholderColor3", "textDim")
+
+local function topBtn(label, xFromRight, w, cb)
+    local b = Instance.new("TextButton", AW)
+    b.Size = UDim2.new(0, w, 0, 30)
+    b.Position = UDim2.new(1, xFromRight, 0, 54)
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.Font = Enum.Font.GothamBold; b.TextSize = 11
+    b.AutoButtonColor = false
+    b.ZIndex = 400
+    corner(b, 8)
+    local bs = stroke(b, Theme.accent, 1, 0.6)
+    SilenceAPI._theme(b, "BackgroundColor3", "bg2")
+    SilenceAPI._theme(b, "TextColor3", "text")
+    b.MouseEnter:Connect(function() bs.Transparency = 0.1 end)
+    b.MouseLeave:Connect(function() bs.Transparency = 0.6 end)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+local status = Instance.new("TextLabel", AW)
+status.Size = UDim2.new(1, -40, 0, 14); status.Position = UDim2.new(0, 20, 0, 90)
+status.BackgroundTransparency = 1
+status.Text = ""
+status.Font = Enum.Font.Gotham; status.TextSize = 10
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.ZIndex = 400
+SilenceAPI._theme(status, "TextColor3", "textDim")
+
+local list = Instance.new("ScrollingFrame", AW)
+list.Size = UDim2.new(1, -40, 1, -172); list.Position = UDim2.new(0, 20, 0, 110)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.ZIndex = 400
+local lay = Instance.new("UIListLayout", list)
+lay.Padding = UDim.new(0, 4); lay.SortOrder = Enum.SortOrder.LayoutOrder
+
+local foot = Instance.new("TextLabel", AW)
+foot.Size = UDim2.new(1, -40, 0, 40); foot.Position = UDim2.new(0, 20, 1, -50)
+foot.BackgroundTransparency = 1
+foot.Text = "R15 only - Roblox never authored these for R6. Survives respawn,"
+         .. " reverts on unload.\nVERIFY loads all seven animations and counts"
+         .. " the ones Roblox actually hands back."
+foot.Font = Enum.Font.Gotham; foot.TextSize = 10
+foot.TextXAlignment = Enum.TextXAlignment.Left
+foot.TextYAlignment = Enum.TextYAlignment.Top
+foot.TextWrapped = true
+foot.ZIndex = 400
+SilenceAPI._theme(foot, "TextColor3", "textDim")
+
+local paints = {}
+local function repaintAll()
+    for _, fn in ipairs(paints) do pcall(fn) end
+end
+
 local function setPack(on)
     State.animPack = on and true or false
     if on then
-        -- Roblox authored every one of these packages for R15 only. On an R6
-        -- rig the assets simply refuse to load and you get a character that
-        -- moves normally with no error anywhere - so say it out loud.
-        local hum = getChar() and getChar():FindFirstChildOfClass("Humanoid")
+        -- Roblox authored every one of these for R15. On an R6 rig the assets
+        -- refuse to load and you get a character that moves normally with no
+        -- error anywhere, so say it out loud instead.
+        local c = getChar()
+        local hum = c and c:FindFirstChildOfClass("Humanoid")
         if hum and hum.RigType == Enum.HumanoidRigType.R6 then
             State.animPack = false
-            notify("Anim Pack",
-                   "You are on an R6 rig. Roblox animation packages are R15"
-                   .. " only, so this cannot apply here.", 7)
+            notify("Anim Pack", "You are on an R6 rig. Roblox animation"
+                   .. " packages are R15 only, so this cannot apply here.", 7)
+            repaintAll()
             for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
             return
         end
@@ -16507,41 +16691,165 @@ local function setPack(on)
     if on and not ok then
         State.animPack = false
         notify("Anim Pack", tostring(why or "could not apply"), 6)
-    elseif ok then
-        notify("Anim Pack", on and (tostring(State.animPackName) .. " on")
-                              or "back to the default animations", 3)
     end
+    repaintAll()
     for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
 end
 SilenceAPI._setAnimPack = setPack
 
-sectionLabel(pAnim, "ANIMATION PACK")
-toggleRow(pAnim, "Wear an animation pack",
-    function() return State.animPack end,
-    function(v) setPack(v) end)
+local offBtn = topBtn("OFF", -290, 84, function()
+    if State.animPack then setPack(false)
+    else notify("Anim Pack", "Already on your default animations.", 3) end
+end)
 
-sectionLabel(pAnim, "PACKS")
-for _, p in ipairs(PACKS) do
-    toggleRow(pAnim, p.name,
-        function() return State.animPackName == p.name end,
-        function(v)
-            State.animPackName = v and p.name or nil
-            if State.animPack then pcall(applyPack) end
-            for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
-        end)
-end
+local busy = false
+topBtn("VERIFY ALL", -196, 92, function()
+    if busy then return end
+    local c = getChar()
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not (hum and hum:FindFirstChildOfClass("Animator")) then
+        notify("Anim Pack", "No animator on your character to test with.", 4)
+        return
+    end
+    busy = true
+    task.spawn(function()
+        for i, p in ipairs(PACKS) do
+            status.Text = "verifying " .. i .. " / " .. #PACKS .. "   " .. p.n
+            local waitFor = true
+            verifyPack(p, function() waitFor = false end)
+            local w = 0
+            while waitFor and w < 6 do task.wait(0.1); w = w + 0.1 end
+            repaintAll()
+        end
+        local good = 0
+        for _, p in ipairs(PACKS) do
+            local sc = score[p.n]
+            if sc and sc.ok == #SLOTS then good = good + 1 end
+        end
+        status.Text = "done - " .. good .. " of " .. #PACKS
+                      .. " packs loaded all seven animations"
+        busy = false
+    end)
+end)
 
-buttonRow(pAnim, "Re-apply Now", function()
+topBtn("RE-APPLY", -98, 78, function()
     local ok, why = applyPack()
     notify("Anim Pack", ok and "Applied." or tostring(why), ok and 3 or 6)
 end)
 
+----------------------------------------------------------------- ROWS
+for i, p in ipairs(PACKS) do
+    local row = Instance.new("TextButton", list)
+    row.Size = UDim2.new(1, -6, 0, 34)
+    row.BorderSizePixel = 0
+    row.Text = ""
+    row.AutoButtonColor = false
+    row.LayoutOrder = i
+    row.ZIndex = 401
+    corner(row, 8)
+    SilenceAPI._theme(row, "BackgroundColor3", "bg2")
+    local rs = stroke(row, Theme.accent, 1, 1)
+
+    local nm = Instance.new("TextLabel", row)
+    nm.Size = UDim2.new(1, -170, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
+    nm.BackgroundTransparency = 1
+    nm.Text = p.n
+    nm.Font = Enum.Font.GothamMedium; nm.TextSize = 12
+    nm.TextXAlignment = Enum.TextXAlignment.Left
+    nm.ZIndex = 402
+    SilenceAPI._theme(nm, "TextColor3", "text")
+
+    local sc = Instance.new("TextLabel", row)
+    sc.Size = UDim2.new(0, 54, 1, 0); sc.Position = UDim2.new(1, -142, 0, 0)
+    sc.BackgroundTransparency = 1
+    sc.Font = Enum.Font.Code; sc.TextSize = 11
+    sc.TextXAlignment = Enum.TextXAlignment.Right
+    sc.ZIndex = 402
+
+    local wear = Instance.new("TextButton", row)
+    wear.Size = UDim2.new(0, 72, 0, 24); wear.Position = UDim2.new(1, -80, 0.5, -12)
+    wear.BorderSizePixel = 0
+    wear.Font = Enum.Font.GothamBold; wear.TextSize = 10
+    wear.AutoButtonColor = false
+    wear.ZIndex = 403
+    corner(wear, 6)
+
+    local function paint()
+        local worn = State.animPack and State.animPackName == p.n
+        rs.Transparency = worn and 0.1 or 1
+        wear.Text = worn and "WORN" or "WEAR"
+        wear.BackgroundColor3 = worn and Theme.accent or Theme.bg3
+        wear.TextColor3 = worn and Theme.bg or Theme.textDim
+        local s2 = score[p.n]
+        if not s2 then
+            sc.Text = ""
+        else
+            sc.Text = s2.ok .. "/" .. #SLOTS
+            if s2.ok == #SLOTS then
+                sc.TextColor3 = Color3.fromRGB(120, 220, 140)
+            elseif s2.ok == 0 then
+                sc.TextColor3 = Color3.fromRGB(235, 90, 90)
+            else
+                sc.TextColor3 = Color3.fromRGB(240, 190, 90)
+            end
+        end
+    end
+    paints[#paints + 1] = paint
+
+    local function choose()
+        if State.animPack and State.animPackName == p.n then
+            setPack(false)
+            return
+        end
+        State.animPackName = p.n
+        setPack(true)
+    end
+    row.MouseButton1Click:Connect(choose)
+    wear.MouseButton1Click:Connect(choose)
+
+    row.MouseEnter:Connect(function()
+        if not (State.animPack and State.animPackName == p.n) then
+            rs.Transparency = 0.55
+        end
+    end)
+    row.MouseLeave:Connect(function()
+        if not (State.animPack and State.animPackName == p.n) then
+            rs.Transparency = 1
+        end
+    end)
+
+    -- the search filters by hiding rows; UIListLayout closes the gaps itself
+    row:SetAttribute("SilPack", string.lower(p.n))
+    paint()
+end
+
+search:GetPropertyChangedSignal("Text"):Connect(function()
+    local q = string.lower(tostring(search.Text or ""))
+    local shown = 0
+    for _, r in ipairs(list:GetChildren()) do
+        local nmA = r:GetAttribute("SilPack")
+        if nmA then
+            local hit = (q == "") or (string.find(nmA, q, 1, true) ~= nil)
+            r.Visible = hit
+            if hit then shown = shown + 1 end
+        end
+    end
+    status.Text = (q == "") and "" or (shown .. " of " .. #PACKS .. " match")
+end)
+
+SilenceAPI._openAnimPacks = function() AW.Visible = not AW.Visible end
+
+----------------------------------------------------------------- THE TAB
+sectionLabel(pAnim, "ANIMATION PACKS")
+buttonRow(pAnim, "Open Animation Packs", function()
+    SilenceAPI._openAnimPacks()
+end)
+
 local aHint = Instance.new("TextLabel", pAnim)
-aHint.Size = UDim2.new(1, 0, 0, 46)
+aHint.Size = UDim2.new(1, 0, 0, 34)
 aHint.BackgroundTransparency = 1
-aHint.Text = "  These are the stock Roblox packages, written straight into"
-          .. " your Animate script.\n  R15 only - Roblox never authored them"
-          .. " for R6. It survives respawns and reverts on unload."
+aHint.Text = "  Every stock Roblox package, written straight into your Animate"
+          .. " script.\n  R15 only. Survives respawn, reverts on unload."
 aHint.Font = Enum.Font.Gotham
 aHint.TextSize = 10
 aHint.TextWrapped = true
@@ -16549,9 +16857,9 @@ aHint.TextXAlignment = Enum.TextXAlignment.Left
 aHint.TextYAlignment = Enum.TextYAlignment.Top
 aHint.TextColor3 = Theme.textDim
 
--- A respawn hands back a stock Animate script with stock ids, so the pack
--- has to be written again. The wait lets the game finish building the rig -
--- editing Animate while it is still assembling gets overwritten.
+-- A respawn hands back a stock Animate script with stock ids, so the pack has
+-- to be written again. The wait lets the game finish building the rig -
+-- editing Animate while it is still assembling just gets overwritten.
 track(LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1.2)
     if State.animPack then pcall(applyPack) end
