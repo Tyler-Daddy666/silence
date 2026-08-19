@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v59"
+SilenceAPI._version = "v62"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -414,6 +414,17 @@ function SilenceAPI._modalOpen()
     for _, w in ipairs(SilenceAPI._modalWindows or {}) do
         if w and w.Parent and w.Visible then return true end
     end
+    return false
+end
+
+-- The overhead tag is a BillboardGui: it lives in the world, so no Frame can
+-- stop a click reaching it however high its ZIndex. It has to check for
+-- itself - and the MAIN panel counts too, not just the pop-up windows. With
+-- only _modalOpen the tag still answered clicks aimed at the panel, and the
+-- tag editor opened from under it.
+function SilenceAPI._uiBlocking()
+    if SilenceAPI._modalOpen() then return true end
+    if SilenceAPI._mainVisible and SilenceAPI._mainVisible() then return true end
     return false
 end
 
@@ -5655,9 +5666,10 @@ local TAB_CATEGORY = {
     IMPORTANT = "Home",   Founder       = "Home",
     Player    = "Self",   Skins         = "Self",   ["FPS Boost"] = "Self",
     Sky       = "Self",
-    Avatar    = "Larp",   Roleplay      = "Larp",   Trolling      = "Larp",
+    Avatar    = "Larp",   Roleplay      = "Larp",
     Studio    = "Larp",
-    Aimbot    = "Combat", Visual        = "Combat", Players       = "Combat",
+    Aimbot    = "Combat", Visual        = "Combat",
+    Players   = "People", Trolling      = "People",
     Misc      = "System", AntiCheat     = "System", Hotkeys       = "System",
     Config    = "System", Logs          = "System",
     ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
@@ -5669,6 +5681,7 @@ local CATEGORIES = {
     { key="Self",   label="SELF",   icon="self"   },
     { key="Larp",   label="LARP",   icon="larp"   },
     { key="Combat", label="COMBAT", icon="combat" },
+    { key="People", label="PEOPLE", icon="people" },
     { key="Games",  label="GAMES",  icon="games"  },
     { key="Voice",  label="VOICE",  icon="voice"  },
     { key="System", label="SYSTEM", icon="system" },
@@ -5677,8 +5690,9 @@ local CATEGORIES = {
 local TAB_LO_INSIDE = {
     IMPORTANT = 1, Founder = 2,
     Player = 1, Skins = 2, Sky = 3, ["FPS Boost"] = 4,
-    Studio = 0, Avatar = 1, Roleplay = 2, Trolling = 3,
-    Aimbot = 1, Visual = 2, Players = 3,
+    Studio = 0, Avatar = 1, Roleplay = 2,
+    Aimbot = 1, Visual = 2,
+    Players = 1, Trolling = 2,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
     ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
     ["German Voice"] = 1,
@@ -5774,6 +5788,9 @@ local function makeRailButton(cat)
         dot(4, 11, 11)
         px(2,5, 12, 0, 1); px(2,5, 12,21, 1)
         px(5,2,  0,12, 1); px(5,2, 21,12, 1)
+    elseif cat.icon == "people" then    -- two figures, one behind the other
+        dot(8, 3, 1); px(14, 9, 0, 12, 4)
+        dot(7, 15, 3); px(11, 8, 14, 13, 4)
     elseif cat.icon == "games" then     -- a gamepad: body, dpad, two buttons
         px(26, 12, 0, 7, 5)
         px(2, 6, 5, 10, 1); px(6, 2, 3, 12, 1)
@@ -10191,6 +10208,123 @@ do
     end)
 end
 
+------------------------------------------------------------ bulk ids
+cap("ACCESSORY ID LISTS")
+do
+    order = order + 1
+    local r = Instance.new("Frame", left)
+    r.Size = UDim2.new(1, -6, 0, 96)
+    r.BorderSizePixel = 0
+    r.LayoutOrder = order
+    r.ZIndex = 192
+    corner(r, 9)
+    SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+    local function idRow(label, y, get, set)
+        local l = Instance.new("TextLabel", r)
+        l.Size = UDim2.new(0, 90, 0, 22); l.Position = UDim2.new(0, 12, 0, y)
+        l.BackgroundTransparency = 1
+        l.Text = label
+        l.Font = Enum.Font.GothamMedium; l.TextSize = 11
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.ZIndex = 193
+        SilenceAPI._theme(l, "TextColor3", "textDim")
+
+        local box = Instance.new("TextBox", r)
+        box.Size = UDim2.new(1, -120, 0, 22); box.Position = UDim2.new(0, 106, 0, y)
+        box.BackgroundTransparency = 1
+        box.Text = table.concat(get(), ", ")
+        box.PlaceholderText = "comma separated asset ids"
+        box.Font = Enum.Font.Code; box.TextSize = 11
+        box.TextXAlignment = Enum.TextXAlignment.Left
+        box.ClearTextOnFocus = false
+        box.ZIndex = 193
+        SilenceAPI._theme(box, "TextColor3", "text")
+        box.FocusLost:Connect(function()
+            set(SilenceAPI._parseIdList(box.Text))
+            box.Text = table.concat(get(), ", ")
+            refreshPreview()
+        end)
+    end
+    idRow("HEAD",  10, function() return State.accHead end,
+                       function(v) State.accHead = v end)
+    idRow("TORSO", 38, function() return State.accTorso end,
+                       function(v) State.accTorso = v end)
+
+    flatBtn(r, "APPLY LIST", 12, 66, 110, function()
+        if SilenceAPI._reapplyAccessories then
+            SilenceAPI._setAccessories(true)
+            SilenceAPI._reapplyAccessories()
+        end
+        refreshPreview()
+    end)
+    flatBtn(r, "ALL SLOTS ON", 130, 66, 118, function()
+        for i = 1, #State.accSlots do
+            if tostring(State.accSlots[i].id or ""):match("%d+") then
+                SilenceAPI._setSlot(i, true)
+            end
+        end
+        for _, fn in ipairs(slotPaints) do fn() end
+        refreshPreview()
+    end)
+    flatBtn(r, "ALL SLOTS OFF", 256, 66, 118, function()
+        if SilenceAPI._slotsOff then SilenceAPI._slotsOff() end
+        for _, fn in ipairs(slotPaints) do fn() end
+        refreshPreview()
+    end)
+end
+
+------------------------------------------------------------ walk + presets
+cap("WALK AND SIZE")
+do
+    order = order + 1
+    local r = Instance.new("Frame", left)
+    r.Size = UDim2.new(1, -6, 0, 70)
+    r.BorderSizePixel = 0
+    r.LayoutOrder = order
+    r.ZIndex = 192
+    corner(r, 9)
+    SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+    local walk = Instance.new("TextBox", r)
+    walk.Size = UDim2.new(0, 200, 0, 22); walk.Position = UDim2.new(0, 12, 0, 10)
+    walk.BackgroundTransparency = 1
+    walk.Text = tostring(State.walkAnimId or "")
+    walk.PlaceholderText = "walk animation id"
+    walk.Font = Enum.Font.Code; walk.TextSize = 11
+    walk.TextXAlignment = Enum.TextXAlignment.Left
+    walk.ClearTextOnFocus = false
+    walk.ZIndex = 193
+    SilenceAPI._theme(walk, "TextColor3", "text")
+    walk.FocusLost:Connect(function()
+        if SilenceAPI._setWalkAnimId then SilenceAPI._setWalkAnimId(walk.Text) end
+    end)
+
+    flatBtn(r, "RESET WALK", 220, 10, 100, function()
+        if SilenceAPI._setWalkAnimId then SilenceAPI._setWalkAnimId("") end
+        walk.Text = ""
+    end)
+
+    flatBtn(r, "GIANT", 12, 40, 76, function()
+        SilenceAPI._setBodyScale(2.5); refreshPreview()
+    end)
+    flatBtn(r, "TINY", 96, 40, 76, function()
+        SilenceAPI._setBodyScale(0.4); refreshPreview()
+    end)
+    flatBtn(r, "RESET AVATAR", 180, 40, 120, function()
+        SilenceAPI._setBodyScale(1)
+        SilenceAPI._setAccessories(false)
+        SilenceAPI._setHeadless(false)
+        SilenceAPI._setGhost(false)
+        SilenceAPI._setInvisParts(false)
+        if SilenceAPI._slotsOff then SilenceAPI._slotsOff() end
+        SilenceAPI._setFace("")
+        for _, fn in ipairs(slotPaints) do fn() end
+        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+        refreshPreview()
+    end)
+end
+
 ------------------------------------------------------------ RIGHT: PREVIEW
 local vpBox = Instance.new("Frame", LS)
 vpBox.Size = UDim2.new(0, 350, 0, 300)
@@ -10418,9 +10552,15 @@ SilenceAPI._lsOnPage = function(k)
 end
 
 addStudioTab("COSTUME", "COSTUME")
-local pgAv = adopt("Avatar");   if pgAv then addStudioTab("AVATAR",   "AVATAR",   pgAv)  end
-local pgRp = adopt("Roleplay"); if pgRp then addStudioTab("ROLEPLAY", "ROLEPLAY", pgRp)  end
-local pgTr = adopt("Trolling"); if pgTr then addStudioTab("TROLLING", "TROLLING", pgTr)  end
+-- Avatar is NOT adopted: everything on it either already exists on COSTUME
+-- or has been rebuilt there, so carrying the page across would have shown
+-- the same switches twice with two separate paint routines going stale
+-- against each other. Its tab is simply hidden.
+do
+    local t = SilenceAPI._tabs and SilenceAPI._tabs["Avatar"]
+    if t and t.btn then t.btn.Visible = false end
+end
+local pgRp = adopt("Roleplay"); if pgRp then addStudioTab("ROLEPLAY", "ROLEPLAY", pgRp) end
 addStudioTab("PLAYERS", "PLAYERS")
 
 -- one tab left in the panel, and it does nothing but open this window
@@ -11706,8 +11846,8 @@ local _tagOk, _tagErr = pcall(function()
             clickArea.Selectable = true
             clickArea.ZIndex = 50
             local function onClick()
-                -- a window is over the screen; this click was meant for it
-                if SilenceAPI._modalOpen and SilenceAPI._modalOpen() then return end
+                -- something of ours is on screen; this click was meant for it
+                if SilenceAPI._uiBlocking and SilenceAPI._uiBlocking() then return end
                 if TagSettingsPopup then
                     TagSettingsPopup.Visible = not TagSettingsPopup.Visible
                 end
@@ -13549,6 +13689,7 @@ local _tagOk, _tagErr = pcall(function()
     local selfOwns  = false
 
     local function tagKnownPlayers()
+        if State.tagsHidden then return end
         for _, p in ipairs(Players:GetPlayers()) do
             if knownUsers[p.UserId] and not silenceUsers[p] then
                 tagUser(p)
@@ -13791,7 +13932,11 @@ local _tagOk, _tagErr = pcall(function()
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
             if changed[p.UserId] then
-                if silenceUsers[p] then paintTag(p) end
+                -- HIDE ALL TAGS has to survive a poll. paintTag already
+                -- refuses while hidden, but tagKnownPlayers below would
+                -- happily re-tag somebody who fell off the presence list and
+                -- came back, and then their card was on screen again.
+                if silenceUsers[p] and not State.tagsHidden then paintTag(p) end
                 -- Your own name changing is almost always somebody ELSE
                 -- having changed it, so the editor has to be told. It only
                 -- refreshed on a local admin-panel click before, which is
@@ -14156,6 +14301,12 @@ local _tagOk, _tagErr = pcall(function()
     SilenceAPI._ownsScriptPass = ownsScriptPass
     SilenceAPI._setTagsHidden = function(hidden)
         State.tagsHidden = hidden
+        -- Sweep by name as well as by registry. activeTags only knows what
+        -- the last build put in it; anything created by another path would
+        -- otherwise sit over somebody's head with nothing referencing it.
+        if hidden and SilenceAPI._destroyTags then
+            pcall(SilenceAPI._destroyTags)
+        end
         if hidden then
             for p, _ in pairs(activeTags) do destroyTag(p) end
         else
