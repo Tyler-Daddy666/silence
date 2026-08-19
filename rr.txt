@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v66"
+SilenceAPI._version = "v67"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10430,7 +10430,7 @@ end
 local vpCap = Instance.new("TextLabel", vpBox)
 vpCap.Size = UDim2.new(1, -20, 0, 14); vpCap.Position = UDim2.new(0, 12, 0, 8)
 vpCap.BackgroundTransparency = 1
-vpCap.Text = "LIVE PREVIEW"
+vpCap.Text = "LIVE PREVIEW   drag to turn, wheel to zoom"
 vpCap.Font = Enum.Font.GothamBold; vpCap.TextSize = 9
 vpCap.TextXAlignment = Enum.TextXAlignment.Left
 vpCap.ZIndex = 194
@@ -10451,7 +10451,54 @@ local vpCam = Instance.new("Camera")
 vpCam.Parent = vp
 vp.CurrentCamera = vpCam
 
-local clone, spin = nil, 0
+-- A ViewportFrame is not an input surface, so a transparent button sits on
+-- top of it and collects the wheel and the drag instead.
+local vpHit = Instance.new("TextButton", vpBox)
+vpHit.Size = UDim2.new(1, -20, 1, -34)
+vpHit.Position = UDim2.new(0, 10, 0, 24)
+vpHit.BackgroundTransparency = 1
+vpHit.Text = ""
+vpHit.AutoButtonColor = false
+vpHit.Active = true
+vpHit.ZIndex = 195
+
+-- Two sets of numbers: where the camera IS and where it is going. Every
+-- frame the first eases towards the second, which is what turns a jerky
+-- mouse into a smooth orbit instead of the camera snapping to the cursor.
+local clone = nil
+local camYaw, camPitch, camDist = 0, 0.18, 9
+local tYaw,  tPitch,  tDist     = 0, 0.18, 9
+local autoSpin, dragging, lastM = true, false, nil
+
+vpHit.MouseButton1Down:Connect(function()
+    dragging = true
+    autoSpin = false          -- you have taken over; stop turning on its own
+    lastM = UserInputService:GetMouseLocation()
+end)
+
+track(UserInputService.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1
+    or inp.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end))
+
+SilenceAPI._onDrag(function()
+    if not dragging or not lastM then return end
+    -- only DELTAS between two readings, so no coordinate space has to match
+    local m = UserInputService:GetMouseLocation()
+    tYaw = tYaw - (m.X - lastM.X) * 0.012
+    tPitch = math.clamp(tPitch + (m.Y - lastM.Y) * 0.010, -1.2, 1.2)
+    lastM = m
+end)
+
+vpHit.InputChanged:Connect(function(inp)
+    if inp.UserInputType ~= Enum.UserInputType.MouseWheel then return end
+    autoSpin = false
+    -- proportional, so one notch feels the same whether you are close in or
+    -- far out; the clamp is set from the rig's own size further down
+    tDist = tDist * (inp.Position.Z > 0 and 0.86 or 1.16)
+end)
 refreshPreview = function()
     task.spawn(function()
         task.wait(0.35)   -- let the setter finish mounting before copying
@@ -10485,6 +10532,9 @@ refreshPreview = function()
             Enum.HumanoidDisplayDistanceType.None end) end
         c.Parent = vp
         clone = c
+        -- frame the new rig instead of inheriting the last one's zoom
+        local okB, _, size = pcall(function() return c:GetBoundingBox() end)
+        if okB and size then tDist = math.max(size.Magnitude, 6) * 1.1 end
         local parts = 0
         for _, d in ipairs(c:GetDescendants()) do
             if d:IsA("BasePart") then parts = parts + 1 end
@@ -10499,15 +10549,27 @@ end
 
 track(RunService.Heartbeat:Connect(function(dt)
     if not LS.Visible or not clone or not clone.Parent then return end
-    spin = (spin + dt * 0.6) % (math.pi * 2)
     -- GetBoundingBox centres on the whole rig rather than on the root part,
     -- which sits at hip height and left the head cropped off the top.
     local okB, cf, size = pcall(function() return clone:GetBoundingBox() end)
     if not okB or not cf then return end
     local p = cf.Position
-    local dist = math.max(size and size.Magnitude or 8, 6) * 1.1
-    vpCam.CFrame = CFrame.new(
-        p + Vector3.new(math.sin(spin) * dist, dist * 0.15, math.cos(spin) * dist), p)
+    local span = math.max(size and size.Magnitude or 8, 6)
+
+    if autoSpin then tYaw = tYaw + dt * 0.5 end
+    -- zoom bounds follow the model: a giant and a tiny avatar both need the
+    -- wheel to feel the same
+    tDist = math.clamp(tDist, span * 0.45, span * 3)
+
+    -- exponential ease, framerate independent
+    local k = 1 - math.exp(-dt * 12)
+    camYaw   = camYaw   + (tYaw   - camYaw)   * k
+    camPitch = camPitch + (tPitch - camPitch) * k
+    camDist  = camDist  + (tDist  - camDist)  * k
+
+    local off = CFrame.fromEulerAnglesYXZ(-camPitch, camYaw, 0)
+                * Vector3.new(0, 0, camDist)
+    vpCam.CFrame = CFrame.new(p + off, p)
 end))
 
 ------------------------------------------------------------ RIGHT: OTHERS
