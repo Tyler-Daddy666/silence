@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v122"
+SilenceAPI._version = "v123"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -4406,12 +4406,13 @@ end
 ;(function()
 -- 60 frames, 8 columns, 128px cells on a 1024x1024 sheet.
 --
--- 15 frames a second means one full turn every four seconds, half the
--- original speed. It does not go much below this: there are only 60 frames
--- and nothing interpolates between them, so slowing further stops looking
--- like a slow spin and starts looking like a stutter.
---   getgenv().SilenceSpinFPS = 10
-local COLS, CELL, N, FPS = 8, 128, 60, 15
+-- 30 frames a second, one full turn every two seconds - the speed the GIF
+-- was authored at, so every frame lands exactly where it was drawn to.
+-- Slower is tunable but there are only 60 frames and nothing interpolates
+-- between them, so far below about 12 it reads as a stutter rather than a
+-- slow spin.
+--   getgenv().SilenceSpinFPS = 20
+local COLS, CELL, N, FPS = 8, 128, 60, 30
 pcall(function()
     local g = getgenv()
     local v = g and tonumber(g.SilenceSpinFPS)
