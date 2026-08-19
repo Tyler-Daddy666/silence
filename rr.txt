@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v127"
+SilenceAPI._version = "v128"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6319,16 +6319,19 @@ local function makeRailButton(cat)
         dot(7, 17, 5)                               -- button, upper right
         dot(7, 18, 14)                              -- button, lower right
     elseif cat.icon == "anim" then      -- a figure with its arms thrown out
-        -- Four shapes, not six. The tile renders at 0.8, so six limbs of
-        -- four pixels with two pixel gaps arrive as three pixel limbs with
-        -- gaps of one and a half - and mush. Fewer, thicker, further apart
-        -- survives the scale. The arms sit at DIFFERENT heights on purpose:
-        -- level arms read as a standing T, offset ones read as movement,
-        -- which is the whole point of this category.
-        dot(10, 8, 0)                               -- head,  x 8..18
-        px(8, 10, 9, 13, 4)                         -- body,  x 9..17, gap 3
-        px(5, 8, 0, 8, 2)                           -- arm up on the left
-        px(5, 8, 21, 14, 2)                         -- arm down on the right
+        -- The arms JOIN the torso here. Floating bars beside a body read as
+        -- two loose blobs, not as limbs - which is what the previous pass
+        -- got wrong. Only the head keeps its gap, the same way self's head
+        -- floats above its shoulders, because a circle touching a bar reads
+        -- as one lump.
+        --
+        -- The two arms meet the torso at DIFFERENT heights on purpose. Level
+        -- arms read as a standing T; offset ones read as mid-movement, and
+        -- movement is the entire subject of this category.
+        dot(9, 9, 0)                                -- head,  x 9..18, gap 3
+        px(6, 14, 10, 12, 3)                        -- torso, x 10..16
+        px(10, 5, 0, 11, 2)                         -- arm out high, joins left
+        px(9, 5, 16, 16, 2)                         -- arm out low,  joins right
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
