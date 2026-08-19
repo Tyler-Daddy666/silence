@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v37"
+SilenceAPI._version = "v38"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -1826,8 +1826,128 @@ SilenceAPI._setSlotPart = setSlotPart
 SilenceAPI._setSlotHide = setSlotHide
 SilenceAPI._slotsOff    = slotsOff
 SilenceAPI._parseIdList        = parseIdList
-SilenceAPI._setAccessories     = setAccessories
-SilenceAPI._setHeadless        = setHeadless
+SilenceAPI._setAccessories     = function(v)
+    setAccessories(v)
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end
+SilenceAPI._setHeadless        = function(v)
+    setHeadless(v)
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end
+
+----------------------------------------------------------------
+-- LARP APPEARANCE FOR OTHER PLAYERS
+-- The local versions of these cannot simply be pointed at somebody else.
+-- applyHeadless stores ONE headlessConnection in an upvalue, and the slot
+-- mounts key off a slot index that only exists for you - so aiming either at
+-- a second character makes the two fight over the same state, and your own
+-- horns disappear the moment somebody else gets theirs.
+--
+-- This keeps one record per player and reuses only the primitives that
+-- already take a character: addAccessoryToCharacter and attachPartFor.
+-- Accessory keys carry the wearer's user id, so two people in the same
+-- costume do not delete each other's copy out of activeAccessories.
+--
+-- An IIFE, not do..end: a do..end shares the chunk's registers and this file
+-- runs at 198 of Luau's 200.
+----------------------------------------------------------------
+;(function()
+    local worn = {}   -- [player] = { keys = {...}, conn = ..., head = ... }
+
+    local function clearFor(player)
+        local rec = worn[player]
+        if not rec then return end
+        for _, k in ipairs(rec.keys) do
+            local a = activeAccessories[k]
+            if a and a.Parent then pcall(function() a:Destroy() end) end
+            activeAccessories[k] = nil
+            mountKindByKey[k] = nil
+        end
+        if rec.conn then pcall(function() rec.conn:Disconnect() end) end
+        if rec.head and rec.head.Parent then
+            pcall(function() rec.head.Transparency = 0 end)
+            for _, d in ipairs(rec.head:GetChildren()) do
+                if d:IsA("Decal") then pcall(function() d.Transparency = 0 end) end
+            end
+        end
+        worn[player] = nil
+    end
+
+    local function applyFor(player, cfg)
+        clearFor(player)
+        if not player or player == LocalPlayer or not cfg then return end
+        local char = player.Character
+        if not char or not char.Parent then return end
+
+        local rec = { keys = {} }
+        worn[player] = rec
+
+        if cfg.headless then
+            local head = char:FindFirstChild("Head")
+            if head then
+                rec.head = head
+                local function hide()
+                    pcall(function() head.Transparency = 1 end)
+                    for _, d in ipairs(head:GetChildren()) do
+                        if d:IsA("Decal") then pcall(function() d.Transparency = 1 end) end
+                    end
+                end
+                hide()
+                -- games put the head back during respawn effects, so this
+                -- has to keep watching rather than fire once
+                rec.conn = head.ChildAdded:Connect(function()
+                    task.wait(0.05); hide()
+                end)
+            end
+        end
+
+        local function mount(ids, partName, tag)
+            if type(ids) ~= "table" then return end
+            local part = attachPartFor(char, partName)
+            if not part then return end
+            for i, id in ipairs(ids) do
+                local n = tonumber(tostring(id):match("%d+") or "")
+                if n then
+                    local key = "sil_p" .. tostring(player.UserId) .. "_" .. tag .. i
+                    rec.keys[#rec.keys + 1] = key
+                    task.spawn(function()
+                        addAccessoryToCharacter(n, part, char, key, nil)
+                    end)
+                end
+            end
+        end
+        mount(cfg.head,  "Head",  "h")
+        mount(cfg.torso, "Torso", "t")
+
+        -- Local only. The server keeps its own numbers for this player, so
+        -- nobody else sees the change and it reverts on their next respawn -
+        -- which the respawn hook re-applies.
+        local sc = tonumber(cfg.scale)
+        if sc and sc ~= 1 then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then
+                for _, n in ipairs({ "BodyDepthScale", "BodyWidthScale",
+                                     "BodyHeightScale", "HeadScale" }) do
+                    local v = hum:FindFirstChild(n)
+                    if v then pcall(function() v.Value = sc end) end
+                end
+            end
+        end
+    end
+
+    SilenceAPI._applyLarpFor = function(player, cfg) pcall(applyFor, player, cfg) end
+    SilenceAPI._clearLarpFor = function(player) pcall(clearFor, player) end
+
+    -- what travels to everyone else
+    SilenceAPI._myLarpPayload = function()
+        return {
+            headless = State.headless and true or false,
+            head  = State.accHead  or {},
+            torso = State.accTorso or {},
+            scale = tonumber(State.bodyScale) or 1,
+        }
+    end
+end)()
 SilenceAPI._reapplyAccessories = reapplyAccessories
 end -- CUSTOM ACCESSORIES
 
@@ -2221,8 +2341,14 @@ SilenceAPI._setNoclip       = function(v) setNoclip(v);       syncLarpCharConn()
 SilenceAPI._setAntiFling    = setAntiFling
 SilenceAPI._setAntiVoid     = setAntiVoid
 SilenceAPI._setGhost        = function(v) setGhost(v);        syncLarpCharConn() end
+-- Each of these changes what everyone else should be drawing on you, so the
+-- published style goes out again. _pushStyle debounces, so holding a slider
+-- still results in one request.
 SilenceAPI._setInvisParts   = function(v) setInvisParts(v);   syncLarpCharConn() end
-SilenceAPI._setBodyScale    = function(v) setBodyScale(v);    syncLarpCharConn() end
+SilenceAPI._setBodyScale    = function(v)
+    setBodyScale(v); syncLarpCharConn()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end
 SilenceAPI._setFace         = function(v) setFace(v);         syncLarpCharConn() end
 SilenceAPI._setWalkAnim     = function(v) setWalkAnim(v);     syncLarpCharConn() end
 SilenceAPI._setWalkAnimId   = setWalkAnimId
@@ -10106,6 +10232,14 @@ local _tagOk, _tagErr = pcall(function()
         lk.maxDist      = tonumber(t.md); lk.partRate = tonumber(t.pr)
         lk.distGrow     = tonumber(t.dg)
         lk.emoji        = tonumber(t.em)
+        if type(t.lp) == "table" then
+            lk.larp = {
+                headless = t.lp.headless and true or false,
+                head  = type(t.lp.head)  == "table" and t.lp.head  or {},
+                torso = type(t.lp.torso) == "table" and t.lp.torso or {},
+                scale = tonumber(t.lp.scale) or 1,
+            }
+        end
         if type(t.au) == "table" then
             local au = t.au
             lk.aura = {
@@ -10485,10 +10619,16 @@ local _tagOk, _tagErr = pcall(function()
         track(player.CharacterAdded:Connect(function()
             task.wait(0.4)
             if silenceUsers[player] then createTag(player) end
-            -- the emitter hung off the old HumanoidRootPart, which is gone
-            if player ~= LocalPlayer and SilenceAPI._applyAuraFor then
+            -- the emitter hung off the old HumanoidRootPart and the horns
+            -- off the old head; both are gone with the previous character
+            if player ~= LocalPlayer then
                 local lk = styleLook[player.UserId]
-                SilenceAPI._applyAuraFor(player, lk and lk.aura)
+                if SilenceAPI._applyAuraFor then
+                    SilenceAPI._applyAuraFor(player, lk and lk.aura)
+                end
+                if SilenceAPI._applyLarpFor then
+                    SilenceAPI._applyLarpFor(player, lk and lk.larp)
+                end
             end
         end))
         track(player.CharacterRemoving:Connect(function(char)
@@ -10510,6 +10650,7 @@ local _tagOk, _tagErr = pcall(function()
 
     track(Players.PlayerRemoving:Connect(function(p)
         tagHooked[p] = nil
+        if SilenceAPI._clearLarpFor then SilenceAPI._clearLarpFor(p) end
         silenceUsers[p] = nil; destroyTag(p)
     end))
 
@@ -11668,6 +11809,9 @@ local _tagOk, _tagErr = pcall(function()
             oy = TagSettings.offsetY,   md = TagSettings.maxDist,
             dg = TagSettings.distGrow,
             em = TagSettings.emoji,
+            -- horns, headless and body scale go out with the rest, so the
+            -- worker needs no new field for them either
+            lp = SilenceAPI._myLarpPayload and SilenceAPI._myLarpPayload() or nil,
             pr = TagSettings.partRate,  pu = TagSettings.pulse,
             ti = myTitle(),
             -- The aura rides along in the same string the tag design uses,
@@ -12201,9 +12345,14 @@ local _tagOk, _tagErr = pcall(function()
             if knownUsers[p.UserId] and not silenceUsers[p] then
                 tagUser(p)
                 print("[Silence] Silence user in server: " .. p.Name)
-                if p ~= LocalPlayer and SilenceAPI._applyAuraFor then
+                if p ~= LocalPlayer then
                     local lk = styleLook[p.UserId]
-                    SilenceAPI._applyAuraFor(p, lk and lk.aura)
+                    if SilenceAPI._applyAuraFor then
+                        SilenceAPI._applyAuraFor(p, lk and lk.aura)
+                    end
+                    if SilenceAPI._applyLarpFor then
+                        SilenceAPI._applyLarpFor(p, lk and lk.larp)
+                    end
                 end
             end
         end
@@ -12436,9 +12585,14 @@ local _tagOk, _tagErr = pcall(function()
             if changed[p.UserId] then
                 if silenceUsers[p] then paintTag(p) end
                 -- your own aura is driven by the editor, never by the pull
-                if p ~= LocalPlayer and SilenceAPI._applyAuraFor then
+                if p ~= LocalPlayer then
                     local lk = styleLook[p.UserId]
-                    SilenceAPI._applyAuraFor(p, lk and lk.aura)
+                    if SilenceAPI._applyAuraFor then
+                        SilenceAPI._applyAuraFor(p, lk and lk.aura)
+                    end
+                    if SilenceAPI._applyLarpFor then
+                        SilenceAPI._applyLarpFor(p, lk and lk.larp)
+                    end
                 end
             end
         end
