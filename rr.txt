@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v81"
+SilenceAPI._version = "v82"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10854,6 +10854,26 @@ for i, c in ipairs(CARDS) do
     local lift = Instance.new("UIScale", wrap)
     lift.Scale = 1
 
+    -- Roblox has no drop shadow, so it is faked: a black rounded frame a few
+    -- pixels down and out, behind the card, faded with a gradient. Cheap, and
+    -- it is the difference between a card lying ON the panel and a hole cut
+    -- INTO it.
+    local shadow = Instance.new("Frame", wrap)
+    shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+    shadow.Position = UDim2.new(0.5, 0, 0.5, 5)
+    shadow.Size = UDim2.new(1, 10, 1, 10)
+    shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    shadow.BackgroundTransparency = 0.72
+    shadow.BorderSizePixel = 0
+    shadow.ZIndex = 0
+    corner(shadow, 18)
+    local shg = Instance.new("UIGradient", shadow)
+    shg.Rotation = 90
+    shg.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0,   0.55),
+        NumberSequenceKeypoint.new(1,   0),
+    })
+
     local card = Instance.new("TextButton", wrap)
     card.Size = UDim2.new(1, 0, 1, 0)
     card.BorderSizePixel = 0
@@ -10984,14 +11004,48 @@ for i, c in ipairs(CARDS) do
         TweenService:Create(sheen, TW, {
             BackgroundTransparency = hovering and 0.7 or 0.86,
         }):Play()
+        -- a lifted card casts a wider, softer shadow
+        TweenService:Create(shadow, TW, {
+            Size = hovering and UDim2.new(1, 22, 1, 22) or UDim2.new(1, 10, 1, 10),
+            BackgroundTransparency = hovering and 0.6 or 0.72,
+        }):Play()
         t.TextColor3 = here and Color3.fromRGB(255, 255, 255)
                             or Color3.fromRGB(185, 185, 190)
     end
     paints[#paints + 1] = paint
     paint()
 
+    -- Parallax. The art is already oversized while hovering, so there is
+    -- room to slide it without exposing an edge. Moving it AGAINST the cursor
+    -- is what sells the depth - moving it with the cursor just looks like
+    -- the picture is loose.
+    card.MouseMoved:Connect(function(mx, my)
+        if not hovering then return end
+        local ap, as = card.AbsolutePosition, card.AbsoluteSize
+        if as.X < 1 or as.Y < 1 then return end
+        local rx = math.clamp((mx - ap.X) / as.X - 0.5, -0.5, 0.5)
+        local ry = math.clamp((my - ap.Y) / as.Y - 0.5, -0.5, 0.5)
+        TweenService:Create(img, TweenInfo.new(0.28, Enum.EasingStyle.Quart,
+            Enum.EasingDirection.Out), {
+            Position = UDim2.new(0.5, -rx * 16, 0.5, -ry * 12),
+        }):Play()
+        TweenService:Create(shadow, TweenInfo.new(0.28, Enum.EasingStyle.Quart,
+            Enum.EasingDirection.Out), {
+            -- the shadow leans the other way, as if the light stayed put
+            Position = UDim2.new(0.5, rx * 8, 0.5, 5 + ry * 5),
+        }):Play()
+    end)
+
     card.MouseEnter:Connect(function() hovering = true;  paint() end)
-    card.MouseLeave:Connect(function() hovering = false; paint() end)
+    card.MouseLeave:Connect(function()
+        hovering = false
+        -- everything back to centre, or the art keeps the last tilt
+        TweenService:Create(img, TWs, {
+            Position = UDim2.new(0.5, 0, 0.5, 0) }):Play()
+        TweenService:Create(shadow, TWs, {
+            Position = UDim2.new(0.5, 0, 0.5, 5) }):Play()
+        paint()
+    end)
 
     card.MouseButton1Click:Connect(function()
         if not inGame(c.key) then
