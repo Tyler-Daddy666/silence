@@ -387,8 +387,19 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v55"
+SilenceAPI._version = "v56"
 SilenceAPI._built   = "2026-08-18"
+
+-- The admin command lives here rather than in the panel, so reading the
+-- source of a downloaded copy is the only way to learn somebody else's.
+pcall(function()
+    local g = getgenv()
+    if g and type(g.SilenceAdminCmd) == "string" and g.SilenceAdminCmd ~= "" then
+        local v = g.SilenceAdminCmd:gsub("%s+", "")
+        if v:sub(1, 1) ~= "/" then v = "/" .. v end
+        SilenceAPI._adminCmdOverride = v
+    end
+end)
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
 -- an old window survived. If this says v22, you are being served an old
@@ -596,7 +607,11 @@ local State = {
     vcBypass = false,         -- auto voice reconnect toggle (Misc tab)
     vcSelfMuted = false,      -- local microphone mute (Voice tab)
     vcAutoMute = false,       -- cut the microphone on every server join
-    adminCmd = "/sa",         -- chat command that opens the admin panel
+    -- Chat command that opens the admin panel. Deliberately NOT shown or
+    -- editable anywhere in the UI: anyone can read the panel, and a command
+    -- printed on screen is a command everybody knows. Change it only from
+    -- your own loader:  getgenv().SilenceAdminCmd = "/whatever"
+    adminCmd = "/sa",
     allowJumpscare = true,    -- let other Silence users send you one
     aura = { on = false, style = "sparkle", gradient = true, rainbow = false,
              size = 1, rate = 1,
@@ -10182,8 +10197,17 @@ refreshPreview = function()
         if clone then pcall(function() clone:Destroy() end); clone = nil end
         local char = LocalPlayer.Character
         if not char then return end
-        local ok, c = pcall(function() return char:Clone() end)
-        if not ok or not c then return end
+        -- Archivable=false anywhere in the rig makes Clone return nothing,
+        -- and some games set it on purpose. Say so instead of showing an
+        -- empty box.
+        local ok, c = pcall(function()
+            char.Archivable = true
+            return char:Clone()
+        end)
+        if not ok or not c then
+            vpCap.Text = "LIVE PREVIEW   character could not be copied"
+            return
+        end
         for _, d in ipairs(c:GetDescendants()) do
             if d:IsA("BaseScript") or d:IsA("Sound") or d:IsA("BillboardGui")
             or d:IsA("ParticleEmitter") or d:IsA("Fire") or d:IsA("Smoke") then
@@ -10200,6 +10224,15 @@ refreshPreview = function()
             Enum.HumanoidDisplayDistanceType.None end) end
         c.Parent = vp
         clone = c
+        local parts = 0
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("BasePart") then parts = parts + 1 end
+        end
+        vpCap.Text = "LIVE PREVIEW   " .. parts .. " parts"
+        print("[Silence] preview clone: " .. parts .. " parts")
+        if parts == 0 then
+            vpCap.Text = "LIVE PREVIEW   clone came back empty"
+        end
     end)
 end
 
@@ -14539,7 +14572,7 @@ local _tagOk, _tagErr = pcall(function()
     end
     SilenceAPI._openAdminFlow = openAdminFlow
     track(LocalPlayer.Chatted:Connect(function(msg)
-        local custom = tostring(State.adminCmd or "")
+        local custom = tostring(SilenceAPI._adminCmdOverride or State.adminCmd or "")
         if msg == ADMIN_COMMAND or (custom ~= "" and msg == custom) then
             openAdminFlow()
         end
@@ -15144,24 +15177,10 @@ local function loadConfig(quiet)
     return false
 end
 
-sectionLabel(pCfg, "PROFILE")
-buttonRow(pCfg, "SAVE CONFIG", saveConfig)
-buttonRow(pCfg, "LOAD CONFIG", function() loadConfig(false) end)
-buttonRow(pCfg, "DELETE SAVED CONFIG", function()
-    if type(delfile) == "function" then
-        local ok = pcall(function() delfile(CFG_FILE) end)
-        notify("Config", ok and "Deleted." or "Delete failed.", 3)
-    elseif canFile() then
-        pcall(function() writefile(CFG_FILE, "{}") end)
-        notify("Config", "Cleared.", 3)
-    else
-        notify("Config", "No file access in this executor.", 3)
-    end
-end)
-toggleRow(pCfg, "Auto-load on inject", function() return autoLoad end, function(v)
-    autoLoad = v
-    notify("Config", v and "Will auto-load next inject" or "Auto-load off", 2)
-end)
+-- Everything that used to be a row here now lives in the config editor,
+-- where a save is tied to a name and to a tag design instead of being one
+-- anonymous file you either overwrite or lose.
+sectionLabel(pCfg, "CONFIGS")
 
 buttonRow(pCfg, "CONFIG EDITOR  (bundle a config with a tag)", function()
     if SilenceAPI._openConfigEditor then SilenceAPI._openConfigEditor() end
@@ -15290,23 +15309,6 @@ do
     for i = 1, 5 do profRow(i) end
 end
 
-sectionLabel(pCfg, "ADMIN COMMAND")
-inputRow(pCfg, "Chat command", State.adminCmd or "/sa", function(v)
-    v = tostring(v or ""):gsub("%s+", "")
-    if v == "" then v = "/sa" end
-    if v:sub(1, 1) ~= "/" then v = "/" .. v end
-    State.adminCmd = v
-    notify("Config", "Type " .. v .. " in chat to open the admin panel.", 5)
-end)
-local cmdHint = Instance.new("TextLabel", pCfg)
-cmdHint.Size = UDim2.new(1, 0, 0, 30)
-cmdHint.BackgroundTransparency = 1
-cmdHint.Text = "  /silenceadmin keeps working as well, so a typo here cannot lock you out."
-cmdHint.Font = Enum.Font.Gotham
-cmdHint.TextSize = 10
-cmdHint.TextXAlignment = Enum.TextXAlignment.Left
-cmdHint.TextColor3 = Theme.textDim
-
 sectionLabel(pCfg, "APPEARANCE")
 local _, setScaleBox = inputRow(pCfg, "Panel Scale", State.uiScale or 1, function(v)
     SilenceAPI._setUiScale(v)
@@ -15377,9 +15379,11 @@ end)()
 ;(function()
 local BFILE, NS = "silence_bundles.json", 6
 local cfgs, tags = {}, {}
+-- Names start EMPTY on purpose. A slot called "Config 3" tells you nothing
+-- six saves later, so the save is refused until you have typed something.
 for i = 1, NS do
-    cfgs[i] = { name = "Config " .. i, data = nil, link = nil, auto = false }
-    tags[i] = { name = "Design " .. i, code = nil }
+    cfgs[i] = { name = "", data = nil, link = nil, auto = false }
+    tags[i] = { name = "", code = nil }
 end
 local selC, selT = 1, 1
 
@@ -15401,14 +15405,14 @@ local function loadB()
     for i = 1, NS do
         local c = d.cfgs and d.cfgs[i]
         if type(c) == "table" then
-            cfgs[i].name = tostring(c.name or cfgs[i].name):sub(1, 22)
+            cfgs[i].name = tostring(c.name or ""):sub(1, 22)
             cfgs[i].data = type(c.data) == "table" and c.data or nil
             cfgs[i].link = tonumber(c.link)
             cfgs[i].auto = c.auto and true or false
         end
         local t = d.tags and d.tags[i]
         if type(t) == "table" then
-            tags[i].name = tostring(t.name or tags[i].name):sub(1, 22)
+            tags[i].name = tostring(t.name or ""):sub(1, 22)
             tags[i].code = (type(t.code) == "string" and t.code ~= "") and t.code or nil
         end
     end
@@ -15587,6 +15591,7 @@ local function makeRow(side, i)
     nameBox.Position = UDim2.new(0, 12, 0, 8)
     nameBox.BackgroundTransparency = 1
     nameBox.Text = isCfg and cfgs[i].name or tags[i].name
+    nameBox.PlaceholderText = isCfg and "name this config" or "name this design"
     nameBox.Font = Enum.Font.GothamBold
     nameBox.TextSize = 13
     nameBox.TextXAlignment = Enum.TextXAlignment.Left
@@ -15605,9 +15610,8 @@ local function makeRow(side, i)
     SilenceAPI._theme(st, "TextColor3", "textDim")
 
     nameBox.FocusLost:Connect(function()
-        local t = tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""
-        if t == "" then t = (isCfg and "Config " or "Design ") .. i end
-        t = t:sub(1, 22)
+        -- an empty name stays empty; it is what blocks the save
+        local t = (tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""):sub(1, 22)
         if isCfg then cfgs[i].name = t else tags[i].name = t end
         nameBox.Text = t
         saveB(); paintAll()
@@ -15622,6 +15626,11 @@ local function makeRow(side, i)
         mini(r, "SAVE", 12, 42, 66, function()
             if not canB() then
                 notify("Config", "This executor has no writefile.", 4); return
+            end
+            if #cfgs[i].name < 1 then
+                notify("Config", "Give it a name first - click the name field.", 5)
+                nameBox:CaptureFocus()
+                return
             end
             if SilenceAPI._buildConfig then
                 local ok, c = pcall(SilenceAPI._buildConfig)
@@ -15663,6 +15672,11 @@ local function makeRow(side, i)
         end)
     else
         mini(r, "SAVE", 12, 42, 66, function()
+            if #tags[i].name < 1 then
+                notify("Config", "Give it a name first - click the name field.", 5)
+                nameBox:CaptureFocus()
+                return
+            end
             if not SilenceAPI._tagCode then return end
             local ok, c = pcall(SilenceAPI._tagCode)
             if ok and type(c) == "string" and c ~= "" then
@@ -15807,9 +15821,10 @@ end))
 paintAll = function()
     for i = 1, NS do
         local c, t = cfgs[i], tags[i]
-        rowsC[i].status.Text = (c.data and "saved" or "empty")
-            .. (c.auto and "  AUTO" or "")
-        rowsT[i].status.Text = t.code and "saved" or "empty"
+        rowsC[i].status.Text = (#c.name < 1 and "name it")
+            or (c.data and "saved" or "empty") .. (c.auto and "  AUTO" or "")
+        rowsT[i].status.Text = (#t.name < 1 and "name it")
+            or (t.code and "saved" or "empty")
 
         local onC = (selC == i)
         rowsC[i].stroke.Color = c.auto and Theme.accent
@@ -15882,6 +15897,10 @@ footBtn("UNLINK", 178, 100, function()
     saveB(); paintAll()
 end)
 footBtn("SAVE BOTH FROM CURRENT", 286, 200, function()
+    if #cfgs[selC].name < 1 or #tags[selT].name < 1 then
+        notify("Config", "Both selected slots need a name first.", 5)
+        return
+    end
     if SilenceAPI._buildConfig then
         local ok, c = pcall(SilenceAPI._buildConfig)
         if ok then cfgs[selC].data = c end
