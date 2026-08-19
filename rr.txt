@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v118"
+SilenceAPI._version = "v119"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6271,18 +6271,17 @@ local function makeRailButton(cat)
         px(13, 5, 0, 11, 2)                         -- cross, across  x 0..13
         dot(7, 17, 5)                               -- button, upper right
         dot(7, 18, 14)                              -- button, lower right
-    elseif cat.icon == "anim" then      -- a figure mid-pose, not mid-stride
-        -- Every limb stands OFF the torso by a pixel or two. Touching them
-        -- makes one blob, because there is no outline to separate them - the
-        -- same reason self's head floats above its shoulders rather than
-        -- sitting on them. One arm up, one out: standing arms read as
-        -- standing, and this category is dancing.
-        dot(9, 9, 0)                                -- head,  x 9..18
-        px(7, 8, 10, 11, 3)                         -- torso, x 10..17
-        px(4, 8, 20, 4, 2)                          -- arm up,  clear by 3
-        px(7, 4, 1, 13, 2)                          -- arm out, clear by 2
-        px(4, 6, 8, 20, 2)                          -- left leg
-        px(4, 6, 16, 20, 2)                         -- right leg
+    elseif cat.icon == "anim" then      -- a figure with its arms thrown out
+        -- Four shapes, not six. The tile renders at 0.8, so six limbs of
+        -- four pixels with two pixel gaps arrive as three pixel limbs with
+        -- gaps of one and a half - and mush. Fewer, thicker, further apart
+        -- survives the scale. The arms sit at DIFFERENT heights on purpose:
+        -- level arms read as a standing T, offset ones read as movement,
+        -- which is the whole point of this category.
+        dot(10, 8, 0)                               -- head,  x 8..18
+        px(8, 10, 9, 13, 4)                         -- body,  x 9..17, gap 3
+        px(5, 8, 0, 8, 2)                           -- arm up on the left
+        px(5, 8, 21, 14, 2)                         -- arm down on the right
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
