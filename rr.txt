@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v38"
+SilenceAPI._version = "v39"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -12584,6 +12584,16 @@ local _tagOk, _tagErr = pcall(function()
         for _, p in ipairs(Players:GetPlayers()) do
             if changed[p.UserId] then
                 if silenceUsers[p] then paintTag(p) end
+                -- Your own name changing is almost always somebody ELSE
+                -- having changed it, so the editor has to be told. It only
+                -- refreshed on a local admin-panel click before, which is
+                -- the one case where it was already right.
+                if p == LocalPlayer then
+                    if syncEditorTitle then pcall(syncEditorTitle) end
+                    if SilenceAPI._refreshAdminTitleFor then
+                        pcall(SilenceAPI._refreshAdminTitleFor, p.UserId)
+                    end
+                end
                 -- your own aura is driven by the editor, never by the pull
                 if p ~= LocalPlayer then
                     local lk = styleLook[p.UserId]
@@ -12815,16 +12825,21 @@ local _tagOk, _tagErr = pcall(function()
         for _ in pairs(styleLook) do styled = styled + 1 end
         out[#out+1] = "styles  : " .. styled .. " design(s) pulled"
         out[#out+1] = ""
-        out[#out+1] = string.format("%-16s %-8s %-4s %-6s %s",
-            "PLAYER", "ON LIST", "TAG", "STYLE", "RANK")
+        out[#out+1] = string.format("%-14s %-6s %-4s %-5s %-9s %s",
+            "PLAYER", "LIST", "TAG", "STYLE", "RANK", "SHOWS AS")
         for _, p in ipairs(Players:GetPlayers()) do
-            out[#out+1] = string.format("%-16s %-8s %-4s %-6s %s",
-                tostring(p.Name):sub(1, 16),
+            out[#out+1] = string.format("%-14s %-6s %-4s %-5s %-9s %s",
+                tostring(p.Name):sub(1, 14),
                 knownUsers[p.UserId] and "yes" or "no",
                 silenceUsers[p] and "yes" or "no",
                 (p == LocalPlayer and "own") or (styleLook[p.UserId] and "yes" or "no"),
-                playerRank[p.UserId] or "-")
+                playerRank[p.UserId] or "-",
+                titleFor(p))
         end
+        out[#out+1] = ""
+        out[#out+1] = "SHOWS AS is what THIS client draws over them right now."
+        out[#out+1] = "If yours differs from theirs, the title did not travel;"
+        out[#out+1] = "check /all in a browser for a title under \"ranks\"."
         if passError[LocalPlayer.UserId] then
             out[#out+1] = ""
             out[#out+1] = "own pass check failed: " .. tostring(passError[LocalPlayer.UserId])
@@ -14272,6 +14287,6 @@ function SilenceAPI.cleanup()
     if Gui then pcall(function() Gui:Destroy() end) end
 end
 
-notify("Silence","Loaded - RightShift toggles GUI",4)
+notify("Silence", SilenceAPI._version .. " loaded - RightShift toggles GUI", 5)
 print("[Silence Admin Panel] loaded - re-execute to reload.")
 print("[Silence] === ALL READY === GUI should be visible now")
