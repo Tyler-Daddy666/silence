@@ -74,7 +74,16 @@ end)
 --   getgenv().SilenceIconAssets = { discord = 1, settings = 2, spin = 3 }
 local ICON_DIRS = {
     src = {}, why = {},                    -- where each icon came from, or why not
-    assets = { discord = 0, settings = 0, spin = 0 },
+    -- Uploaded as Decals, so Roblox serves them. This is the only route
+    -- that reaches every user: a file in an executor's Silence folder is
+    -- one machine, and a GitHub download needs HttpGet, writefile and
+    -- getcustomasset to all cope with binary on whatever executor the
+    -- other person happens to run.
+    assets = {
+        spin     = 87440271134286,
+        discord  = 139962436285631,
+        settings = 88522168326159,
+    },
 }
 pcall(function()
     local g = getgenv()
@@ -449,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v115"
+SilenceAPI._version = "v116"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
