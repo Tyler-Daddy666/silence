@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v124"
+SilenceAPI._version = "v125"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -495,7 +495,19 @@ end
 -- tag editor opened from under it.
 function SilenceAPI._uiBlocking()
     if SilenceAPI._modalOpen() then return true end
-    if SilenceAPI._mainVisible and SilenceAPI._mainVisible() then return true end
+    -- Minimized is NOT blocking. _setMinimized only swaps the wide header for
+    -- the compact bar and tweens Container.Size to 380x48; it never touches
+    -- Container.Visible, so _mainVisible() stayed true and every tag in the
+    -- server was held disabled for as long as the little bar was up - and
+    -- un-minimizing did not bring them back, because the reconciler is the
+    -- only thing in the file that ever sets bb.Enabled = true. A 380x48 bar
+    -- in one corner cannot swallow a click aimed at a tag, which is the only
+    -- thing this guard exists for. _setMenuBlur already draws exactly this
+    -- distinction ("Container.Visible and not SilenceAPI._minimized").
+    -- _minimized is nil until the shell builds; "not nil" is true, so the
+    -- pre-shell behaviour is unchanged and fails safe.
+    if SilenceAPI._mainVisible and SilenceAPI._mainVisible()
+       and not SilenceAPI._minimized then return true end
     return false
 end
 
@@ -5559,11 +5571,19 @@ f.MouseLeave:Connect(function()
     TweenService:Create(f, SilenceAPI._twFade, { BackgroundColor3 = Theme.bg3 }):Play()
 end)
 f.MouseButton1Click:Connect(function()
-    if SilenceAPI._setTagsHidden then
-        SilenceAPI._setTagsHidden(not State.tagsHidden)
-    else
-        State.tagsHidden = not State.tagsHidden
+    -- No raw fallback. _setTagsHidden is assigned inside the tag block, far
+    -- below this chip and behind several yields (WaitForChild, HttpGet,
+    -- task.wait), so during load the else branch was genuinely reachable -
+    -- and it flipped State.tagsHidden with no destroy pass and no rebuild
+    -- pass, after which createTag, paintTag and tagKnownPlayers all return
+    -- early at their tagsHidden guards and no tag appears again for the rest
+    -- of the session. The sibling switch in the Settings popup already has no
+    -- fallback; this one now matches it.
+    if not SilenceAPI._setTagsHidden then
+        notify("Tags", "The tag system is still loading - try again in a moment.", 3)
+        return
     end
+    SilenceAPI._setTagsHidden(not State.tagsHidden)
     for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
 end)
 refresh()
@@ -13737,7 +13757,19 @@ local _tagOk, _tagErr = pcall(function()
         bb.AlwaysOnTop = true
         bb.Active = true
         bb.LightInfluence = 0
-        bb.MaxDistance = look.maxDist
+        -- Draw distance belongs to the player being drawn. look falls through
+        -- a metatable to TagSettings - YOUR table - so a remote player who
+        -- never published a draw distance inherited whatever this client's
+        -- "Draw distance" slider happened to be, and dragging that slider to
+        -- its 100 stud minimum made every unstyled player's tag vanish past
+        -- 100 studs and reappear on the way back. rawget asks for their OWN
+        -- published value and ignores the fallthrough.
+        bb.MaxDistance = 1000
+        if player == LocalPlayer then
+            bb.MaxDistance = look.maxDist
+        elseif look ~= TagSettings and rawget(look, "maxDist") then
+            bb.MaxDistance = look.maxDist
+        end
         bb.Parent = head
 
         -- Every part is named, and every optional part exists from the
@@ -13946,13 +13978,29 @@ local _tagOk, _tagErr = pcall(function()
                     TagSettingsPopup.Visible = not TagSettingsPopup.Visible
                 end
             end
-            clickArea.MouseButton1Click:Connect(onClick)
+            -- Activated and MouseButton1Click BOTH fire for a single mouse
+            -- click, so onClick ran twice and the toggle netted to zero. It
+            -- only appeared to work because the first call opened the popup
+            -- and the _uiBlocking guard above swallowed the second - and that
+            -- guard depends on _modalWatch(TagSettingsPopup) having run, which
+            -- happens ~1800 lines and several yields later. Until then neither
+            -- call was blocked and the editor could not be opened from the tag
+            -- at all. Activated alone covers mouse, touch and gamepad;
+            -- MouseButton1Click covers strictly less.
             clickArea.Activated:Connect(onClick)
         end
 
-        -- built while a window is up: start hidden, the loop above puts it
-        -- back the moment everything is closed
-        if SilenceAPI._uiBlocking and SilenceAPI._uiBlocking() then
+        -- Built while a window is up: start hidden. This reads _tagsShown -
+        -- the value the RenderStepped reconciler owns - instead of sampling
+        -- _uiBlocking() a second time. Two independent samplers meant a card
+        -- could be stamped Enabled = false against a block the reconciler
+        -- never observed (a window opened and closed between two frames, or
+        -- opened while alt-tabbed, when RenderStepped stops but the 5s poll
+        -- thread keeps calling createTag), and nothing else in the file ever
+        -- set Enabled back to true. "== false" specifically, so a card built
+        -- before the first frame starts visible; the reconciler corrects it
+        -- either way on the very next frame.
+        if SilenceAPI._tagsShown == false then
             pcall(function() bb.Enabled = false end)
         end
         activeTags[player] = bb
@@ -13974,7 +14022,14 @@ local _tagOk, _tagErr = pcall(function()
 
         bb.Size        = UDim2.new(0, look.width, 0, lookH(look))
         bb.StudsOffset = Vector3.new(0, look.offsetY, 0)
-        bb.MaxDistance = look.maxDist
+        -- same rule as createTag: never push this client's draw distance onto
+        -- somebody else's card (see the note there)
+        bb.MaxDistance = 1000
+        if player == LocalPlayer then
+            bb.MaxDistance = look.maxDist
+        elseif look ~= TagSettings and rawget(look, "maxDist") then
+            bb.MaxDistance = look.maxDist
+        end
 
         frame.BackgroundColor3       = look.bg
         frame.BackgroundTransparency = look.bgAlpha
@@ -14052,7 +14107,24 @@ local _tagOk, _tagErr = pcall(function()
     local tagHooked = {}
     local function tagUser(player)
         silenceUsers[player] = true
-        if player.Character then paintTag(player) end
+        -- pcall'd because the line above is what makes tagKnownPlayers and
+        -- queueScan (both of which only consider players NOT already in
+        -- silenceUsers) skip this player from here on. An unguarded throw did
+        -- three things at once: left the registration standing so no retry
+        -- path would look at this player again, skipped the CharacterAdded
+        -- hook two lines below so respawns could not recover either, and
+        -- unwound through tagKnownPlayers' loop so every player after this one
+        -- was skipped for that cycle too - all of it silent, because the
+        -- caller is pcall(pullRanks). The reconcile sweep in pullRanks now
+        -- rebuilds whatever this failed to draw.
+        if player.Character then
+            local okT, errT = pcall(paintTag, player)
+            if not okT then
+                SilenceAPI._tagPaintFault = tostring(player.Name) .. ": " .. tostring(errT)
+                warn("[Silence] paintTag failed for " .. tostring(player.Name)
+                     .. ": " .. tostring(errT))
+            end
+        end
         -- Connecting on every call meant a player who fell off the presence
         -- list and came back collected another respawn handler each round,
         -- and then rebuilt their card once per handler on the next death.
@@ -14114,12 +14186,25 @@ local _tagOk, _tagErr = pcall(function()
         do
             local blocked = SilenceAPI._uiBlocking and SilenceAPI._uiBlocking()
             local want = not blocked
-            if SilenceAPI._tagsShown ~= want then
-                SilenceAPI._tagsShown = want
-                for _, bb in pairs(activeTags) do
-                    if bb and bb.Parent then
-                        pcall(function() bb.Enabled = want end)
-                    end
+            SilenceAPI._tagsShown = want
+            -- Reconciled against the current value every frame instead of on
+            -- the _tagsShown transition, exactly as the click area below has
+            -- always been. The edge gate had TWO writers and ONE latch:
+            -- createTag also stamps Enabled = false on a card built while a
+            -- window is up, without ever touching _tagsShown. Any card born
+            -- during a block the gate never sampled stayed dark for the rest
+            -- of the session - the write below was the only bb.Enabled = true
+            -- in the file, applyLook never touches Enabled, and RESCAN cannot
+            -- reach it because tagKnownPlayers skips anyone already in
+            -- silenceUsers. Comparing before writing means this costs one
+            -- boolean read per tag per frame and writes nothing in the steady
+            -- state, while a stranded card repairs itself on the next frame.
+            -- The block itself MUST stay: a BillboardGui lives in the world,
+            -- outside the ScreenGui stack, so no ZIndex stops a click meant
+            -- for the panel from reaching a tag. Only the latch is gone.
+            for _, bb in pairs(activeTags) do
+                if bb and bb.Enabled ~= want then
+                    pcall(function() bb.Enabled = want end)
                 end
             end
             local myBB = activeTags[LocalPlayer]
@@ -14185,23 +14270,25 @@ local _tagOk, _tagErr = pcall(function()
         end
     end))
 
-    track(UserInputService.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1
-           and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local char = LocalPlayer.Character
-        local head = char and char:FindFirstChild("Head")
-        if not head then return end
-        if not activeTags[LocalPlayer] then return end
-        local sp, onScreen = Camera:WorldToViewportPoint(
-            head.Position + Vector3.new(0, TagSettings.offsetY, 0))
-        if not onScreen then return end
-        local m = UserInputService:GetMouseLocation()
-        if m.X >= sp.X - 85 and m.X <= sp.X + 85
-           and m.Y >= sp.Y - 21 and m.Y <= sp.Y + 21
-           and TagSettingsPopup then
-            TagSettingsPopup.Visible = not TagSettingsPopup.Visible
-        end
-    end))
+    -- The BillboardGui already carries a real TextButton (__SIL_TagClick)
+    -- that covers the card exactly, is scaled by the same px2stud maths as
+    -- the card, is switched off with the tag, and checks _uiBlocking before
+    -- it acts. This second, parallel world-click hit test ran beside it and
+    -- was wrong four separate ways: it never asked _uiBlocking, so it fired
+    -- straight through the open panel; its callback declared one parameter,
+    -- so gameProcessedEvent was discarded and clicks already consumed by our
+    -- own buttons still reached it; it did not care whether the tag was even
+    -- visible, only that activeTags[LocalPlayer] existed; and its hit box was
+    -- a hard-coded 170x42 rectangle at the head's screen position, ignoring
+    -- look.width, lookH() and the distance scaler entirely - so in first or
+    -- close third person it was a large fixed rectangle near the middle of
+    -- the screen that toggled the tag editor on ordinary gameplay clicks.
+    -- Opening the editor hides the main panel via _modalWatch, which blanks
+    -- every tag in the server, so one stray click read exactly like the bug
+    -- being chased. The button is the only click surface now; this stays as
+    -- the way in is the "Open Tag Editor" button in the Misc tab, which
+    -- calls SilenceAPI._toggleTagEditor (defined with the editor itself), so
+    -- removing this hit test cannot make the editor unreachable.
 
     ----------------------------------------------------------------
     -- TAG EDITOR
@@ -15830,7 +15917,7 @@ local _tagOk, _tagErr = pcall(function()
     -- from being tagged while standing there without it.
     local knownUsers = {}   -- [userId] = true, online now
     local allUsers   = {}   -- [userId] = name, ever seen
-    local missCount  = {}   -- [userId] = consecutive polls without them
+    local missCount  = {}   -- [userId] = tick() when they first went missing
     local selfOwns  = false
 
     local function tagKnownPlayers()
@@ -15964,6 +16051,16 @@ local _tagOk, _tagErr = pcall(function()
         local ranks  = (type(data.ranks) == "table") and data.ranks or data
         local online = (type(data.online) == "table") and data.online
                        or ((type(data.users) == "table") and data.users or nil)
+        -- An empty list is still a table, so "if online then" accepted it as
+        -- the truth and started the clock on EVERY remote player at once.
+        -- That is what the worker serves while its single KV value is being
+        -- rewritten, after a deploy against a cold namespace, or if "online"
+        -- ever arrives shaped as a map instead of an array (ipairs would then
+        -- yield nothing and look identical). Nobody being online is
+        -- indistinguishable from the answer being useless, and every other
+        -- failure path in this function returns and leaves knownUsers alone -
+        -- this one has to as well.
+        if online and #online == 0 then online = nil end
         local names  = (type(data.known)  == "table") and data.known or nil
 
         -- Presence is rebuilt from scratch every pull rather than added to.
@@ -15977,27 +16074,53 @@ local _tagOk, _tagErr = pcall(function()
                 local n = tonumber(uid)
                 if n then
                     fresh[n] = true
-                    missCount[n] = 0
+                    -- cleared, not zeroed: missCount now holds the tick() at
+                    -- which this account first went missing, so "present"
+                    -- has to mean "no disappearance pending", not "zero"
+                    missCount[n] = nil
                     if allUsers[n] == nil then allUsers[n] = "?" end
                 end
             end
-            -- Hysteresis. The endpoint is eventually consistent, so one
-            -- answer that leaves somebody out is not evidence that they
-            -- left - and acting on a single one was enough to drop a tag and
-            -- put it back seconds later, over and over. Three misses in a row
-            -- is evidence; one is noise.
+            -- Hysteresis, measured in SECONDS instead of in polls. The store
+            -- behind the endpoint is Cloudflare KV. Its reads are served from
+            -- a per-location cache whose default life is 60 seconds, and a
+            -- write made in one location is documented as taking "up to 60
+            -- seconds or more" to become visible in the others. So an answer
+            -- that leaves somebody out is the NORMAL steady state for up to a
+            -- minute after anything changes - and three such answers in a row
+            -- are not three observations, they are one cached body served
+            -- three times. Counting polls made the tolerance pullEvery * 3 =
+            -- 15 seconds, a quarter of the endpoint's own consistency window,
+            -- so this client was destroying tags over inconsistency it is
+            -- required to expect. Worse, the user can set pullEvery to 2 from
+            -- getgenv(), which took the window down to 6 seconds.
+            --
+            -- 240s: four times KV's stated propagation bound, and long enough
+            -- to ride out one heartbeat whose write was lost to another
+            -- client overwriting the shared key. It costs nothing when
+            -- somebody genuinely leaves the SERVER - PlayerRemoving destroys
+            -- that tag at once - and only delays the card of somebody who
+            -- closed the script but stayed in the game.
             for _, p in ipairs(Players:GetPlayers()) do
                 local uid = p.UserId
                 if p ~= LocalPlayer and silenceUsers[p] and not fresh[uid] then
-                    missCount[uid] = (missCount[uid] or 0) + 1
-                    if missCount[uid] < 3 then
+                    missCount[uid] = missCount[uid] or tick()
+                    if (tick() - missCount[uid]) < 240 then
                         fresh[uid] = true
                     else
+                        missCount[uid] = nil
                         silenceUsers[p] = nil
                         destroyTag(p)
                     end
                 end
             end
+            -- Whether the endpoint ACTUALLY listed this account, recorded
+            -- before the next line forces it back in. That line is what keeps
+            -- your own tag from blinking and must stay - but it also meant the
+            -- client could never observe its own presence key going missing,
+            -- which is precisely the condition the re-announce below exists to
+            -- repair. Published on SilenceAPI so the Logs tab can show it.
+            SilenceAPI._sawSelf = fresh[LocalPlayer.UserId] and true or false
             -- your own tag is yours to decide, never the endpoint's
             if knownUsers[LocalPlayer.UserId] then fresh[LocalPlayer.UserId] = true end
             knownUsers = fresh
@@ -16092,19 +16215,79 @@ local _tagOk, _tagErr = pcall(function()
             pullNote = "ok, " .. n .. " on the list"
             if data.online == nil and data.users == nil then
                 pullNote = pullNote .. "  (old worker - it sends no presence list)"
+            elseif type(data.online) == "table" and #data.online == 0 then
+                -- the guard above refused it; say so, or Logs reports a
+                -- healthy sync while presence is quietly running on the last
+                -- good list and nothing explains why nobody new appears
+                pullNote = pullNote .. "  (endpoint sent an EMPTY list - ignored)"
             end
         end
 
-        -- The list came back and we are not on it, so the announce never
-        -- landed. Ask again instead of sitting invisible until the next
-        -- reload: the pull recovers on its own every 45s, the announce used
-        -- to get exactly one shot at startup and no second chance.
-        if online and selfOwns and not knownUsers[LocalPlayer.UserId]
-           and SilenceAPI._announceSelf then
+        -- The list came back and this account is not on it, so its presence
+        -- key is gone: either the announce never landed, or another client's
+        -- heartbeat rewrote the whole shared value from a stale read and
+        -- erased it. Either way this client is invisible to everybody else
+        -- while its own tag still sits happily over its own head, which is why
+        -- nobody ever reports it about themselves.
+        --
+        -- Two latches used to make this branch dead code. It tested
+        -- knownUsers[LocalPlayer.UserId], which the block above forces to true
+        -- and never clears, so the condition could not become true after the
+        -- first successful join; it now tests _sawSelf, which is what the
+        -- endpoint actually sent. And _announceSelf returns immediately while
+        -- joinOk is set, which it is for the whole session after the first
+        -- success, so even reaching it called a function that did nothing;
+        -- joinOk is cleared here. "announcing" is deliberately NOT cleared -
+        -- it is the concurrency guard, and one announce already in flight is
+        -- the correct answer to this condition.
+        --
+        -- Rate limited to one repair every 120s because every announce is a KV
+        -- WRITE and the free allowance is a thousand writes a DAY for the
+        -- whole account. An unthrottled repair at pullEvery = 5 would spend
+        -- the day's budget in under two minutes and take presence down for
+        -- everyone, for real, until UTC midnight. joinTries is deliberately
+        -- not reset either, so a permanently broken endpoint still hits the
+        -- 20-try ceiling and stops instead of hammering it.
+        if online and selfOwns and not SilenceAPI._sawSelf
+           and SilenceAPI._announceSelf
+           and (tick() - (SilenceAPI._reAnnounceAt or 0)) > 120 then
+            SilenceAPI._reAnnounceAt = tick()
+            joinOk = false
+            joinNote = "not on the list - re-announcing"
             SilenceAPI._announceSelf()
         end
 
         tagKnownPlayers()
+
+        -- RECONCILE. Every other rebuild path in this file is edge driven:
+        -- CharacterAdded fires once, tagKnownPlayers and queueScan both skip
+        -- anyone already in silenceUsers, and the repaint loop below only
+        -- touches players whose published string changed. Nothing ever asked
+        -- "is the card still there?", so a billboard lost by any route that
+        -- did not also clear silenceUsers was lost for the rest of the
+        -- session: the RenderStepped loop skips a tag whose Parent is nil and
+        -- never repairs it, and RESCAN cannot help because tagKnownPlayers
+        -- refuses anyone already registered. That covers a Head replaced
+        -- without Player.Character changing (StreamingEnabled streaming the
+        -- character out and back, a game morph, a rig rebuilt in place), a
+        -- throw inside paintTag, and a card left over from an older build.
+        -- One table lookup per player per poll; it only builds when something
+        -- is genuinely missing. Both hide switches are honoured, so this can
+        -- never resurrect a tag the user deliberately turned off.
+        if not State.tagsHidden then
+            for _, p in ipairs(Players:GetPlayers()) do
+                if silenceUsers[p] and not tagHidden[p] and p.Character then
+                    local rbb = activeTags[p]
+                    local rhd = p.Character:FindFirstChild("Head")
+                    -- missing, orphaned, or hanging off a head this character
+                    -- is no longer wearing
+                    if rhd and (not rbb or not rbb.Parent or rbb.Parent ~= rhd) then
+                        pcall(createTag, p)
+                    end
+                end
+            end
+        end
+
         -- only redraw the tags that actually moved
         for _, p in ipairs(Players:GetPlayers()) do
             if changed[p.UserId] then
@@ -16153,11 +16336,31 @@ local _tagOk, _tagErr = pcall(function()
     -- when you close the script.
     function SilenceAPI._heartbeat()
         if SYNC_BASE == "" then return end
-        pcall(function()
-            game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
-                .. "&name=" .. urlEnc(LocalPlayer.Name)
-                .. "&t=" .. tostring(math.random(1, 1000000)), true)
-        end)
+        -- Fire and forget was wrong. This is the ONE periodic write that keeps
+        -- the account visible to everybody else, the endpoint answers
+        -- {"ok":true} or an error, and the old version threw the answer away.
+        -- A heartbeat rejected because the day's KV write allowance is spent,
+        -- or because two clients wrote the same key inside the same second
+        -- (the endpoint permits one write per second to a given key), looked
+        -- exactly like one that landed - and the next attempt was 300s away.
+        -- Two tries, the second far enough out that it cannot collide with
+        -- whatever lost the first, and the result recorded where Logs can
+        -- show it. Still at most two writes per beat, so the daily budget is
+        -- unchanged in the normal case.
+        for attempt = 1, 2 do
+            local okH, res = pcall(function()
+                return game:HttpGet(SYNC_BASE .. "join?id=" .. tostring(LocalPlayer.UserId)
+                    .. "&name=" .. urlEnc(LocalPlayer.Name)
+                    .. "&t=" .. tostring(math.random(1, 1000000)), true)
+            end)
+            if okH and tostring(res):find('"ok"', 1, true) then
+                SilenceAPI._beatNote = "ok " .. os.date("%H:%M:%S")
+                return
+            end
+            SilenceAPI._beatNote = "FAILED " .. os.date("%H:%M:%S")
+                                   .. " - " .. tostring(res):sub(1, 55)
+            if attempt < 2 then task.wait(4) end
+        end
     end
 
     -- Tell the endpoint this account is running Silence. Owning the pass is
@@ -16372,13 +16575,38 @@ local _tagOk, _tagErr = pcall(function()
         for _ in pairs(styleLook) do styled = styled + 1 end
         out[#out+1] = "styles  : " .. styled .. " design(s) pulled"
         out[#out+1] = ""
-        out[#out+1] = string.format("%-14s %-6s %-4s %-5s %-9s %s",
-            "PLAYER", "LIST", "TAG", "STYLE", "RANK", "SHOWS AS")
+        out[#out+1] = "beat    : " .. tostring(SilenceAPI._beatNote or "none sent yet")
+        out[#out+1] = "on list : " .. (SilenceAPI._sawSelf and "yes"
+            or "NO - the endpoint is not listing this account")
+        out[#out+1] = "tags    : " .. ((SilenceAPI._tagsShown == false
+            and "hidden - a Silence window is open")
+            or (SilenceAPI._tagsShown == true and "shown")
+            or "the draw loop has not run yet")
+        if SilenceAPI._tagPaintFault then
+            out[#out+1] = "paint   : " .. tostring(SilenceAPI._tagPaintFault)
+        end
+        out[#out+1] = ""
+        -- TAG reads silenceUsers, which is set before the card is built and
+        -- stays set if the build fails - so the one diagnostic somebody opens
+        -- to find out why a tag is missing reported "yes" for exactly the
+        -- players whose tag was missing. CARD reads the instance instead:
+        -- NO = never built, orph = built then orphaned from its head,
+        -- off = built but Enabled is false.
+        out[#out+1] = string.format("%-14s %-6s %-4s %-6s %-5s %-9s %s",
+            "PLAYER", "LIST", "TAG", "CARD", "STYLE", "RANK", "SHOWS AS")
         for _, p in ipairs(Players:GetPlayers()) do
-            out[#out+1] = string.format("%-14s %-6s %-4s %-5s %-9s %s",
+            local rbb  = activeTags[p]
+            local card = "NO"
+            if rbb then
+                if not rbb.Parent then card = "orph"
+                elseif rbb.Enabled == false then card = "off"
+                else card = "yes" end
+            end
+            out[#out+1] = string.format("%-14s %-6s %-4s %-6s %-5s %-9s %s",
                 tostring(p.Name):sub(1, 14),
                 knownUsers[p.UserId] and "yes" or "no",
                 silenceUsers[p] and "yes" or "no",
+                card,
                 (p == LocalPlayer and "own") or (styleLook[p.UserId] and "yes" or "no"),
                 playerRank[p.UserId] or "-",
                 titleFor(p))
@@ -16508,8 +16736,22 @@ local _tagOk, _tagErr = pcall(function()
         if hidden then
             for p, _ in pairs(activeTags) do destroyTag(p) end
         else
+            -- pcall'd per player: one throw used to abandon the rest of the
+            -- loop, and pairs() order is arbitrary, so a different random
+            -- subset came back on every toggle while the chip still read ON.
             for p, _ in pairs(silenceUsers) do
-                if p.Character then createTag(p) end
+                if p.Character then pcall(createTag, p) end
+            end
+            -- silenceUsers alone is not enough. tagKnownPlayers returns at its
+            -- tagsHidden guard, so anybody the poll discovered while tags were
+            -- off was never registered - while the miss loop kept happily
+            -- de-registering people the whole time. Sweeping knownUsers as
+            -- well means unhiding restores everyone the endpoint currently
+            -- lists, instead of only those who happened to be known before.
+            for _, p in ipairs(Players:GetPlayers()) do
+                if knownUsers[p.UserId] and not silenceUsers[p] then
+                    pcall(tagUser, p)
+                end
             end
         end
     end
