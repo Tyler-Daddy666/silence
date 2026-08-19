@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v84"
+SilenceAPI._version = "v86"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6020,7 +6020,13 @@ end
 function SilenceAPI._hideTab(name)
     SilenceAPI._hiddenTabs[name] = true
     local t = SilenceAPI._tabs and SilenceAPI._tabs[name]
-    if t and t.btn then t.btn.Visible = false end
+    if t and t.btn then pcall(function() t.btn:Destroy() end) end
+
+    -- Out of the registry entirely, not merely hidden. While it is still in
+    -- there, selectTab keeps setting page.Visible = false on it every time
+    -- any other tab is clicked, and the window it was moved into opens empty.
+    if SilenceAPI._tabs then SilenceAPI._tabs[name] = nil end
+
     if SilenceAPI._activeCat and SilenceAPI._showCat then
         pcall(SilenceAPI._showCat, SilenceAPI._activeCat)
     end
@@ -10900,12 +10906,28 @@ for i, c in ipairs(CARDS) do
     card.ClipsDescendants = true
     card.BackgroundColor3 = Theme.bg
     corner(card, 14)
-    local cst = stroke(card, Theme.bg4, 1, 0.45, "bg4")
+    local cst = stroke(card, Color3.fromRGB(255, 255, 255), 1.5, 0.62)
 
-    -- the travelling sheen every other surface in this panel uses, so a card
-    -- that is ready to click reads as alive rather than merely brighter
-    local glow = addAnimatedGlow(card, { thickness = 2, transparency = 1,
-                                         window = 0.22, color = Theme.accent })
+    -- A second hairline a pixel inside the first. Two thin lines read as a
+    -- crisp edge where one thick line just reads as a border.
+    local inner = Instance.new("Frame", card)
+    inner.AnchorPoint = Vector2.new(0.5, 0.5)
+    inner.Position = UDim2.new(0.5, 0, 0.5, 0)
+    inner.Size = UDim2.new(1, -3, 1, -3)
+    inner.BackgroundTransparency = 1
+    inner.BorderSizePixel = 0
+    inner.ZIndex = 3
+    corner(inner, 12)
+    local innerSt = Instance.new("UIStroke", inner)
+    innerSt.Color = Color3.fromRGB(255, 255, 255)
+    innerSt.Thickness = 1
+    innerSt.Transparency = 0.88
+
+    -- The travelling sheen, in white and faintly on at rest. A card that
+    -- only lights up under the cursor looks dead until you find it.
+    local glow = addAnimatedGlow(card, {
+        thickness = 2.5, transparency = 0.78, window = 0.22,
+        color = Color3.fromRGB(255, 255, 255) })
 
     -- AnchorPoint at the centre so the hover zoom grows from the middle
     -- instead of sliding out of the top-left corner.
@@ -11010,11 +11032,14 @@ for i, c in ipairs(CARDS) do
                                        or UDim2.new(1, 0, 1, 0),
         }):Play()
         TweenService:Create(cst, TW, {
-            Color = (here and hovering) and Theme.accent or Theme.bg4,
-            Transparency = hovering and 0.05 or (here and 0.32 or 0.6),
+            Transparency = hovering and 0.08 or (here and 0.55 or 0.8),
+            Thickness = hovering and 2 or 1.5,
+        }):Play()
+        TweenService:Create(innerSt, TW, {
+            Transparency = hovering and 0.6 or (here and 0.88 or 0.95),
         }):Play()
         TweenService:Create(glow, TW, {
-            Transparency = (here and hovering) and 0.25 or 1,
+            Transparency = hovering and 0.15 or (here and 0.72 or 0.94),
         }):Play()
         TweenService:Create(lift, TW, {
             Scale = hovering and (here and 1.035 or 1.012) or 1,
@@ -11158,7 +11183,13 @@ do
         SilenceAPI._liftPage(pg, 200)
         SilenceAPI._hideTab("German Voice")
     end)
-    SilenceAPI._openGV = function() W.Visible = not W.Visible end
+    SilenceAPI._openGV = function()
+        W.Visible = not W.Visible
+        -- if anything ever hides it again, opening the window undoes that
+        if W.Visible and SilenceAPI._gvPage then
+            SilenceAPI._gvPage.Visible = true
+        end
+    end
 end
 
 ------------------------------------------------------------ BLADE BALL
