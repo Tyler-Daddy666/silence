@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v97"
+SilenceAPI._version = "v98"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -5907,7 +5907,7 @@ local TAB_CATEGORY = {
     Config    = "System", Logs          = "System",
     ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
     ["German Voice"] = "Games", Games = "Games",
-    AnimPack = "Anim",
+    AnimPack = "Anim", ["UGC Emotes"] = "Anim",
 }
 -- rail order, top to bottom
 local CATEGORIES = {
@@ -5931,7 +5931,7 @@ local TAB_LO_INSIDE = {
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
     ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
     Games = 0, ["German Voice"] = 1,
-    AnimPack = 1,
+    AnimPack = 1, ["UGC Emotes"] = 2,
 }
 SilenceAPI._catOf     = TAB_CATEGORY
 SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
@@ -16890,6 +16890,203 @@ track(LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1.2)
     if State.animPack then pcall(applyPack) end
 end))
+end)()
+
+----------------------------------------------------------------
+-- TAB: UGC EMOTES
+--
+-- A catalog emote is AssetType 61 (EmoteAnimation) and is NOT an animation.
+-- It is a small wrapper whose root instance is an Animation pointing at the
+-- real asset - catalog id 5895009708 ("Jumping Cheer") holds 5895324424.
+-- Assigning the catalog id to AnimationId gives you an emote that silently
+-- does nothing, which is the same trap the animation packages set.
+--
+-- The list below therefore stores the INNER animation ids, each one pulled
+-- out of its wrapper and confirmed as AssetTypeId 24 through the economy
+-- API. Anything typed in by hand goes through resolveId(), which unwraps a
+-- catalog id and passes a raw animation id straight through - so both kinds
+-- of number work and you do not have to know which one you have.
+----------------------------------------------------------------
+;(function()
+local pEm = addTab("UGC Emotes")
+
+-- name, animation id. The seven classics first, then catalog emotes by
+-- favourites. These are inner ids, ready for AnimationId as they stand.
+local EMOTES = {
+    { "Wave",             507770239 },
+    { "Point",            507770453 },
+    { "Cheer",            507770677 },
+    { "Laugh",            507770818 },
+    { "Dance",            507771019 },
+    { "Dance 2",          507776043 },
+    { "Dance 3",          507777268 },
+    { "Sleep",            10714360343 },
+    { "Hero Landing",     10714360164 },
+    { "Shy",              10714369325 },
+    { "Quiet Waves",      10714390497 },
+    { "Baby Dance",       10713983178 },
+    { "Top Rock",         10714336041 },
+    { "Bored",            10713992055 },
+    { "Twirl",            10714293450 },
+    { "Fashionable",      10714091938 },
+    { "Line Dance",       10714383856 },
+    { "Cower",            4940563117 },
+    { "High Wave",        10714362852 },
+    { "Hot To Go",        85267023718407 },
+    { "Dolphin Dance",    10714068222 },
+    { "Around Town",      10713981723 },
+    { "Celebrate",        10714016223 },
+    { "Show Dem Wrists",  10714377090 },
+    { "Side To Side",     10714366910 },
+    { "Dorky Dance",      10714069471 },
+    { "Jumping Wave",     10714378156 },
+    { "Jumping Cheer",    5895324424 },
+    { "Floss Dance",      10714340543 },
+    { "Monkey",           10714388352 },
+    { "Curtsy",           10714061912 },
+    { "Godlike",          10714347256 },
+    { "Happy",            10714352626 },
+    { "Applaud",          10713966026 },
+    { "Confused",         4940561610 },
+    { "Point 2",          10714395441 },
+    { "Shrug",            10714374484 },
+    { "Hello",            10714359093 },
+    { "Stadium",          10714356920 },
+    { "Salute",           10714389988 },
+    { "Tilt",             10714338461 },
+}
+
+local resolved = {}
+local function resolveId(id)
+    id = tostring(id or ""):match("%d+")
+    if not id then return nil end
+    if resolved[id] then return resolved[id] end
+    -- GetObjects hands the wrapper back as a real instance, so the inner id
+    -- can simply be read off it - no binary parsing of the rbxm. A raw
+    -- animation id comes back as an Animation with an empty AnimationId, or
+    -- fails outright, and falls through to being used as-is.
+    local ok, objs = pcall(function()
+        return game:GetObjects("rbxassetid://" .. id)
+    end)
+    if ok and type(objs) == "table" and objs[1] then
+        local o = objs[1]
+        local inner = nil
+        if o:IsA("Animation") then
+            inner = tostring(o.AnimationId):match("%d+")
+        end
+        pcall(function() o:Destroy() end)
+        if inner and inner ~= id then
+            resolved[id] = inner
+            return inner
+        end
+    end
+    resolved[id] = id
+    return id
+end
+
+local function play(id)
+    task.spawn(function()
+        local a = resolveId(id)
+        if not a then
+            notify("Emotes", "That is not an id.", 4)
+            return
+        end
+        -- playEmote already waits for Length and says so when Roblox refuses
+        -- the asset, so a dead id reports itself rather than doing nothing
+        -- playEmote owns State.currentEmote: it stores the ANIMATION ID
+        -- there, and its resume-after-respawn and stop paths compare against
+        -- that exact value. Writing a display name over it would break both,
+        -- and would also leave a failed emote looking like a running one to
+        -- the animation-pack block, which refuses to apply while one plays.
+        playEmote(a, 0, false, 1)
+    end)
+end
+
+sectionLabel(pEm, "PLAY")
+
+local sBox = Instance.new("TextBox", pEm)
+sBox.Size = UDim2.new(1, 0, 0, 34)
+sBox.BorderSizePixel = 0
+sBox.Text = ""
+sBox.PlaceholderText = "search emotes..."
+sBox.Font = Enum.Font.Gotham; sBox.TextSize = 12
+sBox.TextXAlignment = Enum.TextXAlignment.Left
+sBox.ClearTextOnFocus = false
+corner(sBox, 9); padding(sBox, 0, 0, 14, 14)
+SilenceAPI._theme(sBox, "BackgroundColor3", "bg2")
+SilenceAPI._theme(sBox, "TextColor3", "text")
+SilenceAPI._theme(sBox, "PlaceholderColor3", "textDim")
+
+inputRow(pEm, "Play by id  (catalog or animation)", "", function(v)
+    if tostring(v or ""):match("%d+") then play(v) end
+end)
+
+buttonRow(pEm, "Stop Emote", function()
+    stopEmote()
+    notify("Emotes", "Stopped.", 2)
+end)
+
+local hint = Instance.new("TextLabel", pEm)
+hint.Size = UDim2.new(1, 0, 0, 44)
+hint.BackgroundTransparency = 1
+hint.Text = "  A catalog emote is a wrapper, not an animation - pasting a"
+         .. " catalog id straight in plays nothing.\n  The field above unwraps"
+         .. " it for you, so either kind of id works."
+hint.Font = Enum.Font.Gotham
+hint.TextSize = 10
+hint.TextWrapped = true
+hint.TextXAlignment = Enum.TextXAlignment.Left
+hint.TextYAlignment = Enum.TextYAlignment.Top
+hint.TextColor3 = Theme.textDim
+
+sectionLabel(pEm, "EMOTES")
+
+-- Rows are built by hand rather than with buttonRow: buttonRow registers
+-- every row with the panel-wide search, and forty-one emotes would drown
+-- everything else in it. This tab has a search of its own instead.
+local rows = {}
+for i, e in ipairs(EMOTES) do
+    local b = Instance.new("TextButton", pEm)
+    b.Size = UDim2.new(1, 0, 0, 32)
+    b.BorderSizePixel = 0
+    b.Text = e[1]
+    b.Font = Enum.Font.GothamMedium; b.TextSize = 12
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.AutoButtonColor = false
+    b.LayoutOrder = 100 + i
+    corner(b, 9); padding(b, 0, 0, 14, 60)
+    SilenceAPI._theme(b, "BackgroundColor3", "bg2")
+    SilenceAPI._theme(b, "TextColor3", "text")
+
+    local idl = Instance.new("TextLabel", b)
+    idl.Size = UDim2.new(0, 120, 1, 0); idl.Position = UDim2.new(1, -128, 0, 0)
+    idl.BackgroundTransparency = 1
+    idl.Text = tostring(e[2])
+    idl.Font = Enum.Font.Code; idl.TextSize = 9
+    idl.TextXAlignment = Enum.TextXAlignment.Right
+    idl.TextColor3 = Theme.textDim
+
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg3 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg2 }):Play()
+    end)
+    b.MouseButton1Click:Connect(function() play(e[2]) end)
+
+    rows[#rows + 1] = { btn = b, key = string.lower(e[1]) }
+end
+
+sBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local q = string.lower(tostring(sBox.Text or ""))
+    for _, r in ipairs(rows) do
+        r.btn.Visible = (q == "") or (string.find(r.key, q, 1, true) ~= nil)
+    end
+end)
+
+SilenceAPI._playEmoteId = play
 end)()
 
 ----------------------------------------------------------------
