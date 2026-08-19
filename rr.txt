@@ -387,14 +387,15 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v36"
+SilenceAPI._version = "v37"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
 -- an old window survived. If this says v22, you are being served an old
 -- file and no amount of reloading the panel will change that.
-print("[Silence] ============ " .. SilenceAPI._version
-      .. "  (built " .. SilenceAPI._built .. ") ============")
+print("[Silence] ======== " .. SilenceAPI._version
+      .. "  built " .. SilenceAPI._built
+      .. "  loaded " .. os.date("%H:%M:%S") .. " ========")
 print("[Silence] env initialized, building GUI...")
 
 -- DIAGNOSTIC: catch any uncaught error and display in StarterGui so the
