@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v105"
+SilenceAPI._version = "v107"
 SilenceAPI._built   = "2026-08-19"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -757,7 +757,11 @@ local State = {
     acRiskyOverride = false,  -- user-set: ignore acBlocked and use features anyway
     acHits = 0,               -- last scan hit count (for banner display)
     floatVisible = true,      -- left-side floating S icon visibility (Misc toggle)
-    menuBlur = true,          -- blur the world behind the panel while it is up
+    -- Off by default. Blurring the whole game behind the panel looks fine in
+    -- a screenshot and is a nuisance in play - you still want to see what is
+    -- happening while the panel is open. The switch is in Settings for
+    -- anyone who wants it back.
+    menuBlur = false,         -- blur the world behind the panel while it is up
     -- Hotkey overrides (user-customizable)
     hotkeys = {
         toggleGUI = Enum.KeyCode.RightShift,
@@ -15318,24 +15322,55 @@ local _tagOk, _tagErr = pcall(function()
     end
     SilenceAPI._queueTagScan = queueScan
 
-    -- asking about yourself is the one query the client is allowed
-    task.spawn(function()
-        task.wait(2)
+    -- Asking about yourself is the one ownership query a client may make.
+    --
+    -- A throw is NOT an answer, and folding it into the same false as a
+    -- clean "does not own" is what made a single failed web call at startup
+    -- cost an account its visibility for the whole session. So: a clean no
+    -- ends it, a throw is retried with a widening gap.
+    --
+    -- While the answer is unknown the account stays invisible rather than
+    -- being waved through - treating an error as a yes would turn blocking
+    -- the request into a way in.
+    local passTries = 0
+    local function checkPass()
         if SCRIPT_PASS_ID == 0 then
             selfOwns = true
-        else
-            local ok, owns = pcall(function()
-                return MarketplaceService:UserOwnsGamePassAsync(
-                    LocalPlayer.UserId, SCRIPT_PASS_ID)
-            end)
-            selfOwns = (ok and owns) and true or false
-            passOwnership[LocalPlayer.UserId] = selfOwns
-            if not ok then passError[LocalPlayer.UserId] = tostring(owns):sub(1, 60) end
+            if SilenceAPI._announceSelf then SilenceAPI._announceSelf() end
+            return
         end
-        if selfOwns and SilenceAPI._announceSelf then
-            SilenceAPI._announceSelf()
-        end
-    end)
+        if SilenceAPI._passChecking then return end
+        SilenceAPI._passChecking = true
+        task.spawn(function()
+            while not selfOwns and passTries < 25 do
+                passTries = passTries + 1
+                local ok, owns = pcall(function()
+                    return MarketplaceService:UserOwnsGamePassAsync(
+                        LocalPlayer.UserId, SCRIPT_PASS_ID)
+                end)
+                if ok then
+                    passOwnership[LocalPlayer.UserId] = owns and true or false
+                    passError[LocalPlayer.UserId] = nil
+                    if owns then
+                        selfOwns = true
+                        if SilenceAPI._announceSelf then
+                            SilenceAPI._announceSelf()
+                        end
+                    end
+                    SilenceAPI._passChecking = false
+                    return   -- a clean answer either way is an answer
+                end
+                passError[LocalPlayer.UserId] =
+                    "try " .. passTries .. ": " .. tostring(owns):sub(1, 50)
+                task.wait(math.min(4 * passTries, 45))
+            end
+            SilenceAPI._passChecking = false
+        end)
+    end
+    SilenceAPI._checkPass = checkPass
+    SilenceAPI._passTries = function() return passTries end
+
+    task.spawn(function() task.wait(2); checkPass() end)
 
     track(Players.PlayerAdded:Connect(function(p)
         task.wait(1)
@@ -15779,7 +15814,17 @@ local _tagOk, _tagErr = pcall(function()
         out[#out+1] = ""
         local pn, jn = "-", "-"
         if SilenceAPI._syncNotes then pn, jn = SilenceAPI._syncNotes() end
-        out[#out+1] = "my pass : " .. (selfOwns and "owned, announced" or "not owned")
+        -- "not owned" and "could not ask" are completely different
+        -- problems and used to print the same line
+        local pw = "not owned"
+        if selfOwns then
+            pw = "owned, announced"
+        elseif passError[LocalPlayer.UserId] then
+            pw = "CHECK FAILED, still retrying - " .. tostring(passError[LocalPlayer.UserId])
+        elseif SilenceAPI._passChecking then
+            pw = "checking..."
+        end
+        out[#out+1] = "my pass : " .. pw
         out[#out+1] = "join    : " .. tostring(jn)
         out[#out+1] = "pull    : " .. tostring(pn)
         local known = 0
@@ -15894,7 +15939,11 @@ local _tagOk, _tagErr = pcall(function()
     SilenceAPI._rescanTags = function()
         for uid in pairs(passError) do passError[uid] = nil end
         joinOk, joinTries, announcing = false, 0, false
-        if selfOwns then SilenceAPI._announceSelf() end
+        -- Ask about the pass again first. RESCAN used to be gated on
+        -- selfOwns, so the one button meant to fix an invisible account was
+        -- disabled by exactly the state it existed to repair.
+        if selfOwns then SilenceAPI._announceSelf()
+        else pcall(SilenceAPI._checkPass) end
         pcall(pullRanks)
         tagKnownPlayers()
     end
@@ -17578,6 +17627,25 @@ end
 render()
 SilenceAPI._emoteRender = render
 
+
+-- Once per session, the first time the window is opened, quietly ask the
+-- worker whether it has more than the cache does. The worker rebuilds its
+-- list daily and nobody should have to remember to press a button to receive
+-- that. It costs one request, and only for people who actually open this.
+EW:GetPropertyChangedSignal("Visible"):Connect(function()
+    if not EW.Visible or SilenceAPI._emoteSynced then return end
+    SilenceAPI._emoteSynced = true
+    task.spawn(function()
+        local list = fromWorker()
+        if not list then return end
+        local n = merge(list)
+        if n > 0 then
+            writeCache()
+            render()
+            notify("Emotes", n .. " new, " .. #EMOTES .. " total.", 4)
+        end
+    end)
+end)
 
 SilenceAPI._openEmotes = function() EW.Visible = not EW.Visible end
 
