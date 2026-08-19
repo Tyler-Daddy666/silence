@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v39"
+SilenceAPI._version = "v43"
 SilenceAPI._built   = "2026-08-18"
 -- Printed before anything can go wrong, so the console always tells you
 -- which build actually executed. If this says v26 and the panel says v22,
@@ -1766,6 +1766,7 @@ local function setSlot(i, on)
     local sl = State.accSlots[i]; if not sl then return end
     sl.on = on and true or false
     syncCharConns()
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
     if sl.on then
         if tostring(sl.id or ""):match("%d+") then
             mountSlotInto(getChar(), i)
@@ -1919,6 +1920,30 @@ end
         mount(cfg.head,  "Head",  "h")
         mount(cfg.torso, "Torso", "t")
 
+        -- The numbered slots, each with its own target limb. An R6 rig has
+        -- one part per limb, so the loader has to be told to repaint that
+        -- part instead of welding an R15-shaped segment onto it - the same
+        -- distinction mountSlotInto makes for your own character.
+        if type(cfg.slots) == "table" then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            for i, sl in ipairs(cfg.slots) do
+                local n = tonumber(tostring(sl.id or ""):match("%d+") or "")
+                local part = n and attachPartFor(char, sl.part)
+                if part then
+                    local r6 = nil
+                    if (sl.part == "RightLeg" or sl.part == "LeftLeg")
+                       and hum and hum.RigType == Enum.HumanoidRigType.R6 then
+                        r6 = part
+                    end
+                    local key = "sil_p" .. tostring(player.UserId) .. "_s" .. i
+                    rec.keys[#rec.keys + 1] = key
+                    task.spawn(function()
+                        addAccessoryToCharacter(n, part, char, key, r6)
+                    end)
+                end
+            end
+        end
+
         -- Local only. The server keeps its own numbers for this player, so
         -- nobody else sees the change and it reverts on their next respawn -
         -- which the respawn hook re-applies.
@@ -1940,10 +1965,22 @@ end
 
     -- what travels to everyone else
     SilenceAPI._myLarpPayload = function()
+        -- Only the slots that are switched on and actually carry an id. An
+        -- empty slot in the middle must not shift the ones after it, so this
+        -- rebuilds a dense list rather than copying indices across.
+        local slots = {}
+        for _, sl in ipairs(State.accSlots or {}) do
+            local id = sl.on and tostring(sl.id or ""):match("%d+")
+            if id then
+                slots[#slots + 1] = { id = id, part = sl.part,
+                                      hide = sl.hide and true or false }
+            end
+        end
         return {
             headless = State.headless and true or false,
             head  = State.accHead  or {},
             torso = State.accTorso or {},
+            slots = slots,
             scale = tonumber(State.bodyScale) or 1,
         }
     end
@@ -5479,6 +5516,7 @@ end -- SEARCH BAR
 local TAB_CATEGORY = {
     IMPORTANT = "Home",   Founder       = "Home",
     Player    = "Self",   Skins         = "Self",   ["FPS Boost"] = "Self",
+    Sky       = "Self",
     Avatar    = "Larp",   Roleplay      = "Larp",   Trolling      = "Larp",
     Aimbot    = "Combat", Visual        = "Combat", Players       = "Combat",
     Misc      = "System", AntiCheat     = "System", Hotkeys       = "System",
@@ -5499,7 +5537,7 @@ local CATEGORIES = {
 -- order of the pills inside a group's strip
 local TAB_LO_INSIDE = {
     IMPORTANT = 1, Founder = 2,
-    Player = 1, Skins = 2, ["FPS Boost"] = 3,
+    Player = 1, Skins = 2, Sky = 3, ["FPS Boost"] = 4,
     Avatar = 1, Roleplay = 2, Trolling = 3,
     Aimbot = 1, Visual = 2, Players = 3,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
@@ -5511,6 +5549,7 @@ SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
 SilenceAPI._railPaint = {}   -- repaint fns for the five icon tiles
 SilenceAPI._catBadge  = {}   -- [group] = search-hit badge on its tile
 SilenceAPI._tabDesc = {
+    Sky           = "Time of day, custom skies, weather and effects",
     ["German Voice"] = "Aura and gradients other Silence users can see",
     ["Anti Ban"]  = "Rebuild a dropped voice session",
     Mute          = "Silence yourself or anyone, locally",
@@ -9682,6 +9721,379 @@ track(LocalPlayer.CharacterAdded:Connect(function()
 end))
 
 ----------------------------------------------------------------
+-- SKY
+-- Purely local: Lighting, Atmosphere and post-processing belong to your
+-- client, so none of this is visible to anyone else and none of it touches
+-- the game's own state on the server.
+--
+-- Everything it changes is written down first and put back by RESET, because
+-- a game that dims the lights for a cutscene and finds them already dimmed
+-- has no way to recover on its own.
+--
+-- An IIFE, not do..end: a do..end shares the chunk's registers, and this
+-- file runs at 198 of Luau's 200.
+----------------------------------------------------------------
+;(function()
+local pSky = addTab("Sky")
+
+local LIGHT_KEYS = { "ClockTime", "Brightness", "Ambient", "OutdoorAmbient",
+                     "FogColor", "FogStart", "FogEnd", "ColorShift_Top",
+                     "ColorShift_Bottom", "GlobalShadows", "ExposureCompensation" }
+local SKY_KEYS   = { "SkyboxUp", "SkyboxDn", "SkyboxLf", "SkyboxRt",
+                     "SkyboxFt", "SkyboxBk", "SunTextureId", "MoonTextureId",
+                     "StarCount", "CelestialBodiesShown", "MoonAngularSize",
+                     "SunAngularSize" }
+
+local orig, origSky, made, weatherOn = nil, nil, {}, false
+
+local function ownSky()
+    local sk = Lighting:FindFirstChildOfClass("Sky")
+    if not sk then
+        sk = Instance.new("Sky")
+        sk.Name = "__SIL_Sky"
+        sk.Parent = Lighting
+        made[#made+1] = sk
+    end
+    return sk
+end
+
+local function remember()
+    if orig then return end
+    orig = {}
+    for _, k in ipairs(LIGHT_KEYS) do
+        local ok, v = pcall(function() return Lighting[k] end)
+        if ok then orig[k] = v end
+    end
+    local sk = Lighting:FindFirstChildOfClass("Sky")
+    if sk then
+        origSky = {}
+        for _, k in ipairs(SKY_KEYS) do
+            local ok, v = pcall(function() return sk[k] end)
+            if ok then origSky[k] = v end
+        end
+    end
+end
+
+local function clearMade()
+    weatherOn = false
+    for _, o in ipairs(made) do pcall(function() o:Destroy() end) end
+    made = {}
+end
+
+local function resetSky()
+    clearMade()
+    if orig then
+        for k, v in pairs(orig) do pcall(function() Lighting[k] = v end) end
+    end
+    local sk = Lighting:FindFirstChildOfClass("Sky")
+    if sk and origSky then
+        for k, v in pairs(origSky) do pcall(function() sk[k] = v end) end
+    end
+    notify("Sky", "Put back the way the game had it.", 3)
+end
+
+-- One part high above the camera, moved with it, so the weather follows you
+-- instead of being a puddle of particles where you switched it on.
+local function weather(kind, col, rate, speed, size, rise)
+    local p = Instance.new("Part")
+    p.Name = "__SIL_Weather"
+    p.Size = Vector3.new(140, 1, 140)
+    p.Transparency = 1
+    p.Anchored = true
+    p.CanCollide = false
+    p.CanQuery = false
+    p.CanTouch = false
+    p.Locked = true
+    p.Parent = Workspace
+    made[#made+1] = p
+
+    local e = Instance.new("ParticleEmitter", p)
+    e.Texture = kind
+    e.Rate = rate
+    e.Lifetime = NumberRange.new(1.6, 2.6)
+    e.Speed = NumberRange.new(speed * 0.8, speed)
+    e.SpreadAngle = Vector2.new(8, 8)
+    e.Size = NumberSequence.new(size)
+    e.Color = ColorSequence.new(col)
+    e.LightEmission = 0.4
+    e.LightInfluence = 0
+    e.EmissionDirection = rise and Enum.NormalId.Top or Enum.NormalId.Bottom
+    e.Acceleration = Vector3.new(0, rise and 8 or -70, 0)
+    e.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0,    1),
+        NumberSequenceKeypoint.new(0.12, 0.1),
+        NumberSequenceKeypoint.new(0.9,  0.2),
+        NumberSequenceKeypoint.new(1,    1),
+    })
+
+    weatherOn = true
+    task.spawn(function()
+        while weatherOn and p.Parent do
+            local c = workspace.CurrentCamera
+            if c then
+                p.CFrame = CFrame.new(c.CFrame.Position
+                    + Vector3.new(0, rise and -12 or 60, 0))
+            end
+            task.wait()
+        end
+    end)
+end
+
+local function tint(col, contrast, sat, bloom)
+    local cc = Instance.new("ColorCorrectionEffect")
+    cc.Name = "__SIL_CC"
+    cc.TintColor = col
+    cc.Contrast = contrast or 0
+    cc.Saturation = sat or 0
+    cc.Parent = Lighting
+    made[#made+1] = cc
+    if bloom then
+        local b = Instance.new("BloomEffect")
+        b.Name = "__SIL_Bloom"
+        b.Intensity = bloom
+        b.Size = 24
+        b.Threshold = 0.8
+        b.Parent = Lighting
+        made[#made+1] = b
+    end
+end
+
+-- a slow pulse on the tint, for the presets that should breathe
+local function pulse(cc, lo, hi, period)
+    task.spawn(function()
+        while weatherOn == false and cc.Parent do task.wait(0.2) end
+        while cc.Parent do
+            local t = (tick() % period) / period
+            local k = lo + (hi - lo) * (0.5 - 0.5 * math.cos(t * math.pi * 2))
+            cc.Brightness = k
+            task.wait()
+        end
+    end)
+end
+
+local RAIN   = "rbxasset://textures/particles/sparkles_main.dds"
+local SMOKE  = "rbxasset://textures/particles/smoke_main.dds"
+local FIRE   = "rbxasset://textures/particles/fire_main.dds"
+
+local PRESETS = {
+    { key = "day", label = "Clear Day", apply = function()
+        Lighting.ClockTime = 14
+        Lighting.Brightness = 2
+        Lighting.FogEnd = 100000
+        Lighting.Ambient = Color3.fromRGB(70, 70, 70)
+        Lighting.OutdoorAmbient = Color3.fromRGB(128, 128, 128)
+    end },
+    { key = "night", label = "Night", apply = function()
+        Lighting.ClockTime = 0
+        Lighting.Brightness = 1
+        Lighting.Ambient = Color3.fromRGB(20, 20, 35)
+        Lighting.OutdoorAmbient = Color3.fromRGB(30, 30, 50)
+        Lighting.FogColor = Color3.fromRGB(10, 10, 20)
+        Lighting.FogEnd = 900
+        local sk = ownSky(); sk.StarCount = 5000; sk.CelestialBodiesShown = true
+    end },
+    { key = "blood", label = "Blood Moon", apply = function()
+        Lighting.ClockTime = 0
+        Lighting.Brightness = 1.2
+        Lighting.Ambient = Color3.fromRGB(60, 8, 8)
+        Lighting.OutdoorAmbient = Color3.fromRGB(80, 10, 10)
+        Lighting.FogColor = Color3.fromRGB(40, 0, 0)
+        Lighting.FogEnd = 420
+        Lighting.ColorShift_Top = Color3.fromRGB(120, 0, 0)
+        local sk = ownSky()
+        sk.StarCount = 900
+        sk.CelestialBodiesShown = true
+        sk.MoonAngularSize = 30
+        tint(Color3.fromRGB(255, 120, 120), 0.25, -0.15, 0.9)
+        weather(RAIN, Color3.fromRGB(190, 10, 10), 260, 80, 0.35, false)
+    end },
+    { key = "hell", label = "Hell", apply = function()
+        Lighting.ClockTime = 0
+        Lighting.Brightness = 1.6
+        Lighting.Ambient = Color3.fromRGB(80, 20, 0)
+        Lighting.OutdoorAmbient = Color3.fromRGB(110, 30, 0)
+        Lighting.FogColor = Color3.fromRGB(60, 12, 0)
+        Lighting.FogEnd = 300
+        tint(Color3.fromRGB(255, 150, 90), 0.3, -0.1, 1.2)
+        weather(FIRE, Color3.fromRGB(255, 120, 20), 90, 14, 1.4, true)
+    end },
+    { key = "storm", label = "Storm", apply = function()
+        Lighting.ClockTime = 16
+        Lighting.Brightness = 0.6
+        Lighting.Ambient = Color3.fromRGB(35, 35, 45)
+        Lighting.OutdoorAmbient = Color3.fromRGB(55, 55, 70)
+        Lighting.FogColor = Color3.fromRGB(45, 45, 55)
+        Lighting.FogEnd = 350
+        tint(Color3.fromRGB(200, 210, 235), 0.15, -0.25, 0.4)
+        weather(RAIN, Color3.fromRGB(180, 200, 230), 320, 95, 0.3, false)
+        -- lightning: a hard spike, then back, at uneven intervals
+        task.spawn(function()
+            while weatherOn do
+                task.wait(math.random(30, 90) / 10)
+                if not weatherOn then break end
+                local b = Lighting.Brightness
+                Lighting.Brightness = 6
+                task.wait(0.06)
+                Lighting.Brightness = b
+                task.wait(0.07)
+                Lighting.Brightness = 4
+                task.wait(0.05)
+                Lighting.Brightness = b
+            end
+        end)
+    end },
+    { key = "winter", label = "Winter", apply = function()
+        Lighting.ClockTime = 9
+        Lighting.Brightness = 2.2
+        Lighting.Ambient = Color3.fromRGB(120, 130, 150)
+        Lighting.OutdoorAmbient = Color3.fromRGB(160, 175, 200)
+        Lighting.FogColor = Color3.fromRGB(220, 230, 245)
+        Lighting.FogEnd = 600
+        tint(Color3.fromRGB(225, 240, 255), 0.05, -0.2, 0.6)
+        weather(RAIN, Color3.fromRGB(255, 255, 255), 140, 16, 0.55, false)
+    end },
+    { key = "sunset", label = "Sunset", apply = function()
+        Lighting.ClockTime = 17.6
+        Lighting.Brightness = 1.8
+        Lighting.Ambient = Color3.fromRGB(90, 55, 40)
+        Lighting.OutdoorAmbient = Color3.fromRGB(150, 90, 60)
+        Lighting.FogColor = Color3.fromRGB(230, 140, 80)
+        Lighting.FogEnd = 1200
+        Lighting.ColorShift_Top = Color3.fromRGB(255, 140, 60)
+        tint(Color3.fromRGB(255, 190, 140), 0.1, 0.15, 0.8)
+    end },
+    { key = "toxic", label = "Toxic", apply = function()
+        Lighting.ClockTime = 3
+        Lighting.Brightness = 1.4
+        Lighting.Ambient = Color3.fromRGB(20, 60, 20)
+        Lighting.OutdoorAmbient = Color3.fromRGB(30, 90, 30)
+        Lighting.FogColor = Color3.fromRGB(20, 60, 25)
+        Lighting.FogEnd = 260
+        tint(Color3.fromRGB(160, 255, 160), 0.2, 0.1, 0.7)
+        weather(SMOKE, Color3.fromRGB(120, 255, 120), 40, 6, 3.5, true)
+    end },
+    { key = "void", label = "Void", apply = function()
+        Lighting.ClockTime = 0
+        Lighting.Brightness = 0
+        Lighting.Ambient = Color3.fromRGB(0, 0, 0)
+        Lighting.OutdoorAmbient = Color3.fromRGB(6, 6, 6)
+        Lighting.FogColor = Color3.fromRGB(0, 0, 0)
+        Lighting.FogEnd = 160
+        local sk = ownSky()
+        sk.StarCount = 0
+        sk.CelestialBodiesShown = false
+        tint(Color3.fromRGB(255, 255, 255), 0.4, -1, 0)
+    end },
+    { key = "vapor", label = "Vaporwave", apply = function()
+        Lighting.ClockTime = 18.4
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.fromRGB(70, 30, 90)
+        Lighting.OutdoorAmbient = Color3.fromRGB(120, 60, 160)
+        Lighting.FogColor = Color3.fromRGB(180, 80, 200)
+        Lighting.FogEnd = 900
+        Lighting.ColorShift_Top = Color3.fromRGB(255, 90, 220)
+        tint(Color3.fromRGB(255, 160, 240), 0.2, 0.35, 1.4)
+        local cc = made[#made - 1]
+        if cc and cc:IsA("ColorCorrectionEffect") then pulse(cc, -0.05, 0.12, 6) end
+    end },
+    { key = "eclipse", label = "Eclipse", apply = function()
+        Lighting.ClockTime = 12
+        Lighting.Brightness = 0.3
+        Lighting.Ambient = Color3.fromRGB(25, 20, 30)
+        Lighting.OutdoorAmbient = Color3.fromRGB(40, 30, 45)
+        Lighting.FogColor = Color3.fromRGB(30, 25, 35)
+        Lighting.FogEnd = 700
+        local sk = ownSky()
+        sk.SunAngularSize = 40
+        sk.StarCount = 2500
+        tint(Color3.fromRGB(200, 180, 255), 0.35, -0.3, 1.6)
+    end },
+}
+
+local function applyPreset(ps)
+    remember()
+    clearMade()
+    -- back to a known state first, or two presets stack their fog and tints
+    if orig then
+        for k, v in pairs(orig) do pcall(function() Lighting[k] = v end) end
+    end
+    local ok, err = pcall(ps.apply)
+    if not ok then
+        notify("Sky", "Preset failed: " .. tostring(err):sub(1, 70), 6)
+        return
+    end
+    notify("Sky", ps.label, 3)
+end
+
+------------------------------------------------------------ UI
+sectionLabel(pSky, "TIME OF DAY")
+inputRow(pSky, "Clock  (0 = midnight, 12 = noon)", 14, function(v)
+    remember()
+    local n = math.clamp(tonumber(v) or 14, 0, 24)
+    pcall(function() Lighting.ClockTime = n end)
+end, { min = 0, max = 24 })
+buttonRow(pSky, "Force Day", function()
+    remember(); pcall(function() Lighting.ClockTime = 14 end)
+end)
+buttonRow(pSky, "Force Night", function()
+    remember(); pcall(function() Lighting.ClockTime = 0 end)
+end)
+
+sectionLabel(pSky, "PRESETS")
+do
+    local grid = Instance.new("Frame", pSky)
+    grid.Size = UDim2.new(1, 0, 0, 0)
+    grid.AutomaticSize = Enum.AutomaticSize.Y
+    grid.BackgroundTransparency = 1
+    local lay = Instance.new("UIGridLayout", grid)
+    lay.CellSize = UDim2.new(0, 150, 0, 34)
+    lay.CellPadding = UDim2.new(0, 6, 0, 6)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+    SilenceAPI._registerRow(grid, "sky preset blood moon night storm hell winter")
+
+    for i, ps in ipairs(PRESETS) do
+        local b = Instance.new("TextButton", grid)
+        b.BorderSizePixel = 0
+        b.Text = ps.label
+        b.Font = Enum.Font.GothamMedium
+        b.TextSize = 12
+        b.AutoButtonColor = false
+        b.LayoutOrder = i
+        corner(b, 8)
+        local bs = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+        SilenceAPI._theme(b, "BackgroundColor3", "bg2")
+        SilenceAPI._theme(b, "TextColor3", "text")
+        b.MouseEnter:Connect(function()
+            TweenService:Create(bs, SilenceAPI._twFade,
+                { Color = Theme.accent, Transparency = 0.2 }):Play()
+        end)
+        b.MouseLeave:Connect(function()
+            TweenService:Create(bs, SilenceAPI._twFade,
+                { Color = Theme.bg4, Transparency = 0.6 }):Play()
+        end)
+        b.MouseButton1Click:Connect(function() applyPreset(ps) end)
+    end
+end
+
+sectionLabel(pSky, "BACK TO NORMAL")
+buttonRow(pSky, "RESET SKY", resetSky)
+local skyHint = Instance.new("TextLabel", pSky)
+skyHint.Size = UDim2.new(1, 0, 0, 46)
+skyHint.BackgroundTransparency = 1
+skyHint.Text = "  Local only - nobody else sees your sky. Everything is written"
+            .. " down before the first change, so RESET puts the game's own"
+            .. " lighting back exactly as it was."
+skyHint.Font = Enum.Font.Gotham
+skyHint.TextSize = 10
+skyHint.TextXAlignment = Enum.TextXAlignment.Left
+skyHint.TextYAlignment = Enum.TextYAlignment.Top
+skyHint.TextWrapped = true
+skyHint.TextColor3 = Theme.textDim
+
+SilenceAPI._skyCleanup = resetSky
+end)()
+
+----------------------------------------------------------------
 -- GAMES  /  GERMAN VOICE
 -- An aura is drawn by whoever is looking at it, never by the server. A
 -- client cannot make another client render anything - instances it creates
@@ -10237,6 +10649,7 @@ local _tagOk, _tagErr = pcall(function()
                 headless = t.lp.headless and true or false,
                 head  = type(t.lp.head)  == "table" and t.lp.head  or {},
                 torso = type(t.lp.torso) == "table" and t.lp.torso or {},
+                slots = type(t.lp.slots) == "table" and t.lp.slots or {},
                 scale = tonumber(t.lp.scale) or 1,
             }
         end
@@ -11911,6 +12324,9 @@ local _tagOk, _tagErr = pcall(function()
         -- Saved slots and the on-disk restore go through this same function.
         return true
     end
+    -- exported here rather than next to _tagCode, which sits above this
+    -- definition and would have captured a nil
+    SilenceAPI._applyTagCode = applyTagCode
 
     ------------------------------------------------------------ PAGE: SAVES
     -- Two different things live here. The editor writes the current look to
@@ -13864,6 +14280,7 @@ local APPLY = {
     accessoriesOn= function(v) SilenceAPI._setAccessories(v) end,
     vcBypass     = setVcBypass,
     vcAutoMute   = function(v) State.vcAutoMute = v end,
+    allowJumpscare = function(v) State.allowJumpscare = v end,
     playerLog    = function(v) if SilenceAPI._setPlayerLog then SilenceAPI._setPlayerLog(v) end end,
     autoInteract = function(v) SilenceAPI._setAutoInteract(v) end,
     autoClick    = function(v) SilenceAPI._setAutoClick(v) end,
@@ -13884,7 +14301,7 @@ local APPLY = {
 
 local NUMBERS = { "flySpeed", "freecamSpeed", "aimbotFov", "bodyScale", "slowmo",
                   "autoInteractRange", "uiScale" }
-local STRINGS = { "prefix", "faceId", "walkAnimId", "adminCmd" }
+local STRINGS = { "prefix", "faceId", "walkAnimId", "adminCmd", "jumpSound" }
 
 local function c3ToTbl(c) return { math.floor(c.R*255+0.5), math.floor(c.G*255+0.5), math.floor(c.B*255+0.5) } end
 local function tblToC3(t)
@@ -13914,6 +14331,16 @@ local function buildConfig()
     for i, w in ipairs(State.waypoints) do
         cfg.waypoints[i] = { name = w.name, x = w.x, y = w.y, z = w.z }
     end
+    cfg.aura = {
+        on = State.aura.on and true or false,
+        style = tostring(State.aura.style or "sparkle"),
+        gradient = State.aura.gradient and true or false,
+        rainbow = State.aura.rainbow and true or false,
+        size = tonumber(State.aura.size) or 1,
+        rate = tonumber(State.aura.rate) or 1,
+        color  = c3ToTbl(State.aura.color),
+        color2 = c3ToTbl(State.aura.color2),
+    }
     for i, v in ipairs(State.accHead)  do cfg.accHead[i]  = v end
     for i, v in ipairs(State.accTorso) do cfg.accTorso[i] = v end
     cfg.accSlots = {}
@@ -13970,6 +14397,18 @@ local function applyConfig(cfg)
             end
         end
         if SilenceAPI._refreshWaypoints then pcall(SilenceAPI._refreshWaypoints) end
+    end
+    if type(cfg.aura) == "table" then
+        local a = cfg.aura
+        State.aura.on       = a.on and true or false
+        State.aura.style    = tostring(a.style or State.aura.style)
+        State.aura.gradient = a.gradient and true or false
+        State.aura.rainbow  = a.rainbow and true or false
+        State.aura.size     = tonumber(a.size) or State.aura.size
+        State.aura.rate     = tonumber(a.rate) or State.aura.rate
+        State.aura.color    = tblToC3(a.color)  or State.aura.color
+        State.aura.color2   = tblToC3(a.color2) or State.aura.color2
+        if SilenceAPI._refreshAura then pcall(SilenceAPI._refreshAura) end
     end
     if type(cfg.accHead)  == "table" then State.accHead  = SilenceAPI._parseIdList(cfg.accHead)  end
     if type(cfg.accTorso) == "table" then State.accTorso = SilenceAPI._parseIdList(cfg.accTorso) end
@@ -14071,6 +14510,10 @@ end)
 toggleRow(pCfg, "Auto-load on inject", function() return autoLoad end, function(v)
     autoLoad = v
     notify("Config", v and "Will auto-load next inject" or "Auto-load off", 2)
+end)
+
+buttonRow(pCfg, "CONFIG EDITOR  (bundle a config with a tag)", function()
+    if SilenceAPI._openConfigEditor then SilenceAPI._openConfigEditor() end
 end)
 
 sectionLabel(pCfg, "PROFILES")
@@ -14226,9 +14669,13 @@ sectionLabel(pCfg, "WHAT GETS SAVED")
 local cfgHint = Instance.new("TextLabel", pCfg)
 cfgHint.Size = UDim2.new(1, 0, 0, 96)
 cfgHint.BackgroundTransparency = 1
-cfgHint.Text = "  All toggles, ESP/tracer/nametag colours, aimbot FOV, walk/fly speeds,\n"
-            .. "  every keybind, your waypoints and your Larp avatar setup\n"
-            .. "  (accessory IDs, body scale, face).\n\n"
+cfgHint.Text = "  Every toggle, all colours including the panel's own UI colours,\n"
+            .. "  aimbot FOV, walk/fly speeds, every keybind, waypoints, the\n"
+            .. "  Larp avatar setup (accessory IDs, body scale, face), your\n"
+            .. "  aura, the admin chat command and the jumpscare sound.\n\n"
+            .. "  Your TAG design is not in here - it saves itself on every\n"
+            .. "  change to silence_tagstyle.txt and has its own five slots\n"
+            .. "  under the tag editor's SAVES tab.\n\n"
             .. "  Fly and Freecam are never auto-restored - coming back mid-air\n"
             .. "  before the GUI is up is worse than re-clicking them."
 cfgHint.Font = Enum.Font.Gotham; cfgHint.TextSize = 10
@@ -14238,6 +14685,10 @@ cfgHint.TextYAlignment = Enum.TextYAlignment.Top
 
 SilenceAPI._saveConfig = saveConfig
 SilenceAPI._loadConfig = loadConfig
+-- the config editor bundles one of these with a tag design, so it needs the
+-- raw table rather than the file
+SilenceAPI._buildConfig      = buildConfig
+SilenceAPI._applyConfigTable = applyConfig
 
 -- auto-load, deferred so the rest of the script finishes building first
 task.spawn(function()
@@ -14255,10 +14706,300 @@ end)
 end)()
 
 ----------------------------------------------------------------
+-- CONFIG EDITOR
+-- A bundle is one saved thing holding BOTH halves: the panel config that
+-- silence_config.json normally carries, and the SILTAG1 string the tag
+-- editor produces. They were two separate saves in two separate places
+-- before, so restoring a look meant remembering which config went with which
+-- tag - and getting it wrong quietly gave you somebody else's colours.
+--
+-- Exactly one bundle can be marked AUTO. On inject that one is applied after
+-- everything else has finished building, which is why it waits rather than
+-- running inline.
+--
+-- An IIFE: a do..end would share the chunk's registers and this file runs at
+-- 198 of Luau's 200.
+----------------------------------------------------------------
+;(function()
+local BFILE, NB = "silence_bundles.json", 8
+local bundles = {}
+for i = 1, NB do
+    bundles[i] = { name = "Bundle " .. i, cfg = nil, tag = nil, auto = false }
+end
+
+local function canB()
+    return type(writefile) == "function" and type(readfile) == "function"
+end
+
+local function saveB()
+    if not canB() then return end
+    local HS = game:GetService("HttpService")
+    pcall(function() writefile(BFILE, HS:JSONEncode(bundles)) end)
+end
+
+local function loadB()
+    if not canB() then return end
+    local HS = game:GetService("HttpService")
+    local okR, body = pcall(function() return readfile(BFILE) end)
+    if not okR or type(body) ~= "string" or body == "" then return end
+    local okD, data = pcall(function() return HS:JSONDecode(body) end)
+    if not okD or type(data) ~= "table" then return end
+    for i = 1, NB do
+        local e = data[i]
+        if type(e) == "table" then
+            bundles[i].name = tostring(e.name or bundles[i].name):sub(1, 24)
+            bundles[i].cfg  = type(e.cfg) == "table" and e.cfg or nil
+            bundles[i].tag  = type(e.tag) == "string" and e.tag ~= "" and e.tag or nil
+            bundles[i].auto = e.auto and true or false
+        end
+    end
+end
+loadB()
+
+------------------------------------------------------------ WINDOW
+local CE = Instance.new("Frame", Gui)
+CE.Name = "ConfigEditor"
+CE.Size = UDim2.new(0, 660, 0, 540)
+CE.Position = UDim2.new(0.5, -330, 0.5, -270)
+CE.BackgroundColor3 = Theme.bg
+CE.BorderSizePixel = 0
+CE.Visible = false
+CE.Active = true
+CE.ZIndex = 200
+SilenceAPI._glass(CE, { radius = 16, transparency = 0.2, edge = 0.3,
+                        glowThickness = 2 })
+SilenceAPI._blurWatch(CE)
+
+local hdr = Instance.new("Frame", CE)
+hdr.Size = UDim2.new(1, 0, 0, 40)
+hdr.BackgroundTransparency = 1
+hdr.BorderSizePixel = 0
+hdr.Active = true
+hdr.ZIndex = 201
+
+local hTitle = Instance.new("TextLabel", hdr)
+hTitle.Size = UDim2.new(1, -60, 1, 0)
+hTitle.Position = UDim2.new(0, 16, 0, 0)
+hTitle.BackgroundTransparency = 1
+hTitle.Text = "CONFIG EDITOR"
+hTitle.Font = Enum.Font.GothamBold
+hTitle.TextSize = 14
+hTitle.TextXAlignment = Enum.TextXAlignment.Left
+hTitle.ZIndex = 202
+SilenceAPI._theme(hTitle, "TextColor3", "text")
+
+local hClose = Instance.new("TextButton", hdr)
+hClose.Size = UDim2.new(0, 28, 0, 28)
+hClose.Position = UDim2.new(1, -36, 0, 6)
+hClose.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+hClose.BorderSizePixel = 0
+hClose.Text = "X"
+hClose.Font = Enum.Font.GothamBold
+hClose.TextSize = 14
+hClose.AutoButtonColor = false
+hClose.ZIndex = 202
+corner(hClose, 6); stroke(hClose, Theme.accent, 1, 0.5)
+SilenceAPI._theme(hClose, "TextColor3", "text")
+hClose.MouseButton1Click:Connect(function() CE.Visible = false end)
+makeHeaderDrag(CE, hdr)
+
+local list = Instance.new("ScrollingFrame", CE)
+list.Size = UDim2.new(1, -20, 1, -100)
+list.Position = UDim2.new(0, 10, 0, 46)
+list.BackgroundTransparency = 1
+list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.ScrollingDirection = Enum.ScrollingDirection.Y
+list.ZIndex = 201
+SilenceAPI._theme(list, "ScrollBarImageColor3", "accent")
+local lay = Instance.new("UIListLayout", list)
+lay.Padding = UDim.new(0, 6)
+lay.SortOrder = Enum.SortOrder.LayoutOrder
+lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    list.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 12)
+end)
+
+local foot = Instance.new("TextLabel", CE)
+foot.Size = UDim2.new(1, -32, 0, 44)
+foot.Position = UDim2.new(0, 16, 1, -50)
+foot.BackgroundTransparency = 1
+foot.Font = Enum.Font.Gotham
+foot.TextSize = 10
+foot.TextXAlignment = Enum.TextXAlignment.Left
+foot.TextYAlignment = Enum.TextYAlignment.Top
+foot.TextWrapped = true
+foot.Text = "  SAVE stores whatever is switched on right now plus your current"
+         .. " tag design, in one bundle. AUTO applies that bundle by itself"
+         .. " after the next inject - only one can hold it."
+foot.ZIndex = 202
+SilenceAPI._theme(foot, "TextColor3", "textDim")
+
+------------------------------------------------------------ ROWS
+local paints = {}
+local function mini(parent, label, x, w, cb)
+    local b = Instance.new("TextButton", parent)
+    b.Size = UDim2.new(0, w, 0, 24)
+    b.Position = UDim2.new(0, x, 0, 48)
+    b.BorderSizePixel = 0
+    b.Text = label
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 10
+    b.AutoButtonColor = false
+    b.ZIndex = 203
+    corner(b, 6)
+    SilenceAPI._theme(b, "BackgroundColor3", "bg3")
+    SilenceAPI._theme(b, "TextColor3", "text")
+    local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+    b.MouseEnter:Connect(function()
+        TweenService:Create(st, SilenceAPI._twFade,
+            { Color = Theme.accent, Transparency = 0.2 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(st, SilenceAPI._twFade,
+            { Color = Theme.bg4, Transparency = 0.6 }):Play()
+    end)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+for i = 1, NB do
+    local r = Instance.new("Frame", list)
+    r.Size = UDim2.new(1, -6, 0, 82)
+    r.BorderSizePixel = 0
+    r.LayoutOrder = i
+    r.ZIndex = 202
+    corner(r, 9)
+    SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+    local rst = stroke(r, Theme.bg4, 1, 0.5, "bg4")
+
+    local nameBox = Instance.new("TextBox", r)
+    nameBox.Size = UDim2.new(0, 260, 0, 24)
+    nameBox.Position = UDim2.new(0, 14, 0, 10)
+    nameBox.BackgroundTransparency = 1
+    nameBox.Text = bundles[i].name
+    nameBox.PlaceholderText = "Bundle " .. i
+    nameBox.Font = Enum.Font.GothamBold
+    nameBox.TextSize = 13
+    nameBox.TextXAlignment = Enum.TextXAlignment.Left
+    nameBox.ClearTextOnFocus = false
+    nameBox.ZIndex = 203
+    SilenceAPI._theme(nameBox, "TextColor3", "text")
+
+    local what = Instance.new("TextLabel", r)
+    what.Size = UDim2.new(0, 300, 0, 24)
+    what.Position = UDim2.new(1, -314, 0, 10)
+    what.BackgroundTransparency = 1
+    what.Font = Enum.Font.Code
+    what.TextSize = 10
+    what.TextXAlignment = Enum.TextXAlignment.Right
+    what.ZIndex = 203
+    SilenceAPI._theme(what, "TextColor3", "textDim")
+
+    local function paint()
+        local b = bundles[i]
+        local bits = {}
+        bits[#bits+1] = b.cfg and "config" or "no config"
+        bits[#bits+1] = b.tag and "tag" or "no tag"
+        if b.auto then bits[#bits+1] = "AUTO ON INJECT" end
+        what.Text = table.concat(bits, "   /   ")
+        rst.Color = b.auto and Theme.accent or Theme.bg4
+        rst.Transparency = b.auto and 0.1 or 0.5
+    end
+    paints[#paints+1] = paint
+    paint()
+
+    nameBox.FocusLost:Connect(function()
+        local t = tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""
+        if t == "" then t = "Bundle " .. i end
+        bundles[i].name = t:sub(1, 24)
+        nameBox.Text = bundles[i].name
+        saveB()
+    end)
+
+    mini(r, "SAVE BOTH", 14, 92, function()
+        if not canB() then
+            notify("Config", "This executor has no writefile.", 4); return
+        end
+        if SilenceAPI._buildConfig then
+            local ok, c = pcall(SilenceAPI._buildConfig)
+            if ok then bundles[i].cfg = c end
+        end
+        if SilenceAPI._tagCode then
+            local ok, t = pcall(SilenceAPI._tagCode)
+            if ok and type(t) == "string" and t ~= "" then bundles[i].tag = t end
+        end
+        saveB(); paint()
+        notify("Config", "Saved into " .. bundles[i].name, 3)
+    end)
+
+    mini(r, "LOAD", 112, 74, function()
+        local b = bundles[i]
+        if not b.cfg and not b.tag then
+            notify("Config", b.name .. " is empty.", 3); return
+        end
+        local done = {}
+        if b.cfg and SilenceAPI._applyConfigTable then
+            if pcall(SilenceAPI._applyConfigTable, b.cfg) then done[#done+1] = "config" end
+        end
+        if b.tag and SilenceAPI._applyTagCode then
+            if pcall(SilenceAPI._applyTagCode, b.tag) then done[#done+1] = "tag" end
+        end
+        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+        if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+        notify("Config", b.name .. " restored (" .. table.concat(done, " + ") .. ")", 4)
+    end)
+
+    mini(r, "AUTO", 194, 68, function()
+        local want = not bundles[i].auto
+        -- only one, or two of them would fight over the same panel on inject
+        for k = 1, NB do bundles[k].auto = false end
+        bundles[i].auto = want
+        saveB()
+        for _, fn in ipairs(paints) do fn() end
+        notify("Config", want and (bundles[i].name .. " loads on inject")
+                              or "Auto-load off", 4)
+    end)
+
+    mini(r, "CLEAR", 270, 68, function()
+        bundles[i].cfg, bundles[i].tag, bundles[i].auto = nil, nil, false
+        saveB(); paint()
+        notify("Config", bundles[i].name .. " cleared.", 2)
+    end)
+end
+
+SilenceAPI._openConfigEditor = function()
+    CE.Visible = not CE.Visible
+end
+
+-- Deferred well past the panel build: applyConfig walks every setter and
+-- every refresher, and half of them do not exist yet while the tabs are
+-- still being created.
+task.spawn(function()
+    task.wait(4)
+    for i = 1, NB do
+        local b = bundles[i]
+        if b.auto then
+            if b.cfg and SilenceAPI._applyConfigTable then
+                pcall(SilenceAPI._applyConfigTable, b.cfg)
+            end
+            if b.tag and SilenceAPI._applyTagCode then
+                pcall(SilenceAPI._applyTagCode, b.tag)
+            end
+            for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+            notify("Config", b.name .. " loaded automatically.", 5)
+            break
+        end
+    end
+end)
+end)()
+
+----------------------------------------------------------------
 -- CLEANUP
 ----------------------------------------------------------------
 function SilenceAPI.cleanup()
     if SilenceAPI._leave then pcall(SilenceAPI._leave) end
+    if SilenceAPI._skyCleanup then pcall(SilenceAPI._skyCleanup) end
     pcall(stopFly)
     State.silentAim = false; State.magicBullets = false
     pcall(setEsp,false); pcall(setChams,false); pcall(setTracers,false)
