@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v112"
+SilenceAPI._version = "v113"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -7747,103 +7747,487 @@ end)()
 ;(function()
 local pSkins = addTab("Skins")
 
-sectionLabel(pSkins, "CURRENTLY WEARING")
-local wearingLbl = Instance.new("TextLabel", pSkins)
-wearingLbl.Size = UDim2.new(1,0,0,44)
-wearingLbl.BorderSizePixel = 0
-wearingLbl.Text = "  Original (your avatar)"
-wearingLbl.Font = Enum.Font.GothamBold; wearingLbl.TextSize = 14
-wearingLbl.TextXAlignment = Enum.TextXAlignment.Left
-corner(wearingLbl, 9); padding(wearingLbl, 0,0,12,12)
-SilenceAPI._theme(wearingLbl, "BackgroundColor3", "bg2")
-SilenceAPI._theme(wearingLbl, "TextColor3", "text")
-stroke(wearingLbl, Theme.bg4, 1, 1, "bg4")
+----------------------------------------------------------------
+-- AVATAR STUDIO
+--
+-- What is actually possible here, established rather than assumed:
+--
+--   Humanoid:ApplyDescriptionAsync throws "can only be called by the
+--   backend server" on any character the SERVER built - which is every
+--   real character. It only works on a humanoid the client made itself.
+--   Elevated identity does not help: that is a replication gate, not a
+--   security one. So the look is applied piece by piece instead.
+--
+--   Players:GetCharacterAppearanceInfoAsync(uid) IS client callable and
+--   needs no auth. It returns assets, body colours, scales and the avatar
+--   type for ANY account, in the server or not. That is the whole engine
+--   of this window.
+--
+--   Nothing here replicates. Other players see your real avatar. Other
+--   SILENCE users see this, because the larp payload carries it through
+--   the worker - that is the only channel there is.
+----------------------------------------------------------------
+local AS = SilenceAPI._gameWindow("AVATAR STUDIO",
+    "steal a look, reshape the body, save it for later")
+AS.Size = UDim2.new(0, 720, 0, 620)
+AS.Position = UDim2.new(0.5, -360, 0.5, -310)
 
-local resetSkinBtn = Instance.new("TextButton", pSkins)
-resetSkinBtn.Size = UDim2.new(1,0,0,42); resetSkinBtn.BackgroundColor3 = Color3.fromRGB(180,50,90)
-resetSkinBtn.BorderSizePixel = 0; resetSkinBtn.Text = "RESET TO MY ORIGINAL SKIN"
-resetSkinBtn.Font = Enum.Font.GothamBold; resetSkinBtn.TextSize = 13
-resetSkinBtn.AutoButtonColor = true
-corner(resetSkinBtn, 10)
-SilenceAPI._theme(resetSkinBtn, "TextColor3", "text")
-resetSkinBtn.MouseButton1Click:Connect(resetSkin)
+-- asset type ids, from the catalog. Anything in ACC is worn as an
+-- Accessory and welds itself by its own Attachment; the rest is clothing
+-- or a face and gets written onto the character directly.
+local ACC = {}
+for _, t in ipairs({ 8, 41, 42, 43, 44, 45, 46, 47,
+                     64, 65, 66, 67, 68, 69, 70, 71, 72 }) do ACC[t] = true end
 
-sectionLabel(pSkins, "COPY FROM PLAYER")
-local skinSearch = inputRow(pSkins, "Player Name", "", function() end)
-buttonRow(pSkins, "COPY (typed name)", function()
-    local p = findPlayer(skinSearch.Text)
-    if p then copyPlayerSkin(p) else notify("Skin","Player not found",3) end
-end)
-buttonRow(pSkins, "COPY RANDOM PLAYER", function()
-    local list = {}
-    for _,p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then table.insert(list, p) end
+local status
+local function say(t)
+    if status then status.Text = "  " .. tostring(t) end
+end
+
+----------------------------------------------------------------- TABS
+local pages, tabBtns = {}, {}
+local function showPage(name)
+    for n, fr in pairs(pages) do fr.Visible = (n == name) end
+    for n, b in pairs(tabBtns) do
+        b.BackgroundColor3 = (n == name) and Theme.accent or Theme.bg2
+        b.TextColor3       = (n == name) and Theme.bg     or Theme.textDim
     end
-    if #list == 0 then notify("Skin","No other players",3) return end
-    copyPlayerSkin(list[math.random(1,#list)])
+end
+
+local function addPage(name, order)
+    local b = Instance.new("TextButton", AS)
+    b.Size = UDim2.new(0, 96, 0, 26)
+    b.Position = UDim2.new(0, 20 + (order - 1) * 102, 0, 54)
+    b.BorderSizePixel = 0
+    b.Text = name
+    b.Font = Enum.Font.GothamBold; b.TextSize = 10
+    b.AutoButtonColor = false
+    b.ZIndex = 400
+    corner(b, 7)
+    b.MouseButton1Click:Connect(function() showPage(name) end)
+    tabBtns[name] = b
+
+    local fr = Instance.new("ScrollingFrame", AS)
+    fr.Size = UDim2.new(1, -40, 1, -142)
+    fr.Position = UDim2.new(0, 20, 0, 90)
+    fr.BackgroundTransparency = 1
+    fr.BorderSizePixel = 0
+    fr.ScrollBarThickness = 4
+    fr.CanvasSize = UDim2.new(0, 0, 0, 0)
+    fr.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    fr.Visible = false
+    fr.ZIndex = 400
+    local ly = Instance.new("UIListLayout", fr)
+    ly.Padding = UDim.new(0, 6); ly.SortOrder = Enum.SortOrder.LayoutOrder
+    pages[name] = fr
+    return fr
+end
+
+local pSteal = addPage("STEAL",  1)
+local pBody  = addPage("BODY",   2)
+local pRig   = addPage("RIG",    3)
+local pSaved = addPage("SAVED",  4)
+
+status = Instance.new("TextLabel", AS)
+status.Size = UDim2.new(1, -40, 0, 34); status.Position = UDim2.new(0, 20, 1, -44)
+status.BackgroundTransparency = 1
+status.Text = "  ready"
+status.Font = Enum.Font.Gotham; status.TextSize = 10
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.TextYAlignment = Enum.TextYAlignment.Top
+status.TextWrapped = true
+status.ZIndex = 400
+SilenceAPI._theme(status, "TextColor3", "textDim")
+
+----------------------------------------------------------------- helpers
+local function row(parent, h)
+    local f = Instance.new("Frame", parent)
+    f.Size = UDim2.new(1, -6, 0, h or 34)
+    f.BorderSizePixel = 0
+    f.BackgroundColor3 = Theme.bg2
+    f.ZIndex = 401
+    corner(f, 8)
+    return f
+end
+
+local function label(parent, txt, h, dim)
+    local l = Instance.new("TextLabel", parent)
+    l.Size = UDim2.new(1, -6, 0, h or 30)
+    l.BackgroundTransparency = 1
+    l.Text = "  " .. txt
+    l.Font = Enum.Font.Gotham; l.TextSize = 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextYAlignment = Enum.TextYAlignment.Top
+    l.TextWrapped = true
+    l.ZIndex = 402
+    l.TextColor3 = dim and Theme.textDim or Theme.text
+    return l
+end
+
+local function btn(parent, txt, cb)
+    local b = Instance.new("TextButton", parent)
+    b.Size = UDim2.new(1, -6, 0, 34)
+    b.BorderSizePixel = 0
+    b.Text = txt
+    b.Font = Enum.Font.GothamMedium; b.TextSize = 12
+    b.TextXAlignment = Enum.TextXAlignment.Left
+    b.AutoButtonColor = false
+    b.ZIndex = 401
+    corner(b, 8); padding(b, 0, 0, 14, 14)
+    b.BackgroundColor3 = Theme.bg2
+    SilenceAPI._theme(b, "TextColor3", "text")
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg3 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade,
+            { BackgroundColor3 = Theme.bg2 }):Play()
+    end)
+    b.MouseButton1Click:Connect(cb)
+    return b
+end
+
+----------------------------------------------------------------- STEAL
+label(pSteal, "Type a username or a user id. The account does not have to be"
+           .. " in this server - the look is fetched from Roblox itself.", 34, true)
+
+local idBox = Instance.new("TextBox", pSteal)
+idBox.Size = UDim2.new(1, -6, 0, 32)
+idBox.BorderSizePixel = 0
+idBox.Text = ""
+idBox.PlaceholderText = "username or user id..."
+idBox.Font = Enum.Font.Gotham; idBox.TextSize = 12
+idBox.TextXAlignment = Enum.TextXAlignment.Left
+idBox.ClearTextOnFocus = false
+idBox.ZIndex = 401
+corner(idBox, 8); padding(idBox, 0, 0, 12, 12)
+SilenceAPI._theme(idBox, "BackgroundColor3", "bg2")
+SilenceAPI._theme(idBox, "TextColor3", "text")
+SilenceAPI._theme(idBox, "PlaceholderColor3", "textDim")
+
+-- Wears one fetched look. Accessories go on as Accessories and weld
+-- themselves; clothing and the face are written straight onto the
+-- character. Body colours and scales come from the same call.
+local function wearInfo(info, who)
+    local char = getChar()
+    if not char then say("no character") return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+
+    -- clear what a previous steal put on, but leave the slot accessories
+    -- alone - those are the user's own Korblox and horns
+    for _, d in ipairs(char:GetChildren()) do
+        if d:IsA("Accessory") and tostring(d.Name):sub(1, 8) == "sil_ste_" then
+            pcall(function() d:Destroy() end)
+        end
+    end
+
+    local worn, i = 0, 0
+    for _, a in ipairs(info.assets or {}) do
+        local aid = tonumber(a.id)
+        local at  = tonumber(a.assetType and a.assetType.id or a.assetTypeId)
+        if aid and at then
+            i = i + 1
+            if ACC[at] then
+                local key = "sil_ste_" .. tostring(i)
+                task.spawn(function()
+                    addAccessoryToCharacter(aid, char:FindFirstChild("Head"),
+                                            char, key, nil)
+                end)
+                worn = worn + 1
+            elseif at == 11 then
+                local sh = char:FindFirstChildOfClass("Shirt")
+                            or Instance.new("Shirt", char)
+                pcall(function()
+                    sh.ShirtTemplate = "rbxassetid://" .. tostring(aid)
+                end)
+                worn = worn + 1
+            elseif at == 12 then
+                local pt = char:FindFirstChildOfClass("Pants")
+                            or Instance.new("Pants", char)
+                pcall(function()
+                    pt.PantsTemplate = "rbxassetid://" .. tostring(aid)
+                end)
+                worn = worn + 1
+            elseif at == 2 then
+                local tsh = char:FindFirstChildOfClass("ShirtGraphic")
+                             or Instance.new("ShirtGraphic", char)
+                pcall(function()
+                    tsh.Graphic = "rbxassetid://" .. tostring(aid)
+                end)
+                worn = worn + 1
+            elseif at == 18 then
+                local head = char:FindFirstChild("Head")
+                local f = head and head:FindFirstChild("face")
+                if f and f:IsA("Decal") then
+                    pcall(function()
+                        f.Texture = "rbxassetid://" .. tostring(aid)
+                    end)
+                    worn = worn + 1
+                end
+            end
+        end
+    end
+
+    -- body colours, as Color3 where the API gives them
+    local bc = char:FindFirstChildOfClass("BodyColors")
+    local c3 = info.bodyColor3s or info.bodyColors
+    if bc and type(c3) == "table" then
+        local function hex(v)
+            if typeof(v) == "Color3" then return v end
+            local t = tostring(v):gsub("#", "")
+            local n = tonumber(t, 16)
+            if not n then return nil end
+            return Color3.fromRGB(math.floor(n / 65536) % 256,
+                                  math.floor(n / 256) % 256, n % 256)
+        end
+        for k, prop in pairs({
+            headColor3 = "HeadColor3", torsoColor3 = "TorsoColor3",
+            leftArmColor3 = "LeftArmColor3", rightArmColor3 = "RightArmColor3",
+            leftLegColor3 = "LeftLegColor3", rightLegColor3 = "RightLegColor3",
+        }) do
+            local col = hex(c3[k])
+            if col then pcall(function() bc[prop] = col end) end
+        end
+    end
+
+    -- proportions
+    if hum and type(info.scales) == "table" then
+        for k, prop in pairs({
+            height = "BodyHeightScale", width = "BodyWidthScale",
+            depth = "BodyDepthScale", head = "HeadScale",
+            bodyType = "BodyTypeScale", proportion = "BodyProportionScale",
+        }) do
+            local v = tonumber(info.scales[k])
+            local o = v and hum:FindFirstChild(prop)
+            if o then pcall(function() o.Value = v end) end
+        end
+    end
+
+    say("wearing " .. tostring(who) .. " - " .. worn .. " pieces applied."
+        .. "  Other players still see your real avatar; other Silence users"
+        .. " see this.")
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end
+
+local function stealFrom(text)
+    text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then say("type a name or an id first") return end
+    say("looking up " .. text .. "...")
+    task.spawn(function()
+        local uid = tonumber(text)
+        if not uid then
+            local ok, r = pcall(function()
+                return Players:GetUserIdFromNameAsync(text)
+            end)
+            if not ok or not r then say("no account called " .. text) return end
+            uid = r
+        end
+        local okI, info = pcall(function()
+            return Players:GetCharacterAppearanceInfoAsync(uid)
+        end)
+        if not okI or type(info) ~= "table" then
+            say("Roblox refused the lookup: " .. tostring(info):sub(1, 90))
+            return
+        end
+        wearInfo(info, text)
+    end)
+end
+
+btn(pSteal, "FETCH AND WEAR", function() stealFrom(idBox.Text) end)
+idBox.FocusLost:Connect(function(enter)
+    if enter then stealFrom(idBox.Text) end
+end)
+btn(pSteal, "RESET TO MY OWN AVATAR", function()
+    local char = getChar()
+    if char then
+        for _, d in ipairs(char:GetChildren()) do
+            if d:IsA("Accessory") and tostring(d.Name):sub(1, 8) == "sil_ste_" then
+                pcall(function() d:Destroy() end)
+            end
+        end
+    end
+    pcall(resetSkin)
+    say("back to your own look")
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
 end)
 
-sectionLabel(pSkins, "SAVE TO ACCOUNT")
-buttonRow(pSkins, "SAVE TYPED NAME GLOBALLY", function()
-    local p = findPlayer(skinSearch.Text)
-    if p then saveSkinGlobally(p) else notify("Skin","Player not found",3) end
-end)
-buttonRow(pSkins, "SAVE CURRENTLY-COPIED GLOBALLY", function()
-    if currentSkinPlayer then saveSkinGlobally(currentSkinPlayer)
-    else notify("Skin","Copy a skin first",3) end
-end)
+label(pSteal, "IN THIS SERVER", 24)
+local list = Instance.new("Frame", pSteal)
+list.Size = UDim2.new(1, -6, 0, 0)
+list.BackgroundTransparency = 1
+list.AutomaticSize = Enum.AutomaticSize.Y
+local lly = Instance.new("UIListLayout", list)
+lly.Padding = UDim.new(0, 4); lly.SortOrder = Enum.SortOrder.LayoutOrder
 
-sectionLabel(pSkins, "ONLINE PLAYERS")
-local skinList = Instance.new("Frame", pSkins)
-skinList.Size = UDim2.new(1,0,0,0); skinList.BackgroundTransparency = 1
-skinList.AutomaticSize = Enum.AutomaticSize.Y
-local skinLayout = Instance.new("UIListLayout", skinList)
-skinLayout.Padding = UDim.new(0,4); skinLayout.SortOrder = Enum.SortOrder.LayoutOrder
-
-local function refreshSkinList()
-    for _,c in ipairs(skinList:GetChildren()) do
+local function refreshList()
+    for _, c in ipairs(list:GetChildren()) do
         if c:IsA("TextButton") then c:Destroy() end
     end
-    for _,p in ipairs(Players:GetPlayers()) do
+    for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
-            local b = Instance.new("TextButton", skinList)
-            b.Size = UDim2.new(1,0,0,32); b.BackgroundColor3 = Theme.bg2
-            b.BorderSizePixel = 0
-            b.Text = "  "..p.DisplayName.."  (@"..p.Name..")"
-            b.Font = Enum.Font.GothamMedium; b.TextSize = 12
-            b.TextColor3 = Theme.text
-            b.TextXAlignment = Enum.TextXAlignment.Left
-            b.AutoButtonColor = false
-            corner(b,6)
-            b.MouseEnter:Connect(function()
-                TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3=Color3.fromRGB(40,40,40)}):Play()
+            btn(list, p.DisplayName .. "   (@" .. p.Name .. ")", function()
+                -- somebody standing here can be copied straight off their
+                -- character, which is faster and needs no web call at all
+                pcall(copyPlayerSkin, p)
+                say("copied " .. p.Name .. " off their character")
+                if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
             end)
-            b.MouseLeave:Connect(function()
-                TweenService:Create(b, TweenInfo.new(0.2), {BackgroundColor3=Theme.bg2}):Play()
-            end)
-            b.MouseButton1Click:Connect(function() copyPlayerSkin(p) end)
         end
     end
 end
-refreshSkinList()
-track(Players.PlayerAdded:Connect(refreshSkinList))
-track(Players.PlayerRemoving:Connect(refreshSkinList))
+refreshList()
+track(Players.PlayerAdded:Connect(function() task.wait(0.5); refreshList() end))
+track(Players.PlayerRemoving:Connect(function() task.wait(0.2); refreshList() end))
 
-local lastSkinUpdate = 0
-track(RunService.Heartbeat:Connect(function()
-    if not wearingLbl or not wearingLbl.Parent then return end
-    if tick() - lastSkinUpdate < 0.5 then return end
-    lastSkinUpdate = tick()
-    pcall(function()
-        if currentSkinPlayer then
-            wearingLbl.Text = "  Wearing: "..currentSkinPlayer.Name
-            wearingLbl.TextColor3 = Theme.accent2
-        else
-            wearingLbl.Text = "  Original (your avatar)"
-            wearingLbl.TextColor3 = Theme.text
-        end
+----------------------------------------------------------------- BODY
+label(pBody, "Proportions are local. They revert on respawn and the panel"
+          .. " puts them back.", 28, true)
+
+local function scaleBtn(name, v)
+    btn(pBody, name, function()
+        if SilenceAPI._setBodyScale then SilenceAPI._setBodyScale(v) end
+        say("body scale " .. tostring(v))
     end)
-end))
+end
+scaleBtn("Tiny   0.4x", 0.4)
+scaleBtn("Small  0.7x", 0.7)
+scaleBtn("Normal 1.0x", 1)
+scaleBtn("Big    1.6x", 1.6)
+scaleBtn("Huge   2.5x", 2.5)
+
+label(pBody, "HEAD", 22)
+local function headBtn(name, v)
+    btn(pBody, name, function()
+        local c = getChar()
+        local hum = c and c:FindFirstChildOfClass("Humanoid")
+        local o = hum and hum:FindFirstChild("HeadScale")
+        if o then pcall(function() o.Value = v end); say("head scale " .. v)
+        else say("no HeadScale on this rig - R6 has none") end
+    end)
+end
+headBtn("Head 0.5x", 0.5)
+headBtn("Head 1.0x", 1)
+headBtn("Head 2.0x", 2)
+headBtn("Head 4.0x", 4)
+
+----------------------------------------------------------------- RIG
+local rigLbl = label(pRig, "checking...", 40)
+btn(pRig, "Check my rig", function()
+    local c = getChar()
+    local hum = c and c:FindFirstChildOfClass("Humanoid")
+    if not hum then rigLbl.Text = "  no humanoid" return end
+    local n = 0
+    for _, d in ipairs(c:GetChildren()) do
+        if d:IsA("BasePart") then n = n + 1 end
+    end
+    rigLbl.Text = "  " .. tostring(hum.RigType) .. "   -   " .. n .. " body parts"
+end)
+
+label(pRig, "Switching R6 to R15, or back, cannot be done from here. This is"
+         .. " not a setting that was left out - the two rigs are different"
+         .. " models. R6 has six parts, R15 has fifteen, and only the server"
+         .. " builds the character. Roblox's own documentation is blunt about"
+         .. " it: set RigType to the wrong value and the Humanoid dies,"
+         .. " because it goes looking for a Torso that does not exist.", 92, true)
+label(pRig, "What decides it: the avatar type on your Roblox account, and the"
+         .. " experience's own avatar settings, which can force one or the"
+         .. " other. Change it at roblox.com under Avatar, then rejoin. A"
+         .. " game that offers its own R6/R15 switch is doing it through its"
+         .. " own server code, which is the only way it can be done.", 78, true)
+
+----------------------------------------------------------------- SAVED
+label(pSaved, "Saves the look you are wearing right now to a file, so it"
+           .. " survives a rejoin.", 28, true)
+
+local nameBox = Instance.new("TextBox", pSaved)
+nameBox.Size = UDim2.new(1, -6, 0, 32)
+nameBox.BorderSizePixel = 0
+nameBox.Text = ""
+nameBox.PlaceholderText = "name this look..."
+nameBox.Font = Enum.Font.Gotham; nameBox.TextSize = 12
+nameBox.TextXAlignment = Enum.TextXAlignment.Left
+nameBox.ClearTextOnFocus = false
+nameBox.ZIndex = 401
+corner(nameBox, 8); padding(nameBox, 0, 0, 12, 12)
+SilenceAPI._theme(nameBox, "BackgroundColor3", "bg2")
+SilenceAPI._theme(nameBox, "TextColor3", "text")
+SilenceAPI._theme(nameBox, "PlaceholderColor3", "textDim")
+
+local SAVE_FILE = "silence_looks.json"
+local function readLooks()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then return {} end
+    local ok, body = pcall(function()
+        if isfile(SAVE_FILE) then return readfile(SAVE_FILE) end
+        return nil
+    end)
+    if not ok or type(body) ~= "string" then return {} end
+    local okJ, d = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(body)
+    end)
+    return (okJ and type(d) == "table") and d or {}
+end
+
+local savedList = Instance.new("Frame", pSaved)
+savedList.Size = UDim2.new(1, -6, 0, 0)
+savedList.BackgroundTransparency = 1
+savedList.AutomaticSize = Enum.AutomaticSize.Y
+local sly = Instance.new("UIListLayout", savedList)
+sly.Padding = UDim.new(0, 4); sly.SortOrder = Enum.SortOrder.LayoutOrder
+
+local function refreshSaved()
+    for _, c in ipairs(savedList:GetChildren()) do
+        if c:IsA("TextButton") then c:Destroy() end
+    end
+    for nm, uid in pairs(readLooks()) do
+        btn(savedList, nm .. "   (" .. tostring(uid) .. ")", function()
+            stealFrom(tostring(uid))
+        end)
+    end
+end
+
+btn(pSaved, "SAVE THE ID IN THE BOX ABOVE UNDER THIS NAME", function()
+    local nm = tostring(nameBox.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local id = tostring(idBox.Text or ""):match("%d+")
+    if nm == "" then say("give it a name first") return end
+    if not id then say("put a user id in the STEAL box first") return end
+    if type(writefile) ~= "function" then say("this executor cannot write files") return end
+    local looks = readLooks()
+    looks[nm] = tonumber(id)
+    pcall(function()
+        writefile(SAVE_FILE,
+                  game:GetService("HttpService"):JSONEncode(looks))
+    end)
+    refreshSaved()
+    say("saved " .. nm)
+end)
+label(pSaved, "SAVED LOOKS", 22)
+refreshSaved()
+
+showPage("STEAL")
+SilenceAPI._openAvatarStudio = function() AS.Visible = not AS.Visible end
+
+----------------------------------------------------------------- THE TAB
+sectionLabel(pSkins, "AVATAR")
+buttonRow(pSkins, "Open Avatar Studio", function()
+    SilenceAPI._openAvatarStudio()
+end)
+buttonRow(pSkins, "Reset To My Own Avatar", function()
+    pcall(resetSkin)
+end)
+
+local sHint = Instance.new("TextLabel", pSkins)
+sHint.Size = UDim2.new(1, 0, 0, 46)
+sHint.BackgroundTransparency = 1
+sHint.Text = "  Steal any account's look by name or id, reshape the body,"
+          .. " save looks for later.\n  Everything here is local: other"
+          .. " players see your real avatar, other Silence users see this."
+sHint.Font = Enum.Font.Gotham
+sHint.TextSize = 10
+sHint.TextWrapped = true
+sHint.TextXAlignment = Enum.TextXAlignment.Left
+sHint.TextYAlignment = Enum.TextYAlignment.Top
+sHint.TextColor3 = Theme.textDim
 
 lockTabIfRisky(pSkins)
 end)()
