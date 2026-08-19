@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v63"
+SilenceAPI._version = "v65"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -463,6 +463,117 @@ function SilenceAPI._closeTopModal()
         if w and w.Parent and w.Visible then w.Visible = false return true end
     end
     return false
+end
+
+----------------------------------------------------------------
+-- PROFILE STORE
+-- Panel configs are saved in the Config tab, tag designs in the tag
+-- editor's SAVES page, and the config editor ties one to the other. Three
+-- separate windows over ONE set of lists - if each kept its own, a design
+-- saved in the editor would be missing from the tag editor and the link
+-- would point at nothing.
+--
+-- Kept deliberately dumb: arrays, names, no indices stored anywhere. A pair
+-- refers to its two halves BY NAME, so deleting an entry above them cannot
+-- silently repoint it at a different one.
+----------------------------------------------------------------
+do
+    local PFILE = "silence_profiles.json"
+    local P = { cfg = {}, tag = {}, pairs = {} }
+    SilenceAPI._P = P
+    SilenceAPI._profWatchers = {}
+
+    local function canF()
+        return type(writefile) == "function" and type(readfile) == "function"
+    end
+
+    function SilenceAPI._saveProfiles()
+        if not canF() then return end
+        local HS = game:GetService("HttpService")
+        pcall(function() writefile(PFILE, HS:JSONEncode(P)) end)
+    end
+
+    -- every window redraws when any of them changes something
+    function SilenceAPI._profChanged()
+        SilenceAPI._saveProfiles()
+        for _, fn in ipairs(SilenceAPI._profWatchers) do pcall(fn) end
+    end
+
+    function SilenceAPI._profFind(kind, name)
+        for i, e in ipairs(P[kind] or {}) do
+            if e.name == name then return i, e end
+        end
+        return nil
+    end
+
+    -- same name twice overwrites rather than piling up a second copy
+    function SilenceAPI._profSave(kind, name, payload, limit)
+        name = tostring(name or ""):match("^%s*(.-)%s*$") or ""
+        if #name < 1 then return false, "needs a name" end
+        name = name:sub(1, 22)
+        local list = P[kind]
+        local i = SilenceAPI._profFind(kind, name)
+        if i then
+            if kind == "cfg" then list[i].data = payload else list[i].code = payload end
+        else
+            if limit and #list >= limit then return false, "list is full" end
+            if kind == "cfg" then list[#list + 1] = { name = name, data = payload }
+            else list[#list + 1] = { name = name, code = payload } end
+        end
+        SilenceAPI._profChanged()
+        return true
+    end
+
+    function SilenceAPI._profDelete(kind, i)
+        local e = P[kind] and P[kind][i]
+        if not e then return end
+        -- a pair pointing at a half that no longer exists is dead weight
+        for k = #P.pairs, 1, -1 do
+            local pr = P.pairs[k]
+            if (kind == "cfg" and pr.cfg == e.name)
+            or (kind == "tag" and pr.tag == e.name) then
+                table.remove(P.pairs, k)
+            end
+        end
+        table.remove(P[kind], i)
+        SilenceAPI._profChanged()
+    end
+
+    function SilenceAPI._profRename(kind, i, newName)
+        local e = P[kind] and P[kind][i]
+        if not e then return false end
+        newName = tostring(newName or ""):match("^%s*(.-)%s*$") or ""
+        if #newName < 1 then return false end
+        newName = newName:sub(1, 22)
+        -- pairs refer to names, so they have to come along
+        for _, pr in ipairs(P.pairs) do
+            if kind == "cfg" and pr.cfg == e.name then pr.cfg = newName end
+            if kind == "tag" and pr.tag == e.name then pr.tag = newName end
+        end
+        e.name = newName
+        SilenceAPI._profChanged()
+        return true
+    end
+
+    if canF() then
+        local HS = game:GetService("HttpService")
+        local okR, body = pcall(function() return readfile(PFILE) end)
+        if okR and type(body) == "string" and body ~= "" then
+            local okD, d = pcall(function() return HS:JSONDecode(body) end)
+            if okD and type(d) == "table" then
+                for _, k in ipairs({ "cfg", "tag", "pairs" }) do
+                    if type(d[k]) == "table" then
+                        for _, e in ipairs(d[k]) do
+                            if type(e) == "table" and type(e.name) == "string"
+                               and e.name ~= "" then
+                                P[k][#P[k] + 1] = e
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
 end
 
 print("[Silence] env initialized, building GUI...")
@@ -13228,42 +13339,19 @@ local _tagOk, _tagErr = pcall(function()
     SilenceAPI._applyTagCode = applyTagCode
 
     ------------------------------------------------------------ PAGE: SAVES
-    -- Two different things live here. The editor writes the current look to
-    -- disk after every change, so a reload comes back exactly as you left it
-    -- without anyone pressing save. On top of that sit five named slots you
-    -- fill by hand - and a slot is just the SILTAG1 string the EXPORT page
-    -- already produces, so storing one is "keep this string" and restoring
-    -- one is applyTagCode.
+    -- Two different things live here.
+    --
+    -- The editor writes the current look to disk after every change, so a
+    -- reload comes back exactly as you left it without anyone pressing save.
+    --
+    -- On top of that: NAMED designs. They live in the shared profile store,
+    -- not in this window, because the config editor ties them to panel
+    -- configs and a copy kept privately here would drift out of step with
+    -- what that editor is drawing threads to.
     local STYLE_FILE = "silence_tagstyle.txt"
-    local SLOTS_FILE = "silence_tagslots.json"
-    local styleSlots = {}
-    for i = 1, 5 do styleSlots[i] = { name = "Slot " .. i, code = "" } end
 
     local function canTagFile()
         return type(writefile) == "function" and type(readfile) == "function"
-    end
-
-    local function saveStyleSlots()
-        if not canTagFile() then return end
-        local HS = game:GetService("HttpService")
-        pcall(function() writefile(SLOTS_FILE, HS:JSONEncode(styleSlots)) end)
-    end
-
-    if canTagFile() then
-        local HS = game:GetService("HttpService")
-        local okR, content = pcall(function() return readfile(SLOTS_FILE) end)
-        if okR and type(content) == "string" and content ~= "" then
-            local okD, data = pcall(function() return HS:JSONDecode(content) end)
-            if okD and type(data) == "table" then
-                for i = 1, 5 do
-                    local e = data[i]
-                    if type(e) == "table" then
-                        styleSlots[i].name = tostring(e.name or styleSlots[i].name):sub(1, 22)
-                        styleSlots[i].code = tostring(e.code or "")
-                    end
-                end
-            end
-        end
     end
 
     -- Debounced: dragging a slider calls touched() every frame, and each one
@@ -13298,112 +13386,147 @@ local _tagOk, _tagErr = pcall(function()
 
     do
         local p = makePage("SAVES")
-        eCaption(p, "SAVED STYLES")
+        eCaption(p, "SAVE THIS DESIGN")
 
-        local function slotRow(i)
-            local r = Instance.new("Frame", p)
-            r.Size = UDim2.new(1, -6, 0, 68)
-            r.BorderSizePixel = 0
-            r.ZIndex = EZ + 2
-            corner(r, 9)
-            SilenceAPI._theme(r, "BackgroundColor3", "bg2")
-            stroke(r, Theme.bg4, 1, 0.5, "bg4")
+        local nameRow = eRow(p, 38)
+        local nb = Instance.new("TextBox", nameRow)
+        nb.Size = UDim2.new(1, -118, 0, 24); nb.Position = UDim2.new(0, 14, 0, 7)
+        nb.BackgroundTransparency = 1
+        nb.Text = ""
+        nb.PlaceholderText = "name this design"
+        nb.Font = Enum.Font.GothamMedium; nb.TextSize = 12
+        nb.TextXAlignment = Enum.TextXAlignment.Left
+        nb.ClearTextOnFocus = false
+        nb.ZIndex = EZ + 3
+        SilenceAPI._theme(nb, "TextColor3", "text")
 
-            local nameBox = Instance.new("TextBox", r)
-            nameBox.Size = UDim2.new(0, 240, 0, 22)
-            nameBox.Position = UDim2.new(0, 14, 0, 10)
-            nameBox.BackgroundTransparency = 1
-            nameBox.Text = styleSlots[i].name
-            nameBox.PlaceholderText = "Slot " .. i
-            nameBox.Font = Enum.Font.GothamBold; nameBox.TextSize = 12
-            nameBox.TextXAlignment = Enum.TextXAlignment.Left
-            nameBox.ClearTextOnFocus = false
-            nameBox.ZIndex = EZ + 3
-            SilenceAPI._theme(nameBox, "TextColor3", "text")
-
-            local state = Instance.new("TextLabel", r)
-            state.Size = UDim2.new(0, 120, 0, 22)
-            state.Position = UDim2.new(1, -134, 0, 10)
-            state.BackgroundTransparency = 1
-            state.Font = Enum.Font.Code; state.TextSize = 10
-            state.TextXAlignment = Enum.TextXAlignment.Right
-            state.ZIndex = EZ + 3
-            SilenceAPI._theme(state, "TextColor3", "textDim")
-
-            local function paint()
-                state.Text = (styleSlots[i].code ~= "" and "saved" or "empty")
-            end
-            paint()
-
-            nameBox.FocusLost:Connect(function()
-                local t = tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""
-                if t == "" then t = "Slot " .. i end
-                styleSlots[i].name = t:sub(1, 22)
-                nameBox.Text = styleSlots[i].name
-                saveStyleSlots()
-                if statusLbl then statusLbl.Text = "renamed" end
+        local function pill(parent, label, x, y, w, cb)
+            local b = Instance.new("TextButton", parent)
+            b.Size = UDim2.new(0, w, 0, 22)
+            b.Position = UDim2.new(0, x, 0, y)
+            b.BorderSizePixel = 0
+            b.Text = label
+            b.Font = Enum.Font.GothamBold; b.TextSize = 10
+            b.AutoButtonColor = false
+            b.ZIndex = EZ + 4
+            corner(b, 6)
+            b.BackgroundColor3 = Theme.bg3
+            b.TextColor3 = Theme.textDim
+            b.MouseEnter:Connect(function()
+                b.BackgroundColor3 = Theme.accent; b.TextColor3 = Theme.bg
             end)
-
-            local function mini(label, x, w, cb)
-                local b = Instance.new("TextButton", r)
-                b.Size = UDim2.new(0, w, 0, 22)
-                b.Position = UDim2.new(0, x, 0, 38)
-                b.BorderSizePixel = 0
-                b.Text = label
-                b.Font = Enum.Font.GothamBold; b.TextSize = 10
-                b.AutoButtonColor = false
-                b.ZIndex = EZ + 3
-                corner(b, 7)
-                SilenceAPI._theme(b, "BackgroundColor3", "bg3")
-                SilenceAPI._theme(b, "TextColor3", "text")
-                local st = stroke(b, Theme.bg4, 1, 0.6, "bg4")
-                b.MouseEnter:Connect(function()
-                    TweenService:Create(st, SilenceAPI._twFade,
-                        { Color = Theme.accent, Transparency = 0.2 }):Play()
-                end)
-                b.MouseLeave:Connect(function()
-                    TweenService:Create(st, SilenceAPI._twFade,
-                        { Color = Theme.bg4, Transparency = 0.6 }):Play()
-                end)
-                b.MouseButton1Click:Connect(cb)
-                return b
-            end
-
-            mini("SAVE", 14, 84, function()
-                styleSlots[i].code = tagCode()
-                saveStyleSlots(); paint()
-                if statusLbl then statusLbl.Text = "stored in " .. styleSlots[i].name end
+            b.MouseLeave:Connect(function()
+                b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim
             end)
-            mini("LOAD", 104, 84, function()
-                if styleSlots[i].code == "" then
-                    if statusLbl then statusLbl.Text = "that slot is empty" end
-                    return
-                end
-                local okA, why = applyTagCode(styleSlots[i].code)
-                if not okA then
-                    if statusLbl then statusLbl.Text = tostring(why) end
-                    return
-                end
-                for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-                touched(styleSlots[i].name .. " loaded")
-            end)
-            mini("CLEAR", 194, 84, function()
-                styleSlots[i].code = ""
-                saveStyleSlots(); paint()
-                if statusLbl then statusLbl.Text = "slot cleared" end
-            end)
+            b.MouseButton1Click:Connect(cb)
+            return b
         end
 
-        for i = 1, 5 do slotRow(i) end
+        local saveBtn = Instance.new("TextButton", nameRow)
+        saveBtn.Size = UDim2.new(0, 92, 0, 24); saveBtn.Position = UDim2.new(1, -100, 0, 7)
+        saveBtn.BorderSizePixel = 0
+        saveBtn.Text = "SAVE"
+        saveBtn.Font = Enum.Font.GothamBold; saveBtn.TextSize = 11
+        saveBtn.AutoButtonColor = false
+        saveBtn.ZIndex = EZ + 4
+        corner(saveBtn, 6)
+        saveBtn.BackgroundColor3 = Theme.bg3
+        saveBtn.TextColor3 = Theme.textDim
+        saveBtn.MouseEnter:Connect(function()
+            saveBtn.BackgroundColor3 = Theme.accent; saveBtn.TextColor3 = Theme.bg
+        end)
+        saveBtn.MouseLeave:Connect(function()
+            saveBtn.BackgroundColor3 = Theme.bg3; saveBtn.TextColor3 = Theme.textDim
+        end)
+
+        eCaption(p, "SAVED DESIGNS")
+        local listBox = Instance.new("Frame", p)
+        listBox.Size = UDim2.new(1, -6, 0, 0)
+        listBox.AutomaticSize = Enum.AutomaticSize.Y
+        listBox.BackgroundTransparency = 1
+        listBox.ZIndex = EZ + 2
+        local lay = Instance.new("UIListLayout", listBox)
+        lay.Padding = UDim.new(0, 5)
+        lay.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local function redraw()
+            for _, c in ipairs(listBox:GetChildren()) do
+                if not c:IsA("UIListLayout") then c:Destroy() end
+            end
+            local P = SilenceAPI._P
+            for i, e in ipairs(P.tag) do
+                local r = Instance.new("Frame", listBox)
+                r.Size = UDim2.new(1, 0, 0, 34)
+                r.BorderSizePixel = 0
+                r.LayoutOrder = i
+                r.ZIndex = EZ + 3
+                corner(r, 8)
+                SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+                local rn = Instance.new("TextBox", r)
+                rn.Size = UDim2.new(1, -220, 1, 0); rn.Position = UDim2.new(0, 12, 0, 0)
+                rn.BackgroundTransparency = 1
+                rn.Text = e.name
+                rn.Font = Enum.Font.GothamMedium; rn.TextSize = 12
+                rn.TextXAlignment = Enum.TextXAlignment.Left
+                rn.ClearTextOnFocus = false
+                rn.ZIndex = EZ + 4
+                SilenceAPI._theme(rn, "TextColor3", "text")
+                rn.FocusLost:Connect(function()
+                    if not SilenceAPI._profRename("tag", i, rn.Text) then rn.Text = e.name end
+                end)
+
+                pill(r, "LOAD", 0, 6, 66, function()
+                    if e.code and applyTagCode(e.code) then
+                        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+                        touched(e.name .. " loaded")
+                    end
+                end).Position = UDim2.new(1, -210, 0, 6)
+                pill(r, "UPDATE", 0, 6, 74, function()
+                    e.code = tagCode()
+                    SilenceAPI._profChanged()
+                    touched(e.name .. " overwritten")
+                end).Position = UDim2.new(1, -138, 0, 6)
+                pill(r, "DELETE", 0, 6, 62, function()
+                    SilenceAPI._profDelete("tag", i)
+                end).Position = UDim2.new(1, -60, 0, 6)
+            end
+            if #P.tag == 0 then
+                local t = Instance.new("TextLabel", listBox)
+                t.Size = UDim2.new(1, 0, 0, 28)
+                t.BackgroundTransparency = 1
+                t.Text = "  Nothing saved yet."
+                t.Font = Enum.Font.Gotham; t.TextSize = 11
+                t.TextXAlignment = Enum.TextXAlignment.Left
+                t.ZIndex = EZ + 3
+                SilenceAPI._theme(t, "TextColor3", "textDim")
+            end
+        end
+
+        saveBtn.MouseButton1Click:Connect(function()
+            local nm = tostring(nb.Text)
+            if #(nm:match("^%s*(.-)%s*$") or "") < 1 then
+                if statusLbl then statusLbl.Text = "type a name first" end
+                nb:CaptureFocus()
+                return
+            end
+            local ok, why = SilenceAPI._profSave("tag", nm, tagCode())
+            if ok then nb.Text = ""; touched("design saved")
+            else if statusLbl then statusLbl.Text = tostring(why) end end
+        end)
+
+        table.insert(SilenceAPI._profWatchers, redraw)
+        redraw()
 
         eCaption(p, "HOW THIS WORKS")
         local hint = Instance.new("TextLabel", p)
-        hint.Size = UDim2.new(1, -6, 0, 72)
+        hint.Size = UDim2.new(1, -6, 0, 76)
         hint.BackgroundTransparency = 1
         hint.Text = "  Everything you change is written to disk straight away, so a\n"
-                 .. "  reload brings your tag back on its own - the slots are not\n"
-                 .. "  needed for that. They are for keeping several looks side by\n"
-                 .. "  side. Click a slot name to rename it."
+                 .. "  reload brings your tag back on its own - saving is only for\n"
+                 .. "  keeping several looks side by side.\n"
+                 .. "  These designs also appear in the config editor, where one can\n"
+                 .. "  be tied to a panel config."
         hint.Font = Enum.Font.Gotham; hint.TextSize = 10
         hint.TextXAlignment = Enum.TextXAlignment.Left
         hint.TextYAlignment = Enum.TextYAlignment.Top
@@ -15466,10 +15589,144 @@ local function loadConfig(quiet)
     return false
 end
 
--- Everything that used to be a row here now lives in the config editor,
--- where a save is tied to a name and to a tag design instead of being one
--- anonymous file you either overwrite or lose.
-sectionLabel(pCfg, "CONFIGS")
+sectionLabel(pCfg, "PROFILES")
+do
+    -- Panel configs are saved HERE, next to the settings they capture. The
+    -- config editor only ties them to a tag design; it does not own them.
+    local nameRow = Instance.new("Frame", pCfg)
+    nameRow.Size = UDim2.new(1, 0, 0, 34)
+    nameRow.BorderSizePixel = 0
+    corner(nameRow, 8)
+    SilenceAPI._theme(nameRow, "BackgroundColor3", "bg2")
+    SilenceAPI._registerRow(nameRow, "save config profile name")
+
+    local box = Instance.new("TextBox", nameRow)
+    box.Size = UDim2.new(1, -110, 1, -8); box.Position = UDim2.new(0, 12, 0, 4)
+    box.BackgroundTransparency = 1
+    box.Text = ""
+    box.PlaceholderText = "name this config"
+    box.Font = Enum.Font.GothamMedium; box.TextSize = 12
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    box.ClearTextOnFocus = false
+    SilenceAPI._theme(box, "TextColor3", "text")
+
+    local sv = Instance.new("TextButton", nameRow)
+    sv.Size = UDim2.new(0, 86, 0, 26); sv.Position = UDim2.new(1, -94, 0, 4)
+    sv.BorderSizePixel = 0
+    sv.Text = "SAVE"
+    sv.Font = Enum.Font.GothamBold; sv.TextSize = 11
+    sv.AutoButtonColor = false
+    corner(sv, 6)
+    sv.BackgroundColor3 = Theme.bg3
+    sv.TextColor3 = Theme.textDim
+    sv.MouseEnter:Connect(function()
+        sv.BackgroundColor3 = Theme.accent; sv.TextColor3 = Theme.bg
+    end)
+    sv.MouseLeave:Connect(function()
+        sv.BackgroundColor3 = Theme.bg3; sv.TextColor3 = Theme.textDim
+    end)
+
+    local list = Instance.new("Frame", pCfg)
+    list.Size = UDim2.new(1, 0, 0, 0)
+    list.AutomaticSize = Enum.AutomaticSize.Y
+    list.BackgroundTransparency = 1
+    local lay = Instance.new("UIListLayout", list)
+    lay.Padding = UDim.new(0, 4)
+    lay.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local function flat(parent, label, x, w, cb)
+        local b = Instance.new("TextButton", parent)
+        b.Size = UDim2.new(0, w, 0, 22); b.Position = UDim2.new(1, x, 0.5, -11)
+        b.BorderSizePixel = 0
+        b.Text = label
+        b.Font = Enum.Font.GothamBold; b.TextSize = 10
+        b.AutoButtonColor = false
+        corner(b, 6)
+        b.BackgroundColor3 = Theme.bg3
+        b.TextColor3 = Theme.textDim
+        b.MouseEnter:Connect(function()
+            b.BackgroundColor3 = Theme.accent; b.TextColor3 = Theme.bg
+        end)
+        b.MouseLeave:Connect(function()
+            b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim
+        end)
+        b.MouseButton1Click:Connect(cb)
+        return b
+    end
+
+    local function redraw()
+        for _, c in ipairs(list:GetChildren()) do
+            if not c:IsA("UIListLayout") then c:Destroy() end
+        end
+        local P = SilenceAPI._P
+        for i, e in ipairs(P.cfg) do
+            local r = Instance.new("Frame", list)
+            r.Size = UDim2.new(1, 0, 0, 32)
+            r.BorderSizePixel = 0
+            r.LayoutOrder = i
+            corner(r, 7)
+            SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+
+            local nb = Instance.new("TextBox", r)
+            nb.Size = UDim2.new(1, -180, 1, 0); nb.Position = UDim2.new(0, 12, 0, 0)
+            nb.BackgroundTransparency = 1
+            nb.Text = e.name
+            nb.Font = Enum.Font.GothamMedium; nb.TextSize = 12
+            nb.TextXAlignment = Enum.TextXAlignment.Left
+            nb.ClearTextOnFocus = false
+            SilenceAPI._theme(nb, "TextColor3", "text")
+            nb.FocusLost:Connect(function()
+                if not SilenceAPI._profRename("cfg", i, nb.Text) then nb.Text = e.name end
+            end)
+
+            flat(r, "LOAD", -172, 66, function()
+                if e.data and SilenceAPI._applyConfigTable then
+                    pcall(SilenceAPI._applyConfigTable, e.data)
+                    for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+                    notify("Config", e.name .. " restored.", 3)
+                end
+            end)
+            flat(r, "-100", 74, function()
+                if SilenceAPI._buildConfig then
+                    local ok, c = pcall(SilenceAPI._buildConfig)
+                    if ok then
+                        e.data = c
+                        SilenceAPI._profChanged()
+                        notify("Config", e.name .. " overwritten.", 3)
+                    end
+                end
+            end).Text = "UPDATE"
+            flat(r, -20, 66, function() SilenceAPI._profDelete("cfg", i) end).Text = "DELETE"
+        end
+        if #P.cfg == 0 then
+            local t = Instance.new("TextLabel", list)
+            t.Size = UDim2.new(1, 0, 0, 28)
+            t.BackgroundTransparency = 1
+            t.Text = "  Nothing saved yet."
+            t.Font = Enum.Font.Gotham; t.TextSize = 11
+            t.TextXAlignment = Enum.TextXAlignment.Left
+            t.TextColor3 = Theme.textDim
+        end
+    end
+
+    sv.MouseButton1Click:Connect(function()
+        local nm = tostring(box.Text)
+        if #(nm:match("^%s*(.-)%s*$") or "") < 1 then
+            notify("Config", "Type a name first.", 4)
+            box:CaptureFocus()
+            return
+        end
+        if not SilenceAPI._buildConfig then return end
+        local ok, c = pcall(SilenceAPI._buildConfig)
+        if not ok then notify("Config", "Could not read the current settings.", 4) return end
+        local done, why = SilenceAPI._profSave("cfg", nm, c)
+        if done then box.Text = ""; notify("Config", "Saved.", 3)
+        else notify("Config", tostring(why), 4) end
+    end)
+
+    table.insert(SilenceAPI._profWatchers, redraw)
+    redraw()
+end
 
 buttonRow(pCfg, "CONFIG EDITOR  (bundle a config with a tag)", function()
     if SilenceAPI._openConfigEditor then SilenceAPI._openConfigEditor() end
@@ -15649,64 +15906,24 @@ end)()
 
 ----------------------------------------------------------------
 -- CONFIG EDITOR
--- Two lists and a thread between them. The left holds panel configs, the
--- right holds tag designs, and a config may be tied to one design so that
--- loading the config brings its design along.
+-- This window does exactly ONE thing: it ties a panel config to a tag
+-- design. It does not save either of them. Configs are saved in the Config
+-- tab beside the settings they capture, designs on the tag editor's SAVES
+-- page beside the tag they describe - and both lists live in the shared
+-- profile store, so what you see here is always what is really there.
 --
--- Saves are NAMED and created on demand rather than dropped into numbered
--- slots. A slot list forces you to remember that "Config 3" was the sniper
--- setup; a name does not. The name field is also the gate: nothing is stored
--- until something is typed in it.
+-- Drag from a config's right pin onto a design's left pin, then press SAVE
+-- PAIR. Up to five pairs, each with its own AUTO / LOAD / CLEAR. Exactly one
+-- may hold AUTO, because two of them would fight over the panel on inject.
 --
--- The link is stored as the design's NAME, not its position. Deleting an
--- entry above it would otherwise silently repoint every thread below.
---
--- An IIFE: a do..end shares the chunk's registers and this file runs at 198
--- of Luau's 200.
+-- A pair refers to both halves BY NAME. Deleting an entry above them would
+-- otherwise silently repoint the pair at whatever slid up into its place.
 ----------------------------------------------------------------
 ;(function()
-local BFILE, MAXN = "silence_bundles.json", 8
-local cfgs, tags = {}, {}
-local selC, selT = nil, nil
+local MAXP = 5
+local COLW, ROWH, GAP, TOP = 320, 44, 6, 130
+local RX = 900 - 20 - COLW
 
-local function canB()
-    return type(writefile) == "function" and type(readfile) == "function"
-end
-local function saveB()
-    if not canB() then return end
-    local HS = game:GetService("HttpService")
-    pcall(function() writefile(BFILE, HS:JSONEncode({ cfgs = cfgs, tags = tags })) end)
-end
-local function loadB()
-    if not canB() then return end
-    local HS = game:GetService("HttpService")
-    local okR, body = pcall(function() return readfile(BFILE) end)
-    if not okR or type(body) ~= "string" or body == "" then return end
-    local okD, d = pcall(function() return HS:JSONDecode(body) end)
-    if not okD or type(d) ~= "table" then return end
-    for _, c in ipairs(d.cfgs or {}) do
-        if type(c) == "table" and type(c.name) == "string" and c.name ~= "" then
-            cfgs[#cfgs + 1] = { name = c.name:sub(1, 22),
-                                data = type(c.data) == "table" and c.data or nil,
-                                link = type(c.link) == "string" and c.link or nil,
-                                auto = c.auto and true or false }
-        end
-    end
-    for _, t in ipairs(d.tags or {}) do
-        if type(t) == "table" and type(t.name) == "string" and t.name ~= "" then
-            tags[#tags + 1] = { name = t.name:sub(1, 22),
-                                code = type(t.code) == "string" and t.code or nil }
-        end
-    end
-end
-loadB()
-
-local function tagIndexByName(nm)
-    for i, t in ipairs(tags) do if t.name == nm then return i end end
-    return nil
-end
-
------------------------------------------------------------- WINDOW
 local CE = Instance.new("Frame", Gui)
 CE.Name = "ConfigEditor"
 CE.Size = UDim2.new(0, 900, 0, 620)
@@ -15727,42 +15944,38 @@ hdr.BorderSizePixel = 0
 hdr.Active = true
 hdr.ZIndex = 201
 
-local hTitle = Instance.new("TextLabel", hdr)
-hTitle.Size = UDim2.new(1, -70, 0, 22); hTitle.Position = UDim2.new(0, 20, 0, 8)
-hTitle.BackgroundTransparency = 1
-hTitle.Text = "CONFIG EDITOR"
-hTitle.Font = Enum.Font.GothamBold; hTitle.TextSize = 15
-hTitle.TextXAlignment = Enum.TextXAlignment.Left
-hTitle.ZIndex = 202
-SilenceAPI._theme(hTitle, "TextColor3", "text")
+local hT = Instance.new("TextLabel", hdr)
+hT.Size = UDim2.new(1, -70, 0, 22); hT.Position = UDim2.new(0, 20, 0, 8)
+hT.BackgroundTransparency = 1
+hT.Text = "CONFIG EDITOR"
+hT.Font = Enum.Font.GothamBold; hT.TextSize = 15
+hT.TextXAlignment = Enum.TextXAlignment.Left
+hT.ZIndex = 202
+SilenceAPI._theme(hT, "TextColor3", "text")
 
-local hSub = Instance.new("TextLabel", hdr)
-hSub.Size = UDim2.new(1, -70, 0, 12); hSub.Position = UDim2.new(0, 20, 0, 28)
-hSub.BackgroundTransparency = 1
-hSub.Text = "name it, save it, tie it to a tag design"
-hSub.Font = Enum.Font.GothamMedium; hSub.TextSize = 10
-hSub.TextXAlignment = Enum.TextXAlignment.Left
-hSub.ZIndex = 202
-SilenceAPI._theme(hSub, "TextColor3", "textDim")
+local hS = Instance.new("TextLabel", hdr)
+hS.Size = UDim2.new(1, -70, 0, 12); hS.Position = UDim2.new(0, 20, 0, 28)
+hS.BackgroundTransparency = 1
+hS.Text = "drag a config onto a design, then save the pair"
+hS.Font = Enum.Font.GothamMedium; hS.TextSize = 10
+hS.TextXAlignment = Enum.TextXAlignment.Left
+hS.ZIndex = 202
+SilenceAPI._theme(hS, "TextColor3", "textDim")
 
-local hClose = Instance.new("TextButton", hdr)
-hClose.Size = UDim2.new(0, 28, 0, 28); hClose.Position = UDim2.new(1, -38, 0, 9)
-hClose.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-hClose.BorderSizePixel = 0
-hClose.Text = "X"; hClose.Font = Enum.Font.GothamBold; hClose.TextSize = 14
-hClose.AutoButtonColor = false; hClose.ZIndex = 202
-corner(hClose, 6); stroke(hClose, Theme.accent, 1, 0.5)
-SilenceAPI._theme(hClose, "TextColor3", "text")
-hClose.MouseButton1Click:Connect(function() CE.Visible = false end)
+local hX = Instance.new("TextButton", hdr)
+hX.Size = UDim2.new(0, 28, 0, 28); hX.Position = UDim2.new(1, -38, 0, 9)
+hX.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+hX.BorderSizePixel = 0
+hX.Text = "X"; hX.Font = Enum.Font.GothamBold; hX.TextSize = 14
+hX.AutoButtonColor = false; hX.ZIndex = 202
+corner(hX, 6); stroke(hX, Theme.accent, 1, 0.5)
+SilenceAPI._theme(hX, "TextColor3", "text")
+hX.MouseButton1Click:Connect(function() CE.Visible = false end)
 makeHeaderDrag(CE, hdr)
 
------------------------------------------------------------- LAYOUT
-local COLW, ROWH, GAP, TOP = 350, 56, 6, 156
-local RX = 900 - 20 - COLW
-
 local canvas = Instance.new("Frame", CE)
-canvas.Size = UDim2.new(1, -32, 1, -80)
-canvas.Position = UDim2.new(0, 16, 0, 62)
+canvas.Size = UDim2.new(1, -32, 0, 300)
+canvas.Position = UDim2.new(0, 16, 0, 96)
 canvas.BackgroundColor3 = Theme.bg
 canvas.BackgroundTransparency = 0.35
 canvas.BorderSizePixel = 0
@@ -15778,9 +15991,9 @@ do
         v.BackgroundTransparency = 0.94
         v.BorderSizePixel = 0; v.ZIndex = 199
     end
-    for i = 1, 11 do
+    for i = 1, 7 do
         local h = Instance.new("Frame", canvas)
-        h.Size = UDim2.new(1, 0, 0, 1); h.Position = UDim2.new(0, 0, i / 12, 0)
+        h.Size = UDim2.new(1, 0, 0, 1); h.Position = UDim2.new(0, 0, i / 8, 0)
         h.BackgroundColor3 = Theme.accent
         h.BackgroundTransparency = 0.94
         h.BorderSizePixel = 0; h.ZIndex = 199
@@ -15788,21 +16001,36 @@ do
 end
 
 local thread = Instance.new("Frame", CE)
-thread.Size = UDim2.new(0, 900 - 2 * COLW - 40, 1, -TOP - 20)
+thread.Size = UDim2.new(0, 900 - 2 * COLW - 40, 0, 300)
 thread.Position = UDim2.new(0, 20 + COLW, 0, TOP)
 thread.BackgroundTransparency = 1
 thread.BorderSizePixel = 0
 thread.ZIndex = 201
 
+local function colCap(x, text)
+    local l = Instance.new("TextLabel", CE)
+    l.Size = UDim2.new(0, COLW, 0, 16); l.Position = UDim2.new(0, x, 0, 76)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.Font = Enum.Font.GothamBold; l.TextSize = 10
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.ZIndex = 203
+    SilenceAPI._theme(l, "TextColor3", "accent2")
+end
+colCap(20, "PANEL CONFIGS   (saved in System > Config)")
+colCap(RX, "TAG DESIGNS   (saved in the tag editor)")
+
 local function rowY(i) return TOP + (i - 1) * (ROWH + GAP) + ROWH / 2 end
 
 local rebuild
-local rowsC, rowsT, lines = {}, {}, {}
+local rows, lines = {}, {}
 local dragFrom, hoverTo, liveLine, dragOrigin, dragAnchor
+local pendC, pendT = nil, nil   -- the link waiting to be saved
 
-local function clearLines()
+local function clearKids()
+    for _, r in ipairs(rows) do pcall(function() r:Destroy() end) end
     for _, l in ipairs(lines) do pcall(function() l:Destroy() end) end
-    lines = {}
+    rows, lines = {}, {}
 end
 
 -- Rotation plus a computed length is the only way to get a diagonal out of
@@ -15817,7 +16045,7 @@ local function segment(x1, y1, x2, y2, strong, keep)
     l.Rotation = math.deg(math.atan2(dy, dx))
     l.BorderSizePixel = 0
     l.BackgroundColor3 = strong and Theme.accent or Theme.bg4
-    l.BackgroundTransparency = strong and 0.15 or 0.6
+    l.BackgroundTransparency = strong and 0.15 or 0.55
     l.ZIndex = 201
     corner(l, 2)
     if not keep then lines[#lines + 1] = l end
@@ -15826,11 +16054,7 @@ end
 
 local function endDrag()
     if liveLine then pcall(function() liveLine:Destroy() end); liveLine = nil end
-    if dragFrom and hoverTo and cfgs[dragFrom] and tags[hoverTo] then
-        cfgs[dragFrom].link = tags[hoverTo].name
-        saveB()
-        notify("Config", cfgs[dragFrom].name .. "  ->  " .. tags[hoverTo].name, 4)
-    end
+    if dragFrom and hoverTo then pendC, pendT = dragFrom, hoverTo end
     dragFrom, hoverTo, dragOrigin, dragAnchor = nil, nil, nil, nil
     rebuild()
 end
@@ -15844,27 +16068,23 @@ end))
 
 SilenceAPI._onDrag(function()
     if not dragFrom or not liveLine or not dragOrigin then return end
-    -- Only DELTAS between two mouse readings are used. Mouse position and
-    -- AbsolutePosition sit in different coordinate spaces, and mixing them
-    -- left the line end a fixed inset away from the cursor.
+    -- only DELTAS between two mouse readings; mouse position and
+    -- AbsolutePosition sit in different coordinate spaces
     local m = UserInputService:GetMouseLocation()
     local ex = dragAnchor.X + (m.X - dragOrigin.X)
     local ey = dragAnchor.Y + (m.Y - dragOrigin.Y)
     local dx, dy = ex - dragAnchor.X, ey - dragAnchor.Y
-    local len = math.sqrt(dx * dx + dy * dy)
     pcall(function()
-        liveLine.Size = UDim2.new(0, len, 0, 3)
+        liveLine.Size = UDim2.new(0, math.sqrt(dx * dx + dy * dy), 0, 3)
         liveLine.Position = UDim2.new(0, (dragAnchor.X + ex) / 2,
                                       0, (dragAnchor.Y + ey) / 2)
         liveLine.Rotation = math.deg(math.atan2(dy, dx))
     end)
 end)
 
------------------------------------------------------------- WIDGETS
 local function flat(parent, label, x, y, w, cb)
     local b = Instance.new("TextButton", parent)
-    b.Size = UDim2.new(0, w, 0, 22)
-    b.Position = UDim2.new(0, x, 0, y)
+    b.Size = UDim2.new(0, w, 0, 22); b.Position = UDim2.new(0, x, 0, y)
     b.BorderSizePixel = 0
     b.Text = label
     b.Font = Enum.Font.GothamBold; b.TextSize = 10
@@ -15874,253 +16094,99 @@ local function flat(parent, label, x, y, w, cb)
     b.BackgroundColor3 = Theme.bg3
     b.TextColor3 = Theme.textDim
     b.MouseEnter:Connect(function()
-        TweenService:Create(b, SilenceAPI._twFade,
-            { BackgroundColor3 = Theme.accent }):Play()
-        b.TextColor3 = Theme.bg
+        b.BackgroundColor3 = Theme.accent; b.TextColor3 = Theme.bg
     end)
     b.MouseLeave:Connect(function()
-        TweenService:Create(b, SilenceAPI._twFade,
-            { BackgroundColor3 = Theme.bg3 }):Play()
-        b.TextColor3 = Theme.textDim
+        b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim
     end)
     b.MouseButton1Click:Connect(cb)
     return b
 end
 
--- name field plus SAVE, one per column
-local function makeAdder(x, label, onSave)
-    local box = Instance.new("TextBox", CE)
-    box.Size = UDim2.new(0, COLW - 86, 0, 28)
-    box.Position = UDim2.new(0, x, 0, 84)
-    box.BackgroundColor3 = Theme.bg2
-    box.BorderSizePixel = 0
-    box.Text = ""
-    box.PlaceholderText = label
-    box.Font = Enum.Font.GothamMedium; box.TextSize = 12
-    box.TextXAlignment = Enum.TextXAlignment.Left
-    box.ClearTextOnFocus = false
-    box.ZIndex = 203
-    corner(box, 8); padding(box, 0, 0, 10, 10)
-    SilenceAPI._theme(box, "TextColor3", "text")
+------------------------------------------------------------ PAIR LIST
+local pairCap = Instance.new("TextLabel", CE)
+pairCap.Size = UDim2.new(1, -40, 0, 16); pairCap.Position = UDim2.new(0, 20, 0, 404)
+pairCap.BackgroundTransparency = 1
+pairCap.Text = "SAVED PAIRS"
+pairCap.Font = Enum.Font.GothamBold; pairCap.TextSize = 10
+pairCap.TextXAlignment = Enum.TextXAlignment.Left
+pairCap.ZIndex = 203
+SilenceAPI._theme(pairCap, "TextColor3", "accent2")
 
-    local b = Instance.new("TextButton", CE)
-    b.Size = UDim2.new(0, 78, 0, 28)
-    b.Position = UDim2.new(0, x + COLW - 78, 0, 84)
-    b.BorderSizePixel = 0
-    b.Text = "SAVE"
-    b.Font = Enum.Font.GothamBold; b.TextSize = 11
-    b.AutoButtonColor = false
-    b.ZIndex = 203
-    corner(b, 8)
-    b.BackgroundColor3 = Theme.bg2
-    b.TextColor3 = Theme.textDim
-    b.MouseEnter:Connect(function()
-        TweenService:Create(b, SilenceAPI._twFade,
-            { BackgroundColor3 = Theme.accent }):Play()
-        b.TextColor3 = Theme.bg
-    end)
-    b.MouseLeave:Connect(function()
-        TweenService:Create(b, SilenceAPI._twFade,
-            { BackgroundColor3 = Theme.bg2 }):Play()
-        b.TextColor3 = Theme.textDim
-    end)
-    b.MouseButton1Click:Connect(function()
-        local nm = (tostring(box.Text):match("^%s*(.-)%s*$") or ""):sub(1, 22)
-        if #nm < 1 then
-            notify("Config", "Type a name first.", 4)
-            box:CaptureFocus()
-            return
-        end
-        if onSave(nm) then box.Text = "" end
-    end)
-
-    local cap = Instance.new("TextLabel", CE)
-    cap.Size = UDim2.new(0, COLW, 0, 14)
-    cap.Position = UDim2.new(0, x, 0, 68)
-    cap.BackgroundTransparency = 1
-    cap.Text = (x < 400) and "PANEL CONFIGS" or "TAG DESIGNS"
-    cap.Font = Enum.Font.GothamBold; cap.TextSize = 10
-    cap.TextXAlignment = Enum.TextXAlignment.Left
-    cap.ZIndex = 203
-    SilenceAPI._theme(cap, "TextColor3", "accent2")
-end
-
-makeAdder(20, "name this config", function(nm)
-    if not canB() then
-        notify("Config", "This executor has no writefile.", 4); return false
-    end
-    if #cfgs >= MAXN then
-        notify("Config", "Eight is the limit - delete one first.", 4); return false
-    end
-    local data
-    if SilenceAPI._buildConfig then
-        local ok, c = pcall(SilenceAPI._buildConfig)
-        if ok then data = c end
-    end
-    cfgs[#cfgs + 1] = { name = nm, data = data, link = nil, auto = false }
-    saveB(); rebuild()
-    notify("Config", "Saved as " .. nm, 3)
-    return true
+local pairBox = Instance.new("ScrollingFrame", CE)
+pairBox.Size = UDim2.new(1, -32, 1, -486)
+pairBox.Position = UDim2.new(0, 16, 0, 424)
+pairBox.BackgroundTransparency = 1
+pairBox.BorderSizePixel = 0
+pairBox.ScrollBarThickness = 4
+pairBox.CanvasSize = UDim2.new(0, 0, 0, 0)
+pairBox.ZIndex = 201
+SilenceAPI._theme(pairBox, "ScrollBarImageColor3", "accent")
+local pLay = Instance.new("UIListLayout", pairBox)
+pLay.Padding = UDim.new(0, 5)
+pLay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    pairBox.CanvasSize = UDim2.new(0, 0, 0, pLay.AbsoluteContentSize.Y + 8)
 end)
 
-makeAdder(RX, "name this design", function(nm)
-    if not canB() then
-        notify("Config", "This executor has no writefile.", 4); return false
-    end
-    if #tags >= MAXN then
-        notify("Config", "Eight is the limit - delete one first.", 4); return false
-    end
-    local code
-    if SilenceAPI._tagCode then
-        local ok, c = pcall(SilenceAPI._tagCode)
-        if ok and type(c) == "string" and c ~= "" then code = c end
-    end
-    if not code then notify("Config", "No tag design to store.", 4); return false end
-    tags[#tags + 1] = { name = nm, code = code }
-    saveB(); rebuild()
-    notify("Config", "Design saved as " .. nm, 3)
-    return true
-end)
+local saveBtn = Instance.new("TextButton", CE)
+saveBtn.Size = UDim2.new(0, 150, 0, 26); saveBtn.Position = UDim2.new(1, -170, 0, 400)
+saveBtn.BorderSizePixel = 0
+saveBtn.Text = "SAVE PAIR"
+saveBtn.Font = Enum.Font.GothamBold; saveBtn.TextSize = 11
+saveBtn.AutoButtonColor = false
+saveBtn.ZIndex = 203
+corner(saveBtn, 7)
+saveBtn.BackgroundColor3 = Theme.bg2
+saveBtn.TextColor3 = Theme.textDim
 
------------------------------------------------------------- ROWS
-local function clearRows()
-    for _, r in ipairs(rowsC) do pcall(function() r:Destroy() end) end
-    for _, r in ipairs(rowsT) do pcall(function() r:Destroy() end) end
-    rowsC, rowsT = {}, {}
-end
-
-local function buildRow(isCfg, i)
-    local e = isCfg and cfgs[i] or tags[i]
+------------------------------------------------------------ DRAW
+local function buildRow(isCfg, i, e)
     local x = isCfg and 20 or RX
-    local r = Instance.new("TextButton", CE)
+    local r = Instance.new("Frame", CE)
     r.Size = UDim2.new(0, COLW, 0, ROWH)
     r.Position = UDim2.new(0, x, 0, TOP + (i - 1) * (ROWH + GAP))
     r.BorderSizePixel = 0
-    r.Text = ""
-    r.AutoButtonColor = false
     r.ZIndex = 202
-    corner(r, 9)
-    r.BackgroundColor3 = ((isCfg and selC or selT) == i) and Theme.bg3 or Theme.bg2
+    corner(r, 8)
+    r.BackgroundColor3 = Theme.bg2
     local rst = stroke(r, Theme.bg4, 1, 0.5, "bg4")
-    if isCfg and e.auto then rst.Color = Theme.accent; rst.Transparency = 0.1 end
-
-    local nameBox = Instance.new("TextBox", r)
-    nameBox.Size = UDim2.new(1, -110, 0, 20)
-    nameBox.Position = UDim2.new(0, 12, 0, 6)
-    nameBox.BackgroundTransparency = 1
-    nameBox.Text = e.name
-    nameBox.Font = Enum.Font.GothamBold; nameBox.TextSize = 12
-    nameBox.TextXAlignment = Enum.TextXAlignment.Left
-    nameBox.ClearTextOnFocus = false
-    nameBox.ZIndex = 204
-    SilenceAPI._theme(nameBox, "TextColor3", "text")
-    nameBox.FocusLost:Connect(function()
-        local nm = (tostring(nameBox.Text):match("^%s*(.-)%s*$") or ""):sub(1, 22)
-        if #nm < 1 then nameBox.Text = e.name return end
-        -- threads point at a NAME, so renaming has to carry them along
-        if not isCfg then
-            for _, c in ipairs(cfgs) do
-                if c.link == e.name then c.link = nm end
-            end
-        end
-        e.name = nm
-        saveB(); rebuild()
-    end)
-
-    local st = Instance.new("TextLabel", r)
-    st.Size = UDim2.new(0, 96, 0, 20); st.Position = UDim2.new(1, -104, 0, 6)
-    st.BackgroundTransparency = 1
-    st.Text = isCfg and (e.auto and "AUTO" or (e.data and "saved" or "empty"))
-                     or (e.code and "saved" or "empty")
-    st.Font = Enum.Font.Code; st.TextSize = 10
-    st.TextXAlignment = Enum.TextXAlignment.Right
-    st.ZIndex = 204
-    SilenceAPI._theme(st, "TextColor3", "textDim")
-
-    r.MouseButton1Click:Connect(function()
-        if isCfg then selC = i else selT = i end
-        rebuild()
-    end)
-
-    if isCfg then
-        flat(r, "LOAD", 12, 28, 66, function()
-            local done = {}
-            if e.data and SilenceAPI._applyConfigTable
-               and pcall(SilenceAPI._applyConfigTable, e.data) then
-                done[#done + 1] = "config"
-            end
-            local j = e.link and tagIndexByName(e.link)
-            local t = j and tags[j]
-            if t and t.code and SilenceAPI._applyTagCode
-               and pcall(SilenceAPI._applyTagCode, t.code) then
-                done[#done + 1] = t.name
-            end
-            for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-            if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
-            notify("Config", e.name .. " -> " .. table.concat(done, " + "), 4)
-        end)
-        flat(r, "UPDATE", 84, 28, 70, function()
-            if SilenceAPI._buildConfig then
-                local ok, c = pcall(SilenceAPI._buildConfig)
-                if ok then e.data = c; saveB(); rebuild()
-                   notify("Config", e.name .. " overwritten with what is on now.", 4) end
-            end
-        end)
-        flat(r, "AUTO", 160, 28, 60, function()
-            local want = not e.auto
-            -- only one, or two of them fight over the panel on inject
-            for _, c in ipairs(cfgs) do c.auto = false end
-            e.auto = want
-            saveB(); rebuild()
-        end)
-        flat(r, "DELETE", 226, 28, 66, function()
-            table.remove(cfgs, i)
-            if selC == i then selC = nil end
-            saveB(); rebuild()
-        end)
-    else
-        flat(r, "LOAD", 12, 28, 66, function()
-            if e.code and SilenceAPI._applyTagCode
-               and pcall(SilenceAPI._applyTagCode, e.code) then
-                for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-                if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
-                notify("Config", e.name .. " applied.", 3)
-            end
-        end)
-        flat(r, "UPDATE", 84, 28, 70, function()
-            if SilenceAPI._tagCode then
-                local ok, c = pcall(SilenceAPI._tagCode)
-                if ok and type(c) == "string" and c ~= "" then
-                    e.code = c; saveB(); rebuild()
-                    notify("Config", e.name .. " overwritten.", 3)
-                end
-            end
-        end)
-        flat(r, "DELETE", 160, 28, 66, function()
-            for _, c in ipairs(cfgs) do if c.link == e.name then c.link = nil end end
-            table.remove(tags, i)
-            if selT == i then selT = nil end
-            saveB(); rebuild()
-        end)
+    if (isCfg and pendC == i) or ((not isCfg) and pendT == i) then
+        rst.Color = Theme.accent; rst.Transparency = 0.1
     end
 
-    -- the pin: configs on the right edge, designs on the left
+    local l = Instance.new("TextLabel", r)
+    l.Size = UDim2.new(1, -34, 1, 0); l.Position = UDim2.new(0, 14, 0, 0)
+    l.BackgroundTransparency = 1
+    l.Text = e.name
+    l.Font = Enum.Font.GothamMedium; l.TextSize = 12
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextTruncate = Enum.TextTruncate.AtEnd
+    l.ZIndex = 203
+    SilenceAPI._theme(l, "TextColor3", "text")
+
+    -- the pin, and the number of the pair it belongs to
     local pin = Instance.new("TextButton", r)
-    pin.Size = UDim2.new(0, 16, 0, 16)
-    pin.Position = isCfg and UDim2.new(1, -9, 0.5, -8) or UDim2.new(0, -7, 0.5, -8)
+    pin.Size = UDim2.new(0, 18, 0, 18)
+    pin.Position = isCfg and UDim2.new(1, -10, 0.5, -9) or UDim2.new(0, -8, 0.5, -9)
     pin.BorderSizePixel = 0
     pin.Text = ""
+    pin.Font = Enum.Font.GothamBold; pin.TextSize = 10
     pin.AutoButtonColor = false
     pin.ZIndex = 206
     local pc = Instance.new("UICorner", pin); pc.CornerRadius = UDim.new(1, 0)
     local pst = Instance.new("UIStroke", pin)
     pst.Thickness = 2; pst.Color = Theme.accent
 
-    local linked = false
-    if isCfg then linked = e.link ~= nil
-    else for _, c in ipairs(cfgs) do if c.link == e.name then linked = true break end end end
-    pin.BackgroundColor3 = linked and Theme.accent or Theme.bg
-    pst.Transparency = linked and 0 or 0.4
+    local num = nil
+    for k, pr in ipairs(SilenceAPI._P.pairs) do
+        if (isCfg and pr.cfg == e.name) or ((not isCfg) and pr.tag == e.name) then
+            num = k break
+        end
+    end
+    pin.Text = num and tostring(num) or ""
+    pin.TextColor3 = Theme.bg
+    pin.BackgroundColor3 = num and Theme.accent or Theme.bg
+    pst.Transparency = num and 0 or 0.4
 
     if isCfg then
         pin.MouseButton1Down:Connect(function()
@@ -16134,39 +16200,147 @@ local function buildRow(isCfg, i)
     else
         pin.MouseEnter:Connect(function() if dragFrom then hoverTo = i end end)
         pin.MouseLeave:Connect(function() if hoverTo == i then hoverTo = nil end end)
-        -- a 16px circle is a small target, so the whole row accepts the drop
-        r.MouseEnter:Connect(function() if dragFrom then hoverTo = i end end)
+        -- an 18px circle is a small target, so the whole row accepts the drop
+        local hit = Instance.new("TextButton", r)
+        hit.Size = UDim2.new(1, 0, 1, 0)
+        hit.BackgroundTransparency = 1
+        hit.Text = ""
+        hit.AutoButtonColor = false
+        hit.ZIndex = 202
+        hit.MouseEnter:Connect(function() if dragFrom then hoverTo = i end end)
     end
 
-    if isCfg then rowsC[#rowsC + 1] = r else rowsT[#rowsT + 1] = r end
+    rows[#rows + 1] = r
 end
 
-local empty = Instance.new("TextLabel", CE)
-empty.Size = UDim2.new(1, -40, 0, 40)
-empty.Position = UDim2.new(0, 20, 0, TOP)
-empty.BackgroundTransparency = 1
-empty.Text = "  Nothing saved yet. Type a name above and press SAVE."
-empty.Font = Enum.Font.Gotham; empty.TextSize = 11
-empty.TextXAlignment = Enum.TextXAlignment.Left
-empty.ZIndex = 203
-SilenceAPI._theme(empty, "TextColor3", "textDim")
-
 rebuild = function()
-    clearRows()
-    clearLines()
-    for i = 1, #cfgs do buildRow(true, i) end
-    for i = 1, #tags do buildRow(false, i) end
-    empty.Visible = (#cfgs == 0 and #tags == 0)
+    clearKids()
+    local P = SilenceAPI._P
+    for i, e in ipairs(P.cfg) do if i <= 6 then buildRow(true, i, e) end end
+    for i, e in ipairs(P.tag) do if i <= 6 then buildRow(false, i, e) end end
 
     local w = thread.AbsoluteSize.X > 0 and thread.AbsoluteSize.X
               or (900 - 2 * COLW - 40)
-    for i, c in ipairs(cfgs) do
-        local j = c.link and tagIndexByName(c.link)
-        if j then
-            segment(0, rowY(i) - TOP, w, rowY(j) - TOP, (i == selC))
+
+    -- every saved pair keeps its thread on screen for good
+    for _, pr in ipairs(P.pairs) do
+        local ci = SilenceAPI._profFind("cfg", pr.cfg)
+        local ti = SilenceAPI._profFind("tag", pr.tag)
+        if ci and ti and ci <= 6 and ti <= 6 then
+            segment(0, rowY(ci) - TOP, w, rowY(ti) - TOP, false)
         end
     end
+    -- and the one you just dragged, until it is saved or replaced
+    if pendC and pendT and P.cfg[pendC] and P.tag[pendT] then
+        segment(0, rowY(pendC) - TOP, w, rowY(pendT) - TOP, true)
+    end
+
+    saveBtn.BackgroundColor3 = (pendC and pendT) and Theme.accent or Theme.bg2
+    saveBtn.TextColor3 = (pendC and pendT) and Theme.bg or Theme.textDim
+
+    for _, c in ipairs(pairBox:GetChildren()) do
+        if not c:IsA("UIListLayout") then c:Destroy() end
+    end
+    for k, pr in ipairs(P.pairs) do
+        local r = Instance.new("Frame", pairBox)
+        r.Size = UDim2.new(1, -6, 0, 34)
+        r.BorderSizePixel = 0
+        r.LayoutOrder = k
+        r.ZIndex = 202
+        corner(r, 8)
+        r.BackgroundColor3 = Theme.bg2
+        local st = stroke(r, Theme.bg4, 1, 0.5, "bg4")
+        if pr.auto then st.Color = Theme.accent; st.Transparency = 0.1 end
+
+        local n = Instance.new("TextLabel", r)
+        n.Size = UDim2.new(0, 24, 1, 0); n.Position = UDim2.new(0, 10, 0, 0)
+        n.BackgroundTransparency = 1
+        n.Text = tostring(k)
+        n.Font = Enum.Font.GothamBold; n.TextSize = 13
+        n.ZIndex = 203
+        SilenceAPI._theme(n, "TextColor3", "accent")
+
+        local t = Instance.new("TextLabel", r)
+        t.Size = UDim2.new(1, -260, 1, 0); t.Position = UDim2.new(0, 38, 0, 0)
+        t.BackgroundTransparency = 1
+        t.Text = pr.cfg .. "   +   " .. pr.tag .. (pr.auto and "    AUTO" or "")
+        t.Font = Enum.Font.GothamMedium; t.TextSize = 12
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.TextTruncate = Enum.TextTruncate.AtEnd
+        t.ZIndex = 203
+        SilenceAPI._theme(t, "TextColor3", "text")
+
+        flat(r, "LOAD", 0, 6, 66, function()
+            local _, ce = SilenceAPI._profFind("cfg", pr.cfg)
+            local _, te = SilenceAPI._profFind("tag", pr.tag)
+            local done = {}
+            if ce and ce.data and SilenceAPI._applyConfigTable
+               and pcall(SilenceAPI._applyConfigTable, ce.data) then
+                done[#done + 1] = pr.cfg
+            end
+            if te and te.code and SilenceAPI._applyTagCode
+               and pcall(SilenceAPI._applyTagCode, te.code) then
+                done[#done + 1] = pr.tag
+            end
+            for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+            if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+            notify("Config", table.concat(done, " + "), 4)
+        end).Position = UDim2.new(1, -216, 0, 6)
+
+        flat(r, "AUTO", 0, 6, 66, function()
+            local want = not pr.auto
+            -- only one, or two of them fight over the panel on inject
+            for _, o in ipairs(P.pairs) do o.auto = false end
+            pr.auto = want
+            SilenceAPI._profChanged()
+        end).Position = UDim2.new(1, -144, 0, 6)
+
+        flat(r, "CLEAR", 0, 6, 66, function()
+            table.remove(P.pairs, k)
+            SilenceAPI._profChanged()
+        end).Position = UDim2.new(1, -72, 0, 6)
+    end
+    if #P.pairs == 0 then
+        local t = Instance.new("TextLabel", pairBox)
+        t.Size = UDim2.new(1, 0, 0, 28)
+        t.BackgroundTransparency = 1
+        t.Text = "  Drag a config pin onto a design pin, then press SAVE PAIR."
+        t.Font = Enum.Font.Gotham; t.TextSize = 11
+        t.TextXAlignment = Enum.TextXAlignment.Left
+        t.ZIndex = 202
+        SilenceAPI._theme(t, "TextColor3", "textDim")
+    end
 end
+
+saveBtn.MouseButton1Click:Connect(function()
+    local P = SilenceAPI._P
+    if not (pendC and pendT and P.cfg[pendC] and P.tag[pendT]) then
+        notify("Config", "Connect a config to a design first.", 4)
+        return
+    end
+    if #P.pairs >= MAXP then
+        notify("Config", "Five pairs is the limit - clear one first.", 4)
+        return
+    end
+    local cn, tn = P.cfg[pendC].name, P.tag[pendT].name
+    for _, pr in ipairs(P.pairs) do
+        if pr.cfg == cn and pr.tag == tn then
+            notify("Config", "That pair already exists.", 3)
+            return
+        end
+    end
+    P.pairs[#P.pairs + 1] = { cfg = cn, tag = tn, auto = false }
+    pendC, pendT = nil, nil
+    SilenceAPI._profChanged()
+    notify("Config", cn .. "  +  " .. tn, 4)
+end)
+saveBtn.MouseEnter:Connect(function()
+    if pendC and pendT then return end
+    saveBtn.BackgroundColor3 = Theme.bg3
+end)
+saveBtn.MouseLeave:Connect(function() rebuild() end)
+
+table.insert(SilenceAPI._profWatchers, rebuild)
 rebuild()
 
 CE:GetPropertyChangedSignal("Visible"):Connect(function()
@@ -16176,25 +16350,29 @@ end)
 SilenceAPI._openConfigEditor = function() CE.Visible = not CE.Visible end
 SilenceAPI._modalWatch(CE)
 
+-- Deferred well past the panel build: applyConfig walks every setter and
+-- every refresher, and half of them do not exist yet while the tabs are
+-- still going up.
 task.spawn(function()
     task.wait(4)
-    for _, c in ipairs(cfgs) do
-        if c.auto then
-            if c.data and SilenceAPI._applyConfigTable then
-                pcall(SilenceAPI._applyConfigTable, c.data)
+    for _, pr in ipairs(SilenceAPI._P.pairs) do
+        if pr.auto then
+            local _, ce = SilenceAPI._profFind("cfg", pr.cfg)
+            local _, te = SilenceAPI._profFind("tag", pr.tag)
+            if ce and ce.data and SilenceAPI._applyConfigTable then
+                pcall(SilenceAPI._applyConfigTable, ce.data)
             end
-            local j = c.link and tagIndexByName(c.link)
-            local t = j and tags[j]
-            if t and t.code and SilenceAPI._applyTagCode then
-                pcall(SilenceAPI._applyTagCode, t.code)
+            if te and te.code and SilenceAPI._applyTagCode then
+                pcall(SilenceAPI._applyTagCode, te.code)
             end
             for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-            notify("Config", c.name .. " loaded automatically.", 5)
+            notify("Config", pr.cfg .. " + " .. pr.tag .. " loaded automatically.", 5)
             break
         end
     end
 end)
 end)()
+
 
 
 
