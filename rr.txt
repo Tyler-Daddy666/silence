@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v86"
+SilenceAPI._version = "v87"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -708,7 +708,7 @@ local State = {
     bodyScale=1,              -- Humanoid *Scale values multiplier
     faceId="",                -- decal asset id swapped onto the head
     walkAnim=false,           -- override the walk/run animation
-    walkAnimId="619537468",   -- zombie walk
+    walkAnimId="",            -- custom walk animation, empty until you set one
     waypoints={},             -- { {name=..., x=..., y=..., z=...}, ... }
     featureKeys={},           -- [featureId] = Enum.KeyCode, user-bindable
     playerLog=false,          -- notify on join / leave
@@ -7741,7 +7741,7 @@ slotHint.TextXAlignment = Enum.TextXAlignment.Left
 SilenceAPI._theme(slotHint, "TextColor3", "textDim")
 
 sectionLabel(pAv, "ANIMATION")
-toggleRow(pAv, "Custom Walk  (zombie walk)",
+toggleRow(pAv, "Custom Walk  (needs an animation id)",
     function() return State.walkAnim end,
     function(v) SilenceAPI._setWalkAnim(v) end)
 local walkIdBox = inputRow(pAv, "Walk Anim ID", State.walkAnimId, function(v)
@@ -7749,8 +7749,9 @@ local walkIdBox = inputRow(pAv, "Walk Anim ID", State.walkAnimId, function(v)
 end)
 buttonRow(pAv, "Reset Walk Animation", function()
     SilenceAPI._setWalkAnim(false)
-    SilenceAPI._setWalkAnimId("619537468")
-    if walkIdBox then walkIdBox.Text = "619537468" end
+    -- back to YOUR animation, not to some preset that was baked in here
+    SilenceAPI._setWalkAnimId("")
+    if walkIdBox then walkIdBox.Text = "" end
     for _, r in ipairs(SilenceAPI._toggleRefreshers) do pcall(r) end
 end)
 local walkHint = Instance.new("TextLabel", pAv)
