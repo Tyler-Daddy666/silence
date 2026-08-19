@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v126"
+SilenceAPI._version = "v127"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -13639,9 +13639,25 @@ local _tagOk, _tagErr = pcall(function()
         Runes   = Color3.fromRGB(180, 120, 255),
     }
 
-    local function destroyTag(player)
+    -- Ring buffer of the last 30 tag events, with the reason. An executor's
+    -- print never reaches Roblox's console, so a blink used to leave no
+    -- trace at all - the report is the only place a user can actually read.
+    SilenceAPI._tagEvents = SilenceAPI._tagEvents or {}
+    local function tev(what, player, why)
+        local t = SilenceAPI._tagEvents
+        t[#t + 1] = string.format("%s  %-7s %-14s %s", os.date("%H:%M:%S"),
+            tostring(what), tostring(player and player.Name or "?"),
+            tostring(why or ""))
+        while #t > 30 do table.remove(t, 1) end
+    end
+    SilenceAPI._tagEv = tev
+
+    local function destroyTag(player, why)
         local g = activeTags[player]
-        if g then pcall(function() g:Destroy() end); activeTags[player] = nil end
+        if g then
+            tev("destroy", player, why or "no reason given")
+            pcall(function() g:Destroy() end); activeTags[player] = nil
+        end
         if player and player.Character then
             local head = player.Character:FindFirstChild("Head")
             if head then
@@ -13725,10 +13741,22 @@ local _tagOk, _tagErr = pcall(function()
         return lk, (type(t.ti) == "string" and t.ti or nil)
     end
 
-    local function createTag(player)
+    SilenceAPI._tagBuiltAt = SilenceAPI._tagBuiltAt or {}
+    local function createTag(player, why, force)
         if not player or not player.Character then return end
         if State.tagsHidden then return end
         if tagHidden[player] then return end
+        -- A rebuild destroys the card first, so anything calling this on a
+        -- loop shows up as a blink. Ten seconds between rebuilds of the same
+        -- player caps that no matter which caller is at fault. A respawn
+        -- passes force, because then the old card really is gone.
+        local bat = SilenceAPI._tagBuiltAt
+        if not force and bat[player] and (tick() - bat[player]) < 10
+           and activeTags[player] and activeTags[player].Parent then
+            return activeTags[player]
+        end
+        bat[player] = tick()
+        tev("build", player, why or "unspecified")
         local head = player.Character:FindFirstChild("Head")
         if not head then
             -- The head lags behind the character on a join or a respawn.
@@ -16294,8 +16322,19 @@ local _tagOk, _tagErr = pcall(function()
                     local rhd = p.Character:FindFirstChild("Head")
                     -- missing, orphaned, or hanging off a head this character
                     -- is no longer wearing
-                    if rhd and (not rbb or not rbb.Parent or rbb.Parent ~= rhd) then
-                        pcall(createTag, p)
+                    -- Rebuild only when the card is genuinely gone or has
+                    -- been orphaned out of the character entirely. Comparing
+                    -- against FindFirstChild("Head") rebuilt a healthy tag
+                    -- every poll whenever anything else touched the head.
+                    local lost = (not rbb) or (not rbb.Parent)
+                    if not lost and rbb.Parent then
+                        local okD, inChar = pcall(function()
+                            return rbb.Parent:IsDescendantOf(p.Character)
+                        end)
+                        lost = okD and not inChar
+                    end
+                    if rhd and lost then
+                        pcall(createTag, p, "reconcile")
                     end
                 end
             end
@@ -16623,6 +16662,14 @@ local _tagOk, _tagErr = pcall(function()
                 (p == LocalPlayer and "own") or (styleLook[p.UserId] and "yes" or "no"),
                 playerRank[p.UserId] or "-",
                 titleFor(p))
+        end
+        out[#out+1] = ""
+        out[#out+1] = "TAG EVENTS  (newest last - a repeating pair here is the bug)"
+        local tl = SilenceAPI._tagEvents or {}
+        if #tl == 0 then
+            out[#out+1] = "  nothing recorded yet"
+        else
+            for _, line in ipairs(tl) do out[#out+1] = "  " .. line end
         end
         out[#out+1] = ""
         out[#out+1] = "LARP MOUNTS  (part:assetid=result, FAILED = asset never loaded)"
