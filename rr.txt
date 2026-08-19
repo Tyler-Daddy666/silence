@@ -387,8 +387,8 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v107"
-SilenceAPI._built   = "2026-08-19"
+SilenceAPI._version = "v111"
+SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
 -- source of a downloaded copy is the only way to learn somebody else's.
@@ -6167,20 +6167,22 @@ local function makeRailButton(cat)
         dot(8, 3, 1); px(14, 9, 0, 12, 4)
         dot(7, 15, 3); px(11, 8, 14, 13, 4)
     elseif cat.icon == "games" then     -- a gamepad seen head on
-        px(26, 12, 0, 7, 6)                         -- body, y 7..19
-        px(7, 6, 0, 17, 3); px(7, 6, 19, 17, 3)     -- the two grips
-        px(4, 10, 5, 9, 2); px(10, 4, 2, 12, 2)     -- d-pad cross, 4px arms
-        dot(5, 16, 9); dot(5, 20, 14)               -- the two face buttons
+        px(24, 15, 1, 5, 7)                         -- body,  x 1..25, y 5..20
+        px(7, 6, 1, 18, 3); px(7, 6, 18, 18, 3)     -- grips, dropped below it
+        px(4, 12, 5, 7, 2); px(12, 4, 1, 11, 2)     -- d-pad cross, centred 7,13
+        dot(6, 15, 8); dot(6, 19, 13)               -- the two face buttons
     elseif cat.icon == "anim" then      -- a figure mid-pose, not mid-stride
         -- One arm up and one out reads as dancing at a glance; two arms down
-        -- and legs apart reads as standing, which is what the old walk pose
-        -- collapsed into once the tile got smaller.
-        dot(8, 9, 1)                                -- head,  x 9..17
-        px(4, 9, 12, 10, 2)                         -- torso, x 12..16
-        px(4, 8, 16, 4, 2)                          -- raised arm
-        px(8, 4, 4, 12, 2)                          -- outstretched arm
-        px(4, 7, 10, 18, 2)                         -- left leg
-        px(4, 7, 15, 18, 2)                         -- right leg
+        -- and legs apart reads as standing, which is what a walk pose
+        -- collapses into once the tile gets small. Everything here is five
+        -- pixels or four, because the tile is scaled to 0.8 and three is the
+        -- floor at which a limb still looks like a limb.
+        dot(9, 9, 0)                                -- head,  x 9..18
+        px(5, 9, 11, 10, 2)                         -- torso, x 11..16
+        px(4, 10, 17, 3, 2)                         -- arm raised
+        px(9, 5, 2, 11, 2)                          -- arm out
+        px(5, 7, 8, 19, 2)                          -- left leg,  splayed
+        px(5, 7, 14, 19, 2)                         -- right leg, splayed
     elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
         px(8, 12, 9, 2, 4)                          -- body, centred on x=13
         px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
