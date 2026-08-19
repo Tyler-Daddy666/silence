@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v83"
+SilenceAPI._version = "v84"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -9367,7 +9367,6 @@ local function hotkeyRow(label, keyStateGetter, onChange)
     row.BorderSizePixel = 0
     corner(row, 9)
     SilenceAPI._theme(row, "BackgroundColor3", "bg2")
-    stroke(row, Theme.bg4, 1, 0.5, "bg4")
     -- these were the only rows the header search could not find
     SilenceAPI._registerRow(row, label .. " hotkey")
 
@@ -9389,7 +9388,7 @@ local function hotkeyRow(label, keyStateGetter, onChange)
     btn.Font = Enum.Font.GothamMedium
     btn.TextSize = 12
     btn.AutoButtonColor = false
-    corner(btn, 7); stroke(btn, Theme.accent, 1, 0.5)
+    corner(btn, 7)
     SilenceAPI._theme(btn, "BackgroundColor3", "bg3")
     SilenceAPI._theme(btn, "TextColor3", "text")
 
@@ -9497,7 +9496,6 @@ local function featureKeyRow(entry)
     row.BorderSizePixel = 0
     corner(row, 9)
     SilenceAPI._theme(row, "BackgroundColor3", "bg2")
-    stroke(row, Theme.bg4, 1, 0.5, "bg4")
     SilenceAPI._registerRow(row, entry.label .. " keybind")
 
     local lbl = Instance.new("TextLabel", row)
@@ -9519,7 +9517,7 @@ local function featureKeyRow(entry)
     btn.Text = keyText()
     btn.Font = Enum.Font.GothamMedium; btn.TextSize = 12
     btn.AutoButtonColor = false
-    corner(btn, 7); stroke(btn, Theme.accent, 1, 0.5)
+    corner(btn, 7)
     SilenceAPI._theme(btn, "BackgroundColor3", "bg3")
     SilenceAPI._theme(btn, "TextColor3", "text")
 
