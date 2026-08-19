@@ -387,7 +387,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v82"
+SilenceAPI._version = "v83"
 SilenceAPI._built   = "2026-08-18"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -5997,6 +5997,26 @@ SilenceAPI._hiddenTabs = {}
 -- Marks a tab as moved-into-a-window and takes its button off the strip at
 -- once. Setting the flag alone only mattered the next time _showCat ran,
 -- which for a tab already on screen could be never.
+-- Moves a page under a new parent AND lifts everything inside it above that
+-- parent's own layers. Without the lift the page is there, correctly sized,
+-- and completely behind the window it was just put into.
+function SilenceAPI._liftPage(pg, base)
+    if not pg then return end
+    local lowest = math.huge
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiObject") and d.ZIndex < lowest then lowest = d.ZIndex end
+    end
+    if lowest == math.huge then lowest = 1 end
+    -- shift so the lowest element lands on base, keeping every relative
+    -- ordering the page was built with
+    local delta = base - lowest
+    if delta == 0 then return end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("GuiObject") then d.ZIndex = d.ZIndex + delta end
+    end
+    pg.ZIndex = base
+end
+
 function SilenceAPI._hideTab(name)
     SilenceAPI._hiddenTabs[name] = true
     local t = SilenceAPI._tabs and SilenceAPI._tabs[name]
@@ -10107,7 +10127,7 @@ local function adopt(tabName)
     pg.Size = UDim2.new(1, -32, 1, -100)
     pg.Position = UDim2.new(0, 16, 0, 86)
     pg.Visible = false
-    pg.ZIndex = 192
+    SilenceAPI._liftPage(pg, 196)
     return pg
 end
 
@@ -11083,7 +11103,7 @@ local function gameWindow(title, subtitle)
     hdr.BackgroundTransparency = 1
     hdr.BorderSizePixel = 0
     hdr.Active = true
-    hdr.ZIndex = 196
+    hdr.ZIndex = 400
 
     local t = Instance.new("TextLabel", hdr)
     t.Size = UDim2.new(1, -70, 0, 22); t.Position = UDim2.new(0, 20, 0, 8)
@@ -11091,7 +11111,7 @@ local function gameWindow(title, subtitle)
     t.Text = title
     t.Font = Enum.Font.GothamBold; t.TextSize = 15
     t.TextXAlignment = Enum.TextXAlignment.Left
-    t.ZIndex = 197
+    t.ZIndex = 401
     SilenceAPI._theme(t, "TextColor3", "text")
 
     local sb = Instance.new("TextLabel", hdr)
@@ -11100,7 +11120,7 @@ local function gameWindow(title, subtitle)
     sb.Text = subtitle
     sb.Font = Enum.Font.GothamMedium; sb.TextSize = 10
     sb.TextXAlignment = Enum.TextXAlignment.Left
-    sb.ZIndex = 197
+    sb.ZIndex = 401
     SilenceAPI._theme(sb, "TextColor3", "textDim")
 
     local x = Instance.new("TextButton", hdr)
@@ -11108,7 +11128,7 @@ local function gameWindow(title, subtitle)
     x.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
     x.BorderSizePixel = 0
     x.Text = "X"; x.Font = Enum.Font.GothamBold; x.TextSize = 14
-    x.AutoButtonColor = false; x.ZIndex = 197
+    x.AutoButtonColor = false; x.ZIndex = 401
     corner(x, 6); stroke(x, Theme.accent, 1, 0.5)
     SilenceAPI._theme(x, "TextColor3", "text")
     x.MouseButton1Click:Connect(function() W.Visible = false end)
@@ -11137,7 +11157,7 @@ do
         pg.Size = UDim2.new(1, -32, 1, -62)
         pg.Position = UDim2.new(0, 16, 0, 52)
         pg.Visible = true
-        pg.ZIndex = 196
+        SilenceAPI._liftPage(pg, 200)
         SilenceAPI._hideTab("German Voice")
     end)
     SilenceAPI._openGV = function() W.Visible = not W.Visible end
