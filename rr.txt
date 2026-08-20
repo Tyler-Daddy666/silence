@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v150"
+SilenceAPI._version = "v151"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -16064,7 +16064,10 @@ local _tagOk, _tagErr = pcall(function()
         local p = makePage("SAVES")
         eCaption(p, "SAVE THIS DESIGN")
 
-        local nameRow = eRow(p, 38)
+        local nameRow, nameLbl = eRow(p, 38)
+        -- this row is all input, no label; blank the one eRow made or its
+        -- default "Label" text sits under the placeholder
+        nameLbl.Text = ""
         local nb = Instance.new("TextBox", nameRow)
         nb.Size = UDim2.new(1, -118, 0, 24); nb.Position = UDim2.new(0, 14, 0, 7)
         nb.BackgroundTransparency = 1
