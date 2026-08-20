@@ -401,6 +401,152 @@ local Mouse       = LocalPlayer:GetMouse()
 local Camera      = Workspace.CurrentCamera
 
 ----------------------------------------------------------------
+-- KEY GATE
+-- Runs before anything else builds. A key is checked against the worker; the
+-- panel only loads on a valid, unexpired, right-machine key. HWID is the
+-- executor's stable client id, so a key binds to one PC on first use.
+--   getgenv().SilenceKey = "SIL-...."   skips the prompt if it is valid
+-- No worker configured (SYNC_BASE empty) means no key system, so the gate
+-- steps aside rather than locking everyone out on a config mistake.
+----------------------------------------------------------------
+if SYNC_BASE ~= "" then
+    local HS = game:GetService("HttpService")
+    local function hwid()
+        local ok, v = pcall(function()
+            return game:GetService("RbxAnalyticsService"):GetClientId()
+        end)
+        if ok and v then return tostring(v) end
+        -- fallback so a build without that service still binds to something
+        -- stable per account, rather than to nothing
+        return "hwid-" .. tostring(LocalPlayer.UserId)
+    end
+
+    local function check(k)
+        k = tostring(k or ""):gsub("%s+", "")
+        if k == "" then return false, "enter a key" end
+        local ok, body = pcall(function()
+            return game:HttpGet(SYNC_BASE .. "key/validate?k=" .. HS:UrlEncode(k)
+                .. "&hwid=" .. HS:UrlEncode(hwid())
+                .. "&t=" .. tostring(math.random(1, 1000000)), true)
+        end)
+        if not ok then return false, "no connection to the server" end
+        local okJ, d = pcall(function() return HS:JSONDecode(body) end)
+        if not okJ or type(d) ~= "table" then return false, "bad server reply" end
+        if d.ok then return true, d.lifetime and "lifetime" or "valid" end
+        return false, tostring(d.reason or "invalid key")
+    end
+
+    -- a key handed in by the loader skips the window entirely if it is good
+    local pre = nil
+    pcall(function() local g = getgenv(); pre = g and g.SilenceKey end)
+    if pre then
+        local ok = check(pre)
+        if ok then return end   -- straight through; the rest of the file runs
+    end
+
+    -- otherwise, a small window. The main chunk blocks on the flag below
+    -- until a valid key arrives or the user closes it.
+    local done, passed = false, false
+    local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
+
+    local gg = Instance.new("ScreenGui")
+    gg.Name = "SilenceKey"
+    gg.ResetOnSpawn = false
+    gg.IgnoreGuiInset = true
+    gg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    pcall(function() gg.Parent = parentGui end)
+
+    local w = Instance.new("Frame", gg)
+    w.Size = UDim2.new(0, 340, 0, 200)
+    w.Position = UDim2.new(0.5, -170, 0.5, -100)
+    w.BackgroundColor3 = Color3.fromRGB(14, 14, 17)
+    w.BorderSizePixel = 0
+    local wc = Instance.new("UICorner", w); wc.CornerRadius = UDim.new(0, 16)
+    local ws = Instance.new("UIStroke", w)
+    ws.Color = Color3.fromRGB(225, 29, 61); ws.Thickness = 1; ws.Transparency = 0.3
+
+    local mark = Instance.new("TextLabel", w)
+    mark.Size = UDim2.new(1, 0, 0, 30); mark.Position = UDim2.new(0, 0, 0, 20)
+    mark.BackgroundTransparency = 1
+    mark.Text = "SILENCE"
+    mark.Font = Enum.Font.GothamBlack; mark.TextSize = 20
+    mark.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+    local sub = Instance.new("TextLabel", w)
+    sub.Size = UDim2.new(1, -40, 0, 16); sub.Position = UDim2.new(0, 20, 0, 52)
+    sub.BackgroundTransparency = 1
+    sub.Text = "enter your key to continue"
+    sub.Font = Enum.Font.Gotham; sub.TextSize = 11
+    sub.TextColor3 = Color3.fromRGB(140, 140, 150)
+
+    local box = Instance.new("TextBox", w)
+    box.Size = UDim2.new(1, -40, 0, 38); box.Position = UDim2.new(0, 20, 0, 82)
+    box.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+    box.BorderSizePixel = 0
+    box.Text = ""
+    box.PlaceholderText = "SIL-XXXX-XXXX-XXXX-XXXX"
+    box.PlaceholderColor3 = Color3.fromRGB(90, 90, 100)
+    box.Font = Enum.Font.Code; box.TextSize = 14
+    box.TextColor3 = Color3.fromRGB(255, 255, 255)
+    box.ClearTextOnFocus = false
+    local bc = Instance.new("UICorner", box); bc.CornerRadius = UDim.new(0, 9)
+
+    local msg = Instance.new("TextLabel", w)
+    msg.Size = UDim2.new(1, -40, 0, 14); msg.Position = UDim2.new(0, 20, 0, 124)
+    msg.BackgroundTransparency = 1
+    msg.Text = ""
+    msg.Font = Enum.Font.Gotham; msg.TextSize = 10
+    msg.TextXAlignment = Enum.TextXAlignment.Left
+    msg.TextColor3 = Color3.fromRGB(255, 92, 92)
+
+    local go = Instance.new("TextButton", w)
+    go.Size = UDim2.new(1, -40, 0, 34); go.Position = UDim2.new(0, 20, 1, -46)
+    go.BackgroundColor3 = Color3.fromRGB(225, 29, 61)
+    go.BorderSizePixel = 0
+    go.Text = "ENTER"
+    go.Font = Enum.Font.GothamBold; go.TextSize = 13
+    go.TextColor3 = Color3.fromRGB(255, 255, 255)
+    go.AutoButtonColor = true
+    local gc = Instance.new("UICorner", go); gc.CornerRadius = UDim.new(0, 9)
+
+    local x = Instance.new("TextButton", w)
+    x.Size = UDim2.new(0, 26, 0, 26); x.Position = UDim2.new(1, -32, 0, 8)
+    x.BackgroundTransparency = 1
+    x.Text = "X"; x.Font = Enum.Font.GothamBold; x.TextSize = 14
+    x.TextColor3 = Color3.fromRGB(140, 140, 150)
+
+    local function attempt()
+        msg.TextColor3 = Color3.fromRGB(255, 182, 72)
+        msg.Text = "checking..."
+        task.spawn(function()
+            local ok, why = check(box.Text)
+            if ok then
+                msg.TextColor3 = Color3.fromRGB(69, 209, 122)
+                msg.Text = why == "lifetime" and "lifetime key - welcome" or "valid - loading..."
+                task.wait(0.4)
+                passed, done = true, true
+                pcall(function() gg:Destroy() end)
+            else
+                msg.TextColor3 = Color3.fromRGB(255, 92, 92)
+                msg.Text = why
+            end
+        end)
+    end
+
+    go.MouseButton1Click:Connect(attempt)
+    box.FocusLost:Connect(function(enter) if enter then attempt() end end)
+    x.MouseButton1Click:Connect(function()
+        done, passed = true, false
+        pcall(function() gg:Destroy() end)
+    end)
+
+    -- block the rest of the script until the gate resolves
+    while not done do task.wait(0.1) end
+    if not passed then return end
+end
+
+
+----------------------------------------------------------------
 -- EXECUTOR COMPAT
 ----------------------------------------------------------------
 local env = (typeof(getgenv) == "function") and getgenv() or _G
@@ -458,7 +604,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v164"
+SilenceAPI._version = "v166"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -18634,6 +18780,26 @@ local function resolveId(id)
     return id
 end
 
+-- emote id -> sound id, saved to disk. JSON keys are strings, so the map is
+-- keyed by the id as a string throughout.
+local LINK_FILE = "silence_emote_sounds.json"
+local emoteSoundLink = {}
+pcall(function()
+    if type(isfile) == "function" and isfile(LINK_FILE) then
+        local d = game:GetService("HttpService"):JSONDecode(readfile(LINK_FILE))
+        if type(d) == "table" then emoteSoundLink = d end
+    end
+end)
+local function saveLinks()
+    if type(writefile) == "function" then
+        pcall(function()
+            writefile(LINK_FILE,
+                game:GetService("HttpService"):JSONEncode(emoteSoundLink))
+        end)
+    end
+end
+SilenceAPI._emoteSoundLink = emoteSoundLink
+
 local function play(id)
     task.spawn(function()
         local a = resolveId(id)
@@ -18641,10 +18807,12 @@ local function play(id)
             notify("Emotes", "That is not an id.", 4)
             return
         end
-        -- playEmote owns State.currentEmote: it stores the ANIMATION ID
-        -- there, and its resume-after-respawn and stop paths compare against
-        -- that exact value. Writing a display name over it would break both.
         playEmote(a, 0, false, 1)
+        -- and its paired sound, if one was linked, on your own character
+        local snd = emoteSoundLink[tostring(id)]
+        if snd and SilenceAPI._playEmoteSoundFor then
+            pcall(SilenceAPI._playEmoteSoundFor, LocalPlayer, snd)
+        end
     end)
 end
 SilenceAPI._playEmoteId = play
@@ -18782,7 +18950,7 @@ for i = 1, PER_PAGE do
     b.BackgroundColor3 = Theme.bg2
 
     local nm = Instance.new("TextLabel", b)
-    nm.Size = UDim2.new(1, -150, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
+    nm.Size = UDim2.new(1, -186, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
     nm.BackgroundTransparency = 1
     nm.Font = Enum.Font.GothamMedium; nm.TextSize = 12
     nm.TextXAlignment = Enum.TextXAlignment.Left
@@ -18790,15 +18958,56 @@ for i = 1, PER_PAGE do
     SilenceAPI._theme(nm, "TextColor3", "text")
 
     local idl = Instance.new("TextLabel", b)
-    idl.Size = UDim2.new(0, 130, 1, 0); idl.Position = UDim2.new(1, -142, 0, 0)
+    idl.Size = UDim2.new(0, 118, 1, 0); idl.Position = UDim2.new(1, -150, 0, 0)
     idl.BackgroundTransparency = 1
     idl.Font = Enum.Font.Code; idl.TextSize = 9
     idl.TextXAlignment = Enum.TextXAlignment.Right
     idl.ZIndex = 402
     SilenceAPI._theme(idl, "TextColor3", "textDim")
 
-    local r = { btn = b, nm = nm, idl = idl, id = nil }
+    -- the sound-link button. Sits on top of the row, so its own click never
+    -- reaches the row's play handler underneath. The note is DRAWN - a head
+    -- and a stem - because a music-note glyph is not in the panel's font and
+    -- would render as an empty box.
+    local sb = Instance.new("TextButton", b)
+    sb.Size = UDim2.new(0, 26, 0, 24); sb.Position = UDim2.new(1, -30, 0.5, -12)
+    sb.BorderSizePixel = 0
+    sb.Text = ""
+    sb.AutoButtonColor = false
+    sb.ZIndex = 403
+    corner(sb, 6)
+    SilenceAPI._theme(sb, "BackgroundColor3", "bg3")
+    local sbStem = Instance.new("Frame", sb)
+    sbStem.Size = UDim2.new(0, 2, 0, 11); sbStem.Position = UDim2.new(0, 15, 0, 5)
+    sbStem.BorderSizePixel = 0; sbStem.ZIndex = 404
+    local sbHead = Instance.new("Frame", sb)
+    sbHead.Size = UDim2.new(0, 8, 0, 6); sbHead.Position = UDim2.new(0, 8, 0, 13)
+    sbHead.BorderSizePixel = 0; sbHead.ZIndex = 404
+    local sbc = Instance.new("UICorner", sbHead); sbc.CornerRadius = UDim.new(1, 0)
+
+    local r = { btn = b, nm = nm, idl = idl, sb = sb,
+                sbStem = sbStem, sbHead = sbHead, id = nil }
     rows[i] = r
+
+    sb.MouseButton1Click:Connect(function()
+        if not r.id then return end
+        local key = tostring(r.id)
+        if emoteSoundLink[key] then
+            emoteSoundLink[key] = nil
+            notify("Emotes", r.nm.Text .. ": sound unlinked", 3)
+        else
+            local armed = SilenceAPI._armedSound
+            if not armed then
+                notify("Emotes", "Play a sound in the Sound Board first to"
+                       .. " arm it, then press the note.", 5)
+                return
+            end
+            emoteSoundLink[key] = tostring(armed)
+            notify("Emotes", r.nm.Text .. " -> sound " .. tostring(armed), 4)
+        end
+        saveLinks()
+        if SilenceAPI._emoteRender then SilenceAPI._emoteRender() end
+    end)
 
     b.MouseEnter:Connect(function()
         TweenService:Create(b, SilenceAPI._twFade,
@@ -18847,6 +19056,11 @@ local function render()
             r.nm.Text = e[1]
             r.idl.Text = tostring(e[2])
             r.btn.Visible = true
+            local linked = emoteSoundLink[tostring(e[2])] ~= nil
+            r.sb.BackgroundColor3 = linked and Theme.accent or Theme.bg3
+            local ink = linked and Theme.bg or Theme.textDim
+            r.sbStem.BackgroundColor3 = ink
+            r.sbHead.BackgroundColor3 = ink
         else
             r.id = nil
             r.btn.Visible = false
@@ -19242,6 +19456,7 @@ local function playSoundFor(player, id)
     snd.RollOffMaxDistance = 130
     snd.Parent = root
     activeSnd = snd
+    SilenceAPI._armedSound = id   -- the emote list links to this one
     pcall(function() snd:Play() end)
     snd.Ended:Connect(function() if activeSnd == snd then stopSound() end end)
     -- a dead id still reaches here; say so instead of a silent nothing
