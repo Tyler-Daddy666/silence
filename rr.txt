@@ -432,7 +432,21 @@ if SYNC_BASE ~= "" then
         if not ok then return false, "no connection to the server" end
         local okJ, d = pcall(function() return HS:JSONDecode(body) end)
         if not okJ or type(d) ~= "table" then return false, "bad server reply" end
-        if d.ok then return true, d.lifetime and "lifetime" or "valid" end
+        if d.ok then
+            -- remember the winning key so the in-session expiry watchdog at the
+            -- end of the file can re-check it and lock the panel when it runs
+            -- out mid-game. getgenv outlives the gate's local scope.
+            pcall(function()
+                local gg = getgenv()
+                if gg then
+                    gg.__SilenceKeyStr  = k
+                    gg.__SilenceKeyExp  = tonumber(d.exp) or 0
+                    gg.__SilenceKeyLife = d.lifetime and true or false
+                    gg.__SilenceHwid    = hwid()
+                end
+            end)
+            return true, d.lifetime and "lifetime" or "valid"
+        end
         return false, tostring(d.reason or "invalid key")
     end
 
@@ -699,7 +713,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v170"
+SilenceAPI._version = "v171"
 SilenceAPI._built   = "2026-08-20"
 
 ----------------------------------------------------------------
@@ -21544,3 +21558,152 @@ end)()
 notify("Silence", SilenceAPI._version .. " loaded - RightShift toggles GUI", 5)
 print("[Silence Admin Panel] loaded - re-execute to reload.")
 print("[Silence] === ALL READY === GUI should be visible now")
+
+
+----------------------------------------------------------------
+-- KEY EXPIRY WATCHDOG
+-- The gate only runs at load. This keeps the session honest: once the key runs
+-- out (a 6h / free key especially) or is disabled/deleted while you are mid-
+-- game, the whole panel is torn down and a full-screen "expired" gate takes
+-- over with the link to get a new one. Everything is scoped inside the spawned
+-- function, so it adds ZERO main-chunk locals (the file sits at 199/200).
+----------------------------------------------------------------
+if SYNC_BASE ~= "" then
+task.spawn(function()
+    local selfRef = SilenceAPI
+    local g = (typeof(getgenv) == "function") and getgenv() or nil
+    local keyStr = g and g.__SilenceKeyStr
+    if not keyStr or keyStr == "" then return end   -- no key captured; nothing to watch
+    local exp  = tonumber(g and g.__SilenceKeyExp) or 0      -- 0 = lifetime
+    local life = (g and g.__SilenceKeyLife) and true or false
+    local hwid = tostring((g and g.__SilenceHwid) or "")
+    local link = (g and type(g.SilenceKeyLink) == "string" and g.SilenceKeyLink ~= ""
+                  and g.SilenceKeyLink)
+                 or "https://work.ink/2SvG/silence-free-6h-key"
+    local HS = game:GetService("HttpService")
+
+    -- Re-ask the worker. A network blip returns "still ok" so a hiccup never
+    -- kicks a paying user; only a real {ok:false} (expired/disabled/deleted)
+    -- counts. It also refreshes exp, so extending a key server-side is honored.
+    local lastSrv = os.clock()
+    local function serverOk()
+        local ok, body = pcall(function()
+            return game:HttpGet(SYNC_BASE .. "key/validate?k=" .. HS:UrlEncode(keyStr)
+                .. "&hwid=" .. HS:UrlEncode(hwid)
+                .. "&t=" .. tostring(math.random(1, 1000000)), true)
+        end)
+        if not ok then return true end
+        local okJ, d = pcall(function() return HS:JSONDecode(body) end)
+        if not okJ or type(d) ~= "table" then return true end
+        if d.ok then
+            if d.exp ~= nil then exp = tonumber(d.exp) or exp end
+            if d.lifetime ~= nil then life = d.lifetime and true or false end
+            return true
+        end
+        return false
+    end
+
+    local function lockOut()
+        pcall(function() if selfRef and selfRef.cleanup then selfRef.cleanup() end end)
+        local parent = (gethui and gethui()) or game:GetService("CoreGui")
+        local gg = Instance.new("ScreenGui")
+        gg.Name = "__SIL_Expired"      -- __SIL_ prefix so a re-execute sweeps it
+        gg.ResetOnSpawn = false
+        gg.IgnoreGuiInset = true
+        gg.DisplayOrder = 2000000000
+        gg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        pcall(function() gg.Parent = parent end)
+
+        local bg = Instance.new("Frame", gg)
+        bg.Size = UDim2.fromScale(1, 1)
+        bg.BackgroundColor3 = Color3.fromRGB(6, 6, 8)
+        bg.BackgroundTransparency = 0.1
+        bg.BorderSizePixel = 0
+        bg.Active = true               -- swallow input -> blocks the game underneath
+
+        local w = Instance.new("Frame", bg)
+        w.Size = UDim2.new(0, 360, 0, 250)
+        w.Position = UDim2.new(0.5, -180, 0.5, -125)
+        w.BackgroundColor3 = Color3.fromRGB(14, 14, 17)
+        w.BorderSizePixel = 0
+        local wc = Instance.new("UICorner", w); wc.CornerRadius = UDim.new(0, 16)
+        local ws = Instance.new("UIStroke", w)
+        ws.Color = Color3.fromRGB(225, 29, 61); ws.Thickness = 1; ws.Transparency = 0.25
+
+        local mark = Instance.new("TextLabel", w)
+        mark.Size = UDim2.new(1, 0, 0, 26); mark.Position = UDim2.new(0, 0, 0, 22)
+        mark.BackgroundTransparency = 1; mark.Text = "SILENCE"
+        mark.Font = Enum.Font.GothamBlack; mark.TextSize = 20
+        mark.TextColor3 = Color3.fromRGB(255, 255, 255)
+
+        local ttl = Instance.new("TextLabel", w)
+        ttl.Size = UDim2.new(1, -40, 0, 26); ttl.Position = UDim2.new(0, 20, 0, 58)
+        ttl.BackgroundTransparency = 1; ttl.Text = "YOUR KEY IS EXPIRED"
+        ttl.Font = Enum.Font.GothamBold; ttl.TextSize = 18
+        ttl.TextColor3 = Color3.fromRGB(255, 92, 92)
+
+        local sub = Instance.new("TextLabel", w)
+        sub.Size = UDim2.new(1, -40, 0, 16); sub.Position = UDim2.new(0, 20, 0, 88)
+        sub.BackgroundTransparency = 1; sub.Text = "get a new key to keep using silence"
+        sub.Font = Enum.Font.Gotham; sub.TextSize = 12
+        sub.TextColor3 = Color3.fromRGB(150, 150, 160)
+
+        local linkBox = Instance.new("TextBox", w)
+        linkBox.Size = UDim2.new(1, -40, 0, 34); linkBox.Position = UDim2.new(0, 20, 0, 118)
+        linkBox.BackgroundColor3 = Color3.fromRGB(28, 28, 34); linkBox.BorderSizePixel = 0
+        linkBox.Text = link; linkBox.ClearTextOnFocus = false; linkBox.TextEditable = false
+        linkBox.Font = Enum.Font.Code; linkBox.TextSize = 12
+        linkBox.TextColor3 = Color3.fromRGB(255, 138, 160)
+        local lbc = Instance.new("UICorner", linkBox); lbc.CornerRadius = UDim.new(0, 9)
+
+        local get = Instance.new("TextButton", w)
+        get.Size = UDim2.new(1, -40, 0, 38); get.Position = UDim2.new(0, 20, 0, 164)
+        get.BackgroundColor3 = Color3.fromRGB(225, 29, 61); get.BorderSizePixel = 0
+        get.Text = "GET NEW KEY"; get.Font = Enum.Font.GothamBold; get.TextSize = 14
+        get.TextColor3 = Color3.fromRGB(255, 255, 255); get.AutoButtonColor = true
+        local gtc = Instance.new("UICorner", get); gtc.CornerRadius = UDim.new(0, 9)
+
+        local note = Instance.new("TextLabel", w)
+        note.Size = UDim2.new(1, -40, 0, 16); note.Position = UDim2.new(0, 20, 1, -24)
+        note.BackgroundTransparency = 1
+        note.Text = "link copied - re-execute Silence with the new key"
+        note.Font = Enum.Font.Gotham; note.TextSize = 10
+        note.TextColor3 = Color3.fromRGB(120, 120, 130)
+        note.TextTransparency = 1
+
+        local x = Instance.new("TextButton", w)
+        x.Size = UDim2.new(0, 26, 0, 26); x.Position = UDim2.new(1, -32, 0, 8)
+        x.BackgroundTransparency = 1; x.Text = "X"
+        x.Font = Enum.Font.GothamBold; x.TextSize = 14
+        x.TextColor3 = Color3.fromRGB(140, 140, 150)
+
+        get.MouseButton1Click:Connect(function()
+            local copied = false
+            pcall(function()
+                if setclipboard then setclipboard(link); copied = true
+                elseif toclipboard then toclipboard(link); copied = true end
+            end)
+            get.Text = copied and "LINK COPIED" or "SELECT THE LINK ABOVE & COPY"
+            note.TextTransparency = copied and 0 or 1
+        end)
+        x.MouseButton1Click:Connect(function()
+            pcall(function() gg:Destroy() end)   -- unblock so they can open the browser
+        end)
+    end
+
+    while true do
+        task.wait(20)
+        -- a new instance taking over means this old watchdog should bow out
+        if g and g.__SilenceAdminPanel and g.__SilenceAdminPanel ~= selfRef then return end
+        local expired = (not life) and exp > 0 and os.time() >= exp
+        if not expired and (os.clock() - lastSrv) >= 120 then
+            lastSrv = os.clock()
+            if not serverOk() then expired = true end
+        end
+        if expired then
+            lockOut()
+            return
+        end
+    end
+end)
+end
