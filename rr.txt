@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v151"
+SilenceAPI._version = "v152"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -6376,11 +6376,16 @@ local function makeRailButton(cat)
         px(6, 6, 10, 4, 1)                          -- tooth  x 10..16
         px(6, 6, 19, 4, 1)                          -- tooth  x 19..25
         px(24, 12, 1, 13, 3)                        -- slate, gap 3 above
-    elseif cat.icon == "voice" then     -- a microphone: capsule, arc, stand
-        px(8, 12, 9, 2, 4)                          -- body, centred on x=13
-        px(2, 6, 6, 9, 1); px(2, 6, 18, 9, 1)       -- arc arms, 6..8 / 18..20
-        px(14, 2, 6, 15, 1)                         -- floor spans 6..20 exactly
-        px(2, 4, 12, 17, 1); px(10, 2, 8, 21, 1)    -- stand and base
+    elseif cat.icon == "voice" then     -- sound level bars, an equalizer
+        -- The old microphone was two-pixel arms and a two-pixel floor that
+        -- vanished at 0.8 scale. Four bold bars of different heights read as
+        -- "audio" instantly, need no detail to survive shrinking, and match
+        -- the level bar the who-is-talking overlay draws.
+        -- 4px bars, 3px gaps, all standing on a baseline at y=22.
+        px(4, 12, 1,  10, 2)                        -- x 1..5
+        px(4, 18, 8,   4, 2)                        -- x 8..12, tallest
+        px(4, 14, 15,  8, 2)                        -- x 15..19
+        px(4, 9,  22, 13, 2)                        -- x 22..26
     else                                -- three bars: settings
         px(22,3, 2, 4, 2); px(15,3, 2,11, 2); px(19,3, 2,18, 2)
     end
