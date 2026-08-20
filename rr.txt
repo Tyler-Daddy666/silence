@@ -436,19 +436,79 @@ if SYNC_BASE ~= "" then
         return false, tostring(d.reason or "invalid key")
     end
 
+    -- shared outcome flags. done = the gate resolved; passed = with a valid key.
+    local done, passed = false, false
+    local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
+    local KEYFILE = "silence_key.txt"
+
     -- a key handed in by the loader skips the window entirely if it is good
     local pre = nil
     pcall(function() local g = getgenv(); pre = g and g.SilenceKey end)
-    if pre then
-        local ok = check(pre)
-        if ok then return end   -- straight through; the rest of the file runs
+    if pre and check(pre) then passed, done = true, true end
+
+    -- A key kept from last time ("remember my key") jumps straight to a START
+    -- button. A saved key that is gone, expired, or bound to another machine
+    -- just quietly falls back to the normal key box.
+    if not done then
+        local saved = nil
+        pcall(function()
+            if isfile and isfile(KEYFILE) then saved = readfile(KEYFILE) end
+        end)
+        if saved and saved ~= "" and check(saved) then
+            local sgg = Instance.new("ScreenGui")
+            sgg.Name = "SilenceStart"; sgg.ResetOnSpawn = false
+            sgg.IgnoreGuiInset = true
+            sgg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+            pcall(function() sgg.Parent = parentGui end)
+            local sw = Instance.new("Frame", sgg)
+            sw.Size = UDim2.new(0, 320, 0, 190)
+            sw.Position = UDim2.new(0.5, -160, 0.5, -95)
+            sw.BackgroundColor3 = Color3.fromRGB(14, 14, 17)
+            sw.BorderSizePixel = 0
+            local swc = Instance.new("UICorner", sw); swc.CornerRadius = UDim.new(0, 16)
+            local sws = Instance.new("UIStroke", sw)
+            sws.Color = Color3.fromRGB(225, 29, 61); sws.Thickness = 1; sws.Transparency = 0.3
+            local sm = Instance.new("TextLabel", sw)
+            sm.Size = UDim2.new(1, 0, 0, 30); sm.Position = UDim2.new(0, 0, 0, 22)
+            sm.BackgroundTransparency = 1; sm.Text = "SILENCE"
+            sm.Font = Enum.Font.GothamBlack; sm.TextSize = 22
+            sm.TextColor3 = Color3.fromRGB(255, 255, 255)
+            local ss = Instance.new("TextLabel", sw)
+            ss.Size = UDim2.new(1, -40, 0, 16); ss.Position = UDim2.new(0, 20, 0, 56)
+            ss.BackgroundTransparency = 1
+            ss.Text = "welcome back - key remembered on this pc"
+            ss.Font = Enum.Font.Gotham; ss.TextSize = 11
+            ss.TextColor3 = Color3.fromRGB(140, 140, 150)
+            local sgo = Instance.new("TextButton", sw)
+            sgo.Size = UDim2.new(1, -40, 0, 40); sgo.Position = UDim2.new(0, 20, 0, 92)
+            sgo.BackgroundColor3 = Color3.fromRGB(225, 29, 61)
+            sgo.BorderSizePixel = 0; sgo.Text = "START SILENCE"
+            sgo.Font = Enum.Font.GothamBold; sgo.TextSize = 15
+            sgo.TextColor3 = Color3.fromRGB(255, 255, 255); sgo.AutoButtonColor = true
+            local sgc = Instance.new("UICorner", sgo); sgc.CornerRadius = UDim.new(0, 10)
+            local sdiff = Instance.new("TextButton", sw)
+            sdiff.Size = UDim2.new(1, -40, 0, 16); sdiff.Position = UDim2.new(0, 20, 1, -30)
+            sdiff.BackgroundTransparency = 1; sdiff.Text = "use a different key"
+            sdiff.Font = Enum.Font.Gotham; sdiff.TextSize = 11
+            sdiff.TextColor3 = Color3.fromRGB(120, 120, 130)
+            local sdec = false
+            sgo.MouseButton1Click:Connect(function()
+                passed, done, sdec = true, true, true
+                pcall(function() sgg:Destroy() end)
+            end)
+            sdiff.MouseButton1Click:Connect(function()
+                pcall(function() if delfile and isfile and isfile(KEYFILE) then delfile(KEYFILE) end end)
+                sdec = true
+                pcall(function() sgg:Destroy() end)
+            end)
+            while not sdec do task.wait(0.1) end
+        elseif saved then
+            pcall(function() if delfile and isfile and isfile(KEYFILE) then delfile(KEYFILE) end end)
+        end
     end
 
-    -- otherwise, a small window. The main chunk blocks on the flag below
-    -- until a valid key arrives or the user closes it.
-    local done, passed = false, false
-    local parentGui = (gethui and gethui()) or game:GetService("CoreGui")
-
+    -- the normal key box, shown only if nothing above already let us in
+    if not done then
     local gg = Instance.new("ScreenGui")
     gg.Name = "SilenceKey"
     gg.ResetOnSpawn = false
@@ -457,8 +517,8 @@ if SYNC_BASE ~= "" then
     pcall(function() gg.Parent = parentGui end)
 
     local w = Instance.new("Frame", gg)
-    w.Size = UDim2.new(0, 340, 0, 200)
-    w.Position = UDim2.new(0.5, -170, 0.5, -100)
+    w.Size = UDim2.new(0, 340, 0, 240)
+    w.Position = UDim2.new(0.5, -170, 0.5, -120)
     w.BackgroundColor3 = Color3.fromRGB(14, 14, 17)
     w.BorderSizePixel = 0
     local wc = Instance.new("UICorner", w); wc.CornerRadius = UDim.new(0, 16)
@@ -491,8 +551,35 @@ if SYNC_BASE ~= "" then
     box.ClearTextOnFocus = false
     local bc = Instance.new("UICorner", box); bc.CornerRadius = UDim.new(0, 9)
 
+    local remChk = Instance.new("TextButton", w)
+    remChk.Size = UDim2.new(0, 18, 0, 18); remChk.Position = UDim2.new(0, 20, 0, 128)
+    remChk.BackgroundColor3 = Color3.fromRGB(28, 28, 34); remChk.BorderSizePixel = 0
+    remChk.Text = ""; remChk.AutoButtonColor = false
+    local remChkC = Instance.new("UICorner", remChk); remChkC.CornerRadius = UDim.new(0, 5)
+    local remFill = Instance.new("Frame", remChk)
+    remFill.Size = UDim2.new(1, -6, 1, -6); remFill.Position = UDim2.new(0, 3, 0, 3)
+    remFill.BackgroundColor3 = Color3.fromRGB(225, 29, 61); remFill.BorderSizePixel = 0
+    remFill.Visible = false
+    local remFillC = Instance.new("UICorner", remFill); remFillC.CornerRadius = UDim.new(0, 3)
+    local remLbl = Instance.new("TextButton", w)
+    remLbl.Size = UDim2.new(1, -50, 0, 18); remLbl.Position = UDim2.new(0, 46, 0, 128)
+    remLbl.BackgroundTransparency = 1; remLbl.AutoButtonColor = false
+    remLbl.Text = "remember my key on this pc"
+    remLbl.Font = Enum.Font.Gotham; remLbl.TextSize = 11
+    remLbl.TextXAlignment = Enum.TextXAlignment.Left
+    remLbl.TextColor3 = Color3.fromRGB(150, 150, 160)
+    local rememberOn = false
+    local function setRemember()
+        rememberOn = not rememberOn
+        remFill.Visible = rememberOn
+        remLbl.TextColor3 = rememberOn and Color3.fromRGB(225, 60, 90)
+                                        or Color3.fromRGB(150, 150, 160)
+    end
+    remChk.MouseButton1Click:Connect(setRemember)
+    remLbl.MouseButton1Click:Connect(setRemember)
+
     local msg = Instance.new("TextLabel", w)
-    msg.Size = UDim2.new(1, -40, 0, 14); msg.Position = UDim2.new(0, 20, 0, 124)
+    msg.Size = UDim2.new(1, -40, 0, 14); msg.Position = UDim2.new(0, 20, 0, 158)
     msg.BackgroundTransparency = 1
     msg.Text = ""
     msg.Font = Enum.Font.Gotham; msg.TextSize = 10
@@ -523,6 +610,13 @@ if SYNC_BASE ~= "" then
             if ok then
                 msg.TextColor3 = Color3.fromRGB(69, 209, 122)
                 msg.Text = why == "lifetime" and "lifetime key - welcome" or "valid - loading..."
+                -- honour "remember my key": keep it for next time, or wipe a
+                -- stale one so an unchecked box means "forget me"
+                if rememberOn then
+                    pcall(function() if writefile then writefile(KEYFILE, box.Text) end end)
+                else
+                    pcall(function() if delfile and isfile and isfile(KEYFILE) then delfile(KEYFILE) end end)
+                end
                 task.wait(0.4)
                 passed, done = true, true
                 pcall(function() gg:Destroy() end)
@@ -539,6 +633,7 @@ if SYNC_BASE ~= "" then
         done, passed = true, false
         pcall(function() gg:Destroy() end)
     end)
+    end -- close: normal key box
 
     -- block the rest of the script until the gate resolves
     while not done do task.wait(0.1) end
@@ -604,7 +699,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v166"
+SilenceAPI._version = "v167"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
