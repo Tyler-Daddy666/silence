@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v156"
+SilenceAPI._version = "v157"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -839,12 +839,7 @@ local State = {
     currentEmote=nil,
     nametagsOn = true,
     espTeamCheck = false,
-    vcBypass = false,         -- auto voice reconnect toggle (Misc tab)
-    micHold = false,          -- keep re-opening the mic when something mutes it
-    micBtn = false,           -- our own mic button, for when Roblox's vanishes
     voiceOverlay = false,     -- show who is speaking, over their head
-    pushToTalk = false,       -- mic open only while the key is held
-    vcCycleSecs = 120,        -- seconds between voice session cycles
     vcSelfMuted = false,      -- local microphone mute (Voice tab)
     vcAutoMute = false,       -- cut the microphone on every server join
     -- Chat command that opens the admin panel. Deliberately NOT shown or
@@ -6234,7 +6229,7 @@ local TAB_CATEGORY = {
     Players   = "People", Trolling      = "People",
     Misc      = "System", AntiCheat     = "System", Hotkeys       = "System",
     Config    = "System", Logs          = "System",
-    ["Anti Ban"] = "Voice", Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
+    Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
     ["German Voice"] = "Games", Games = "Games",
     AnimPack = "Anim", ["UGC Emotes"] = "Anim",
 }
@@ -6258,7 +6253,7 @@ local TAB_LO_INSIDE = {
     Aimbot = 1, Visual = 2,
     Players = 1, Trolling = 2,
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
-    ["Anti Ban"] = 1, Mute = 2, Mic = 3, ["Voice Log"] = 4,
+    Mute = 1, Mic = 2, ["Voice Log"] = 3,
     Games = 0, ["German Voice"] = 1,
     AnimPack = 1, ["UGC Emotes"] = 2,
 }
@@ -6271,7 +6266,6 @@ SilenceAPI._tabDesc = {
     Sky           = "Time of day, custom skies, weather and effects",
     Games         = "Per-game menus, unlocked by being in the game",
     ["German Voice"] = "Aura and gradients other Silence users can see",
-    ["Anti Ban"]  = "Rebuild a dropped voice session",
     Mute          = "Silence yourself or anyone, locally",
     Mic           = "Pick which microphone Roblox uses",
     ["Voice Log"] = "What the voice API on this build actually offers",
@@ -8548,7 +8542,6 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
 -- locals and count towards Luau's limit of 200. A function body has its own.
 ----------------------------------------------------------------
 ;(function()
-    local pVcBan  = addTab("Anti Ban")
     local pVcMute = addTab("Mute")
     local pVcMic  = addTab("Mic")
     local pVcLog  = addTab("Voice Log")
@@ -8685,409 +8678,6 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
         end)
         return v and true or false
     end
-
-    ------------------------------------------------------------ TAB: ANTI BAN
-    --
-    -- Rebuilt around what actually works, reported from the field: a short
-    -- leave and rejoin. A mute rides on the voice SESSION, so a fresh
-    -- session does not inherit it - which is why resetting flags alone kept
-    -- failing while a reconnect did not.
-    --
-    -- Two halves:
-    --   CYCLE     drop the session and take a new one, on a timer
-    --   MIC       our own microphone button, always on screen
-    --
-    -- The button is not decoration. When voice is taken away, Roblox's own
-    -- microphone icon disappears with it - so at the exact moment you need
-    -- to switch your mic back on, there is nothing left to click. Ours does
-    -- not go anywhere.
-
-    ------------------------------------------------------------ cycle
-    local cycleConns, cycleN, lastCycle = {}, 0, 0
-
-    local function cycleVoice(loud)
-        if tick() - lastCycle < 3 then return false, "too soon" end
-        lastCycle = tick()
-        local left = vcLeave()
-        task.wait(0.7)
-        local joined = vcJoin()
-        task.wait(0.8)
-        local live = voiceState()
-        cycleN = cycleN + 1
-        SilenceAPI._vcCycleNote = os.date("%H:%M:%S") .. "  "
-            .. (left and "left" or "no leave") .. " / "
-            .. (joined and "rejoined" or "NO JOIN METHOD") .. " / "
-            .. (live and "live" or "still down")
-        if loud then notify("Voice", SilenceAPI._vcCycleNote, 6) end
-        return live
-    end
-
-    -- The old heavy path, kept because a genuinely dead session sometimes
-    -- needs the microphone permission cycled as well. Not the first thing to
-    -- reach for: cycling that permission is disruptive on its own.
-    local function hardReset(loud)
-        pcall(function()
-            local us = UserSettings():GetService("UserGameSettings")
-            local cur = us.MicrophonePermission
-            us.MicrophonePermission = false
-            task.wait(0.25)
-            us.MicrophonePermission = (cur ~= nil) and cur or true
-        end)
-        return cycleVoice(loud)
-    end
-    SilenceAPI._vcHardReset = hardReset
-    SilenceAPI._vcCycle    = cycleVoice
-    SilenceAPI._vcState    = function() local ok = voiceState() return ok end
-
-    local function autoOff()
-        for _, c in ipairs(cycleConns) do pcall(function() c:Disconnect() end) end
-        cycleConns = {}
-    end
-    local function autoOn()
-        autoOff()
-        task.spawn(function()
-            while State.vcBypass do
-                local wait = tonumber(State.vcCycleSecs) or 120
-                if wait < 20 then wait = 20 end
-                for _ = 1, math.floor(wait) do
-                    if not State.vcBypass then return end
-                    task.wait(1)
-                end
-                if State.vcBypass then pcall(cycleVoice, false) end
-            end
-        end)
-        -- and immediately when the session reports trouble, rather than
-        -- waiting out the rest of the interval
-        pcall(function()
-            local vci = svcOf("VoiceChatInternal")
-            if hasM(vci, "StateChanged") then
-                cycleConns[#cycleConns+1] = vci.StateChanged:Connect(function()
-                    if not State.vcBypass then return end
-                    task.wait(0.4)
-                    if not voiceState() then pcall(cycleVoice, false) end
-                end)
-            end
-        end)
-    end
-    SilenceAPI._vcAutoOn  = autoOn
-    SilenceAPI._vcAutoOff = autoOff
-
-    ------------------------------------------------------------ mic hold
-    local holdConns, holdN = {}, 0
-    local function micDevice()
-        local ok, d = pcall(function()
-            return LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
-        end)
-        return ok and d or nil
-    end
-    local function unmuteOnce()
-        local did
-        pcall(function()
-            local vci = svcOf("VoiceChatInternal")
-            if hasM(vci, "IsPublishPaused") and hasM(vci, "PublishPause") then
-                if vci:IsPublishPaused() then
-                    vci:PublishPause(false); did = "publish was paused"
-                end
-            end
-        end)
-        local d = micDevice()
-        if d then
-            pcall(function()
-                if d.Active == false then d.Active = true
-                    did = did or "input device was off" end
-            end)
-            pcall(function()
-                if d.Muted == true then d.Muted = false
-                    did = did or "input device was muted" end
-            end)
-        end
-        return did
-    end
-    local function holdOff()
-        for _, c in ipairs(holdConns) do pcall(function() c:Disconnect() end) end
-        holdConns = {}
-    end
-    local function holdOn()
-        holdOff()
-        task.spawn(function()
-            local lastDev = micDevice()
-            while State.micHold do
-                task.wait(0.5)
-                if not State.micHold then break end
-                local d = micDevice()
-                -- the device is replaced on respawn and on every rejoin, so
-                -- a signal bound to the old one is already dead
-                if d ~= lastDev then lastDev = d end
-                local why = unmuteOnce()
-                if why then
-                    holdN = holdN + 1
-                    SilenceAPI._micHoldNote = holdN .. "x  (last: " .. why .. ")"
-                end
-            end
-        end)
-    end
-    local function setMicHold(on)
-        State.micHold = on and true or false
-        if State.micHold then holdOn() else holdOff() end
-    end
-    SilenceAPI._setMicHold   = setMicHold
-    SilenceAPI._micHoldCount = function() return holdN end
-
-    ------------------------------------------------------------ the button
-    local MB = Instance.new("Frame", Gui)
-    MB.Name = "__SIL_MicBtn"
-    MB.Size = UDim2.new(0, 52, 0, 52)
-    MB.Position = UDim2.new(0, 16, 0, 120)
-    MB.BackgroundTransparency = 1
-    MB.Visible = false
-    MB.ZIndex = 250
-    MB.Active = true
-
-    local mbBtn = Instance.new("TextButton", MB)
-    mbBtn.Size = UDim2.new(1, 0, 1, 0)
-    mbBtn.Text = ""
-    mbBtn.AutoButtonColor = false
-    mbBtn.BorderSizePixel = 0
-    mbBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 22)
-    mbBtn.BackgroundTransparency = 0.15
-    mbBtn.ZIndex = 250
-    corner(mbBtn, 26)
-    local mbStroke = stroke(mbBtn, Theme.accent, 2, 0.3)
-
-    -- a microphone, drawn: capsule, arc, stand. Same shapes the rail uses.
-    local function mbPart(w, h, x, y, r)
-        local f = Instance.new("Frame", mbBtn)
-        f.Size = UDim2.new(0, w, 0, h)
-        f.Position = UDim2.new(0, x, 0, y)
-        f.BorderSizePixel = 0
-        f.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        f.ZIndex = 251
-        if r then corner(f, r) end
-        return f
-    end
-    local mbBody = mbPart(12, 18, 20, 12, 6)
-    local mbArmL = mbPart(3, 9, 15, 22, 1)
-    local mbArmR = mbPart(3, 9, 34, 22, 1)
-    local mbBase = mbPart(21, 3, 16, 30, 1)
-    local mbStem = mbPart(3, 6, 24.5, 32, 1)
-    local mbFoot = mbPart(15, 3, 18.5, 37, 1)
-    -- the strike-through that says "off". A diagonal is not available, so a
-    -- thick bar across the middle carries the same meaning.
-    local mbSlash = mbPart(34, 4, 9, 24, 2)
-    mbSlash.BackgroundColor3 = Color3.fromRGB(235, 60, 60)
-    mbSlash.Visible = false
-
-    local mbParts = { mbBody, mbArmL, mbArmR, mbBase, mbStem, mbFoot }
-
-    local function mbPaint()
-        local muted = isSelfMuted()
-        for _, p in ipairs(mbParts) do
-            p.BackgroundColor3 = muted and Color3.fromRGB(120, 120, 125)
-                                        or Color3.fromRGB(255, 255, 255)
-        end
-        mbSlash.Visible = muted
-        mbStroke.Color = muted and Color3.fromRGB(235, 60, 60) or Theme.accent
-    end
-
-    mbBtn.MouseButton1Click:Connect(function()
-        local want = not isSelfMuted()
-        muteSelf(want)
-        State.vcSelfMuted = want
-        -- a mute set from here must not be undone by the holder two lines
-        -- later; that is the user talking, not the game
-        if want and State.micHold then setMicHold(false) end
-        mbPaint()
-        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-    end)
-    makeHeaderDrag(MB, mbBtn)
-    track(RunService.Heartbeat:Connect(function()
-        if MB.Visible then mbPaint() end
-    end))
-
-    SilenceAPI._setMicBtn = function(v)
-        State.micBtn = v and true or false
-        MB.Visible = State.micBtn
-        if MB.Visible then mbPaint() end
-    end
-
-    ------------------------------------------------------------ the page
-    sectionLabel(pVcBan, "SESSION CYCLE")
-    toggleRow(pVcBan, "Cycle voice on a timer",
-        function() return State.vcBypass end,
-        function(v) SilenceAPI._setVcBypass(v) end)
-    inputRow(pVcBan, "Seconds between cycles  (minimum 20)",
-        tostring(State.vcCycleSecs or 120), function(v)
-            local n = tonumber(tostring(v):match("%d+")) or 120
-            State.vcCycleSecs = math.max(20, n)
-        end)
-    buttonRow(pVcBan, "Cycle Now", function()
-        task.spawn(function() cycleVoice(true) end)
-    end)
-    buttonRow(pVcBan, "Hard Reset  (also cycles mic permission)", function()
-        task.spawn(function() hardReset(true) end)
-    end)
-    buttonRow(pVcBan, "What Happened Last Cycle?", function()
-        notify("Voice", SilenceAPI._vcCycleNote or "No cycle yet.", 7)
-    end)
-
-    local cycLbl = Instance.new("TextLabel", pVcBan)
-    cycLbl.Size = UDim2.new(1, 0, 0, 44)
-    cycLbl.BackgroundTransparency = 1
-    cycLbl.Text = "  A mute rides on the voice session, so a new session does"
-               .. " not inherit it. Leaving and rejoining is what clears it -\n"
-               .. "  resetting flags alone does not, which is why the old"
-               .. " version of this tab did not help."
-    cycLbl.Font = Enum.Font.Gotham; cycLbl.TextSize = 10
-    cycLbl.TextWrapped = true
-    cycLbl.TextXAlignment = Enum.TextXAlignment.Left
-    cycLbl.TextYAlignment = Enum.TextYAlignment.Top
-    cycLbl.TextColor3 = Theme.textDim
-
-    sectionLabel(pVcBan, "MICROPHONE BUTTON")
-    toggleRow(pVcBan, "Show my own mic button",
-        function() return State.micBtn end,
-        function(v) SilenceAPI._setMicBtn(v) end)
-    toggleRow(pVcBan, "Undo mutes as they happen",
-        function() return State.micHold end,
-        function(v) setMicHold(v) end)
-    buttonRow(pVcBan, "How often has it stepped in?", function()
-        notify("Voice", SilenceAPI._micHoldNote
-               or "Nothing has tried to mute you yet.", 6)
-    end)
-
-    local mbLbl = Instance.new("TextLabel", pVcBan)
-    mbLbl.Size = UDim2.new(1, 0, 0, 56)
-    mbLbl.BackgroundTransparency = 1
-    mbLbl.Text = "  Top left, draggable, and it stays put when Roblox's own"
-              .. " microphone icon disappears - which is exactly what happens\n"
-              .. "  the moment voice is taken away, leaving nothing to click"
-              .. " at the one moment you need it.\n"
-              .. "  White with a ring means live. Grey with a red bar means"
-              .. " muted."
-    mbLbl.Font = Enum.Font.Gotham; mbLbl.TextSize = 10
-    mbLbl.TextWrapped = true
-    mbLbl.TextXAlignment = Enum.TextXAlignment.Left
-    mbLbl.TextYAlignment = Enum.TextYAlignment.Top
-    mbLbl.TextColor3 = Theme.textDim
-
-    sectionLabel(pVcBan, "WHY IS VOICE DOWN")
-    buttonRow(pVcBan, "Diagnose", function()
-        task.spawn(function()
-            local out = {}
-            local vcv, vci = svcOf("VoiceChatService"), svcOf("VoiceChatInternal")
-            out[#out+1] = "service : " .. ((vcv or vci) and "present" or "MISSING")
-
-            -- the account-level question, and the only one that separates a
-            -- moderation action from every other cause
-            local allowed, err = nil, nil
-            pcall(function()
-                if hasM(vcv, "IsVoiceEnabledForUserIdAsync") then
-                    allowed = vcv:IsVoiceEnabledForUserIdAsync(LocalPlayer.UserId)
-                end
-            end)
-            out[#out+1] = "account : " .. (allowed == nil and "could not ask"
-                          or (allowed and "voice allowed" or "VOICE NOT ALLOWED"))
-
-            local d = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
-            out[#out+1] = "my mic  : " .. (d and "device present" or "no device")
-            if d then
-                pcall(function()
-                    out[#out+1] = "  active: " .. tostring(d.Active)
-                end)
-            end
-
-            local others = 0
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer
-                   and p:FindFirstChildOfClass("AudioDeviceInput") then
-                    others = others + 1
-                end
-            end
-            out[#out+1] = "others  : " .. others .. " with a mic device"
-
-            -- The channel id is the thing that separates the causes. It only
-            -- exists once a voice session has actually been established, so
-            -- "channel but no device" and "no channel at all" are completely
-            -- different problems - and the earlier version of this report
-            -- called them both "voice is off in this place", which sent the
-            -- user looking in the wrong direction.
-            local chan
-            pcall(function()
-                if hasM(vci, "GetChannelId") then chan = vci:GetChannelId() end
-            end)
-            chan = (chan and tostring(chan) ~= "" and tostring(chan) ~= "nil")
-                   and tostring(chan) or nil
-            out[#out+1] = "channel : " .. (chan and chan:sub(1, 24) or "none")
-
-            local live, why = voiceState()
-            out[#out+1] = "session : " .. (live and "up" or ("down - " .. tostring(why)))
-            out[#out+1] = ""
-
-            local mics = 0
-            pcall(function()
-                if hasM(vci, "GetMicDevices") then
-                    local dv = vci:GetMicDevices()
-                    mics = (type(dv) == "table") and #dv or 0
-                end
-            end)
-            out[#out+1] = "mic devices this machine offers: " .. mics
-
-            out[#out+1] = ""
-            out[#out+1] = "NOTE: 'account' above is ELIGIBILITY, not"
-            out[#out+1] = "moderation. It stays 'allowed' during a temporary"
-            out[#out+1] = "suspension, so it cannot rule one out. Nothing a"
-            out[#out+1] = "client can call reports a suspension directly."
-            out[#out+1] = ""
-            if allowed == false then
-                out[#out+1] = "Voice is not enabled for this account at all -"
-                out[#out+1] = "check age verification and the voice setting on"
-                out[#out+1] = "the Roblox website."
-            elseif chan and not d and mics > 0 then
-                out[#out+1] = "A channel exists and this machine offers "
-                              .. mics .. " microphone(s),"
-                out[#out+1] = "but Roblox created no input device for you."
-                out[#out+1] = "Your hardware is fine - the audio side was torn"
-                out[#out+1] = "down at their end. A temporary suspension looks"
-                out[#out+1] = "exactly like this, and so does a voice service"
-                out[#out+1] = "hiccup. Both clear on their own; the first"
-                out[#out+1] = "takes as long as it takes."
-                out[#out+1] = "Turn the session cycle OFF meanwhile."
-            elseif chan and not d then
-                out[#out+1] = "A channel exists but this machine offers no"
-                out[#out+1] = "microphone at all. Check that one is plugged in,"
-                out[#out+1] = "that Windows allows desktop apps to use it, and"
-                out[#out+1] = "that Roblox has a device selected, not None."
-            elseif not chan and others == 0 then
-                out[#out+1] = "No channel, and nobody here has a mic device."
-                out[#out+1] = "Voice is off for this PLACE, not for you."
-            end
-            local txt = table.concat(out, "\n")
-            print(txt)
-            pcall(function() setclipboard(txt) end)
-            notify("Voice", txt, 14)
-        end)
-    end)
-
-    sectionLabel(pVcBan, "LAST RESORT")
-    buttonRow(pVcBan, "Rejoin Server", function()
-        notify("Voice", "Rejoining server...", 2)
-        task.wait(0.3)
-        TeleportService:Teleport(game.PlaceId, LocalPlayer)
-    end)
-
-    local limLbl = Instance.new("TextLabel", pVcBan)
-    limLbl.Size = UDim2.new(1, 0, 0, 44)
-    limLbl.BackgroundTransparency = 1
-    limLbl.Text = "  All of this works on a mute applied inside a game. A voice"
-               .. " ban on the ACCOUNT is enforced where Roblox relays the\n"
-               .. "  audio, on their servers - no client reaches that, and any"
-               .. " script claiming otherwise is not doing what it says."
-    limLbl.Font = Enum.Font.Gotham; limLbl.TextSize = 10
-    limLbl.TextWrapped = true
-    limLbl.TextXAlignment = Enum.TextXAlignment.Left
-    limLbl.TextYAlignment = Enum.TextYAlignment.Top
-    limLbl.TextColor3 = Theme.textDim
-
 
     ------------------------------------------------------------ TAB: MUTE
     sectionLabel(pVcMute, "YOURSELF")
@@ -9489,84 +9079,6 @@ inputRow(pMisc,"Command Prefix",";",function(v) if v and #v>0 then State.prefix=
         if State.voiceOverlay then ovStart() else ovStop() end
     end
     SilenceAPI._voiceOverlayMode = function() return ovMode end
-
-    ------------------------------------------------------------ PUSH TO TALK
-    -- An open microphone sends everything in the room, and automatic voice
-    -- moderation judges all of it - music, someone else talking, a keyboard.
-    -- Most of the trouble people get into is audio they never meant to send.
-    -- Holding a key to speak removes that whole category.
-    local pttKey, pttHeld, pttArm = Enum.KeyCode.V, false, false
-
-    local function pttApply()
-        if not State.pushToTalk then return end
-        -- muted unless the key is down
-        muteSelf(not pttHeld)
-        State.vcSelfMuted = not pttHeld
-    end
-
-    local function setPtt(on)
-        State.pushToTalk = on and true or false
-        if State.pushToTalk then
-            pttHeld = false
-            pttApply()
-            notify("Voice", "Push to talk on - hold "
-                   .. tostring(pttKey):gsub("Enum%.KeyCode%.", "")
-                   .. " to speak.", 5)
-        else
-            -- leaving it on would strand the mic closed with no key bound
-            muteSelf(false)
-            State.vcSelfMuted = false
-        end
-        for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
-    end
-    SilenceAPI._setPushToTalk = setPtt
-
-    track(UserInputService.InputBegan:Connect(function(i, gp)
-        if gp or not State.pushToTalk then return end
-        if pttArm then
-            if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
-            pttArm = false
-            if i.KeyCode ~= Enum.KeyCode.Escape then pttKey = i.KeyCode end
-            notify("Voice", "Talk key: "
-                   .. tostring(pttKey):gsub("Enum%.KeyCode%.", ""), 4)
-            return
-        end
-        if i.KeyCode == pttKey then pttHeld = true; pttApply() end
-    end))
-    track(UserInputService.InputEnded:Connect(function(i)
-        if not State.pushToTalk then return end
-        if i.KeyCode == pttKey then pttHeld = false; pttApply() end
-    end))
-    -- alt-tabbing away with the key down would leave the mic open, which is
-    -- exactly the situation this exists to prevent
-    track(UserInputService.WindowFocusReleased:Connect(function()
-        if State.pushToTalk and pttHeld then pttHeld = false; pttApply() end
-    end))
-
-    sectionLabel(pVcMic, "PUSH TO TALK")
-    toggleRow(pVcMic, "Only send while I hold the key",
-        function() return State.pushToTalk end,
-        function(v) setPtt(v) end)
-    buttonRow(pVcMic, "Set The Talk Key", function()
-        pttArm = true
-        notify("Voice", "Press any key now, or Escape to keep "
-               .. tostring(pttKey):gsub("Enum%.KeyCode%.", ""), 6)
-    end)
-
-    local pttLbl = Instance.new("TextLabel", pVcMic)
-    pttLbl.Size = UDim2.new(1, 0, 0, 56)
-    pttLbl.BackgroundTransparency = 1
-    pttLbl.Text = "  Default key is V. The microphone stays shut otherwise, so"
-               .. " music, other people in the room and a loud keyboard never\n"
-               .. "  reach the moderation in the first place - which is where"
-               .. " most voice trouble actually comes from.\n"
-               .. "  Releases the key by itself if you alt-tab away, because"
-               .. " a stuck key would leave the mic wide open."
-    pttLbl.Font = Enum.Font.Gotham; pttLbl.TextSize = 10
-    pttLbl.TextWrapped = true
-    pttLbl.TextXAlignment = Enum.TextXAlignment.Left
-    pttLbl.TextYAlignment = Enum.TextYAlignment.Top
-    pttLbl.TextColor3 = Theme.textDim
 
     sectionLabel(pVcMic, "WHO IS TALKING")
     toggleRow(pVcMic, "Show a card over whoever is speaking",
@@ -19807,18 +19319,8 @@ local APPLY = {
     invisParts   = function(v) SilenceAPI._setInvisParts(v) end,
     headless     = function(v) SilenceAPI._setHeadless(v) end,
     accessoriesOn= function(v) SilenceAPI._setAccessories(v) end,
-    vcBypass     = setVcBypass,
-    micHold      = function(v)
-        if SilenceAPI._setMicHold then SilenceAPI._setMicHold(v) end
-    end,
-    micBtn       = function(v)
-        if SilenceAPI._setMicBtn then SilenceAPI._setMicBtn(v) end
-    end,
     voiceOverlay = function(v)
         if SilenceAPI._setVoiceOverlay then SilenceAPI._setVoiceOverlay(v) end
-    end,
-    pushToTalk   = function(v)
-        if SilenceAPI._setPushToTalk then SilenceAPI._setPushToTalk(v) end
     end,
     vcAutoMute   = function(v) State.vcAutoMute = v end,
     allowJumpscare = function(v) State.allowJumpscare = v end,
@@ -20768,10 +20270,12 @@ function SilenceAPI.cleanup()
     if SilenceAPI._setAnimPack then pcall(SilenceAPI._setAnimPack, false) end
     pcall(stopTrolling); pcall(setHeadstand,false); pcall(setSpin,false)
     pcall(resetSkin); pcall(restoreFpsBoost)
-    pcall(setVcBypass,false)   -- else its 1.5s Heartbeat loop survives unload
-    if SilenceAPI._setMicHold then pcall(SilenceAPI._setMicHold, false) end
-    if SilenceAPI._setMicBtn  then pcall(SilenceAPI._setMicBtn,  false) end
-    if SilenceAPI._setPushToTalk then pcall(SilenceAPI._setPushToTalk, false) end
+    -- unmute on the way out, so nothing this script did to the microphone
+    -- outlives it
+    pcall(function()
+        local vci = game:GetService("VoiceChatInternal")
+        if vci and vci.PublishPause then vci:PublishPause(false) end
+    end)
     if SilenceAPI._setVoiceOverlay then
         pcall(SilenceAPI._setVoiceOverlay, false)
     end
