@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v162"
+SilenceAPI._version = "v163"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -864,6 +864,7 @@ local State = {
              color  = Color3.fromRGB(255, 60, 60),
              color2 = Color3.fromRGB(60, 60, 255) },
     jumpSound = "",           -- optional rbxassetid, only if you have no mp3
+    emoteSoundVol = 1,        -- volume for the emote sound board (0..3)
     acBlocked = false,        -- true after a scan finds critical anti-cheat hits
     acRiskyOverride = false,  -- user-set: ignore acBlocked and use features anyway
     acHits = 0,               -- last scan hit count (for banner display)
@@ -6231,7 +6232,7 @@ local TAB_CATEGORY = {
     Config    = "System", Logs          = "System",
     Mute = "Voice", Mic = "Voice", ["Voice Log"] = "Voice",
     ["German Voice"] = "Games", Games = "Games",
-    AnimPack = "Anim", ["UGC Emotes"] = "Anim",
+    AnimPack = "Anim", ["UGC Emotes"] = "Anim", ["Emote Sounds"] = "Anim",
 }
 -- rail order, top to bottom
 local CATEGORIES = {
@@ -6255,7 +6256,7 @@ local TAB_LO_INSIDE = {
     Misc = 1, AntiCheat = 2, Hotkeys = 3, Config = 4, Logs = 5,
     Mute = 1, Mic = 2, ["Voice Log"] = 3,
     Games = 0, ["German Voice"] = 1,
-    AnimPack = 1, ["UGC Emotes"] = 2,
+    AnimPack = 1, ["UGC Emotes"] = 2, ["Emote Sounds"] = 3,
 }
 SilenceAPI._catOf     = TAB_CATEGORY
 SilenceAPI._lastTabOf = {}   -- [group] = tab you were last on in it
@@ -19154,6 +19155,295 @@ eHint.TextColor3 = Theme.textDim
 end)()
 
 ----------------------------------------------------------------
+-- TAB: EMOTE SOUNDS
+--
+-- Roblox authorises audio PER GAME against the uploader's permission list,
+-- not against your account or the script's identity - so a random audio id
+-- is silently blocked in a game the uploader does not own (IsLoaded stays
+-- false, TimeLength 0, no error). Only Roblox-owned audio and public sound
+-- effects are likely to play, and even those vary by game. So every id is
+-- load-tested once and the dead ones are greyed out - the check is the only
+-- honest signal about what will actually make noise.
+--
+-- And like everything a client does: the sound is heard by YOU only until
+-- the worker relays it to other Silence users. That half waits for the
+-- broadcast endpoint; the hook is here (_emoteSoundBroadcast) for when it is.
+----------------------------------------------------------------
+;(function()
+local pSnd = addTab("Emote Sounds")
+
+-- name, id. #1 is Roblox-owned and always plays; the rest are public sound
+-- effects, very likely but verified at runtime all the same.
+local SOUNDS = {
+    { "Roblox OOF",   79348298352567 },
+    { "Vine Boom",    5153845714 },
+    { "Vine Boom HD", 8650377718 },
+    { "Bruh",         6349641063 },
+    { "Bruh 2",       6700501985 },
+    { "Airhorn",      18703344170 },
+    { "GET OUT",      127045175834662 },
+    { "Classic OOF",  2150821806 },
+    { "Meow",         1091083826 },
+    { "Mewo",         6573099301 },
+    { "Whoosh",       624706518 },
+    { "Explosion",    9120705982 },
+    { "Fire Whoosh",  9114444008 },
+    { "Impact",       9119481909 },
+}
+
+-- true if the asset actually loaded and has length in THIS game. Preload
+-- yields, so the whole vet runs off the main flow and caches its answers.
+local vetted = {}   -- [id] = true/false/nil(unknown)
+local function canPlaySound(id)
+    local snd = Instance.new("Sound")
+    snd.SoundId = "rbxassetid://" .. tostring(id)
+    local status = Enum.AssetFetchStatus.None
+    pcall(function()
+        ContentProvider:PreloadAsync({ snd }, function(_, st) status = st end)
+    end)
+    local t0 = os.clock()
+    while snd.IsLoaded and snd.TimeLength == 0 and (os.clock() - t0) < 4 do
+        task.wait()
+    end
+    local ok = status == Enum.AssetFetchStatus.Success
+               and snd.IsLoaded and snd.TimeLength > 0
+    pcall(function() snd:Destroy() end)
+    return ok
+end
+
+-- one playing sound at a time, with a volume card over the player's head
+local activeSnd, volBB, volConn
+local function stopSound()
+    if volConn then pcall(function() volConn:Disconnect() end); volConn = nil end
+    if activeSnd then pcall(function() activeSnd:Destroy() end); activeSnd = nil end
+    if volBB then pcall(function() volBB:Destroy() end); volBB = nil end
+end
+SilenceAPI._stopEmoteSound = stopSound
+
+-- plays on a given player's character. player defaults to you; the worker
+-- relay will call this with the emoter so listeners get the card over them.
+local function playSoundFor(player, id)
+    stopSound()
+    player = player or LocalPlayer
+    local char = player.Character
+    local root = char and (char:FindFirstChild("HumanoidRootPart")
+                 or char:FindFirstChild("Torso")
+                 or char:FindFirstChildWhichIsA("BasePart"))
+    local head = char and char:FindFirstChild("Head")
+    if not root then notify("Sounds", "No character to play on.", 3) return end
+
+    local snd = Instance.new("Sound")
+    snd.Name = "__SIL_EmoteSnd"
+    snd.SoundId = "rbxassetid://" .. tostring(id)
+    snd.Volume = math.clamp(tonumber(State.emoteSoundVol) or 1, 0, 3)
+    snd.RollOffMode = Enum.RollOffMode.InverseTapered
+    snd.RollOffMaxDistance = 130
+    snd.Parent = root
+    activeSnd = snd
+    pcall(function() snd:Play() end)
+    snd.Ended:Connect(function() if activeSnd == snd then stopSound() end end)
+    -- a dead id still reaches here; say so instead of a silent nothing
+    task.delay(0.6, function()
+        if activeSnd == snd and (not snd.IsLoaded or snd.TimeLength == 0) then
+            notify("Sounds", "That sound is blocked in this game.", 4)
+            stopSound()
+        end
+    end)
+
+    -- the volume card, over the head, dragging its own local volume
+    if head then
+        local bb = Instance.new("BillboardGui")
+        bb.Name = "__SIL_SndVol"
+        bb.Size = UDim2.new(0, 128, 0, 30)
+        bb.StudsOffset = Vector3.new(0, 4.2, 0)
+        bb.AlwaysOnTop = true
+        bb.MaxDistance = 120
+        local fr = Instance.new("Frame", bb)
+        fr.Size = UDim2.new(1, 0, 1, 0)
+        fr.BackgroundColor3 = Color3.fromRGB(14, 14, 16)
+        fr.BackgroundTransparency = 0.2
+        fr.BorderSizePixel = 0
+        corner(fr, 11); stroke(fr, Theme.accent, 1, 0.3)
+        -- a speaker triangle, drawn
+        local sp = Instance.new("Frame", fr)
+        sp.Size = UDim2.new(0, 7, 0, 10); sp.Position = UDim2.new(0, 12, 0.5, -5)
+        sp.BorderSizePixel = 0; sp.BackgroundColor3 = Color3.fromRGB(255,255,255)
+        local vl = Instance.new("TextLabel", fr)
+        vl.Size = UDim2.new(0, 44, 1, 0); vl.Position = UDim2.new(0, 26, 0, 0)
+        vl.BackgroundTransparency = 1
+        vl.Font = Enum.Font.GothamBold; vl.TextSize = 12
+        vl.TextColor3 = Color3.fromRGB(255,255,255)
+        local function setV(v)
+            v = math.clamp(v, 0, 3)
+            State.emoteSoundVol = v
+            if activeSnd then activeSnd.Volume = v end
+            vl.Text = math.floor(v * 100 + 0.5) .. "%"
+        end
+        local function vbtn(txt, x, dv)
+            local b = Instance.new("TextButton", fr)
+            b.Size = UDim2.new(0, 24, 0, 22); b.Position = UDim2.new(0, x, 0.5, -11)
+            b.BorderSizePixel = 0; b.Text = txt
+            b.Font = Enum.Font.GothamBold; b.TextSize = 14
+            b.AutoButtonColor = false; corner(b, 6)
+            b.BackgroundColor3 = Color3.fromRGB(40,40,44)
+            b.TextColor3 = Color3.fromRGB(255,255,255)
+            b.MouseButton1Click:Connect(function() setV((State.emoteSoundVol or 1) + dv) end)
+        end
+        vbtn("-", 74, -0.2)
+        vbtn("+", 100, 0.2)
+        setV(State.emoteSoundVol or 1)
+        bb.Parent = head
+        volBB = bb
+    end
+
+    if SilenceAPI._emoteSoundBroadcast then
+        pcall(SilenceAPI._emoteSoundBroadcast, id)
+    end
+end
+SilenceAPI._playEmoteSoundFor = playSoundFor
+
+------------------------------------------------------------------ WINDOW
+local SW = SilenceAPI._gameWindow("EMOTE SOUNDS",
+    "sound effects other Silence users hear - grey ones are blocked here")
+SW.Size = UDim2.new(0, 560, 0, 560)
+SW.Position = UDim2.new(0.5, -280, 0.5, -280)
+
+local list = Instance.new("ScrollingFrame", SW)
+list.Size = UDim2.new(1, -40, 1, -150); list.Position = UDim2.new(0, 20, 0, 90)
+list.BackgroundTransparency = 1; list.BorderSizePixel = 0
+list.ScrollBarThickness = 4
+list.CanvasSize = UDim2.new(0, 0, 0, 0)
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.ZIndex = 400
+local lay = Instance.new("UIListLayout", list)
+lay.Padding = UDim.new(0, 4); lay.SortOrder = Enum.SortOrder.LayoutOrder
+
+local rowById = {}
+for i, e in ipairs(SOUNDS) do
+    local b = Instance.new("TextButton", list)
+    b.Size = UDim2.new(1, -6, 0, 34); b.BorderSizePixel = 0
+    b.Text = ""; b.AutoButtonColor = false; b.LayoutOrder = i
+    b.ZIndex = 401; corner(b, 8)
+    b.BackgroundColor3 = Theme.bg2
+    local nm = Instance.new("TextLabel", b)
+    nm.Size = UDim2.new(1, -80, 1, 0); nm.Position = UDim2.new(0, 14, 0, 0)
+    nm.BackgroundTransparency = 1; nm.Text = e[1]
+    nm.Font = Enum.Font.GothamMedium; nm.TextSize = 12
+    nm.TextXAlignment = Enum.TextXAlignment.Left; nm.ZIndex = 402
+    SilenceAPI._theme(nm, "TextColor3", "text")
+    local tag = Instance.new("TextLabel", b)
+    tag.Size = UDim2.new(0, 66, 1, 0); tag.Position = UDim2.new(1, -74, 0, 0)
+    tag.BackgroundTransparency = 1; tag.Text = "..."
+    tag.Font = Enum.Font.Code; tag.TextSize = 10
+    tag.TextXAlignment = Enum.TextXAlignment.Right; tag.ZIndex = 402
+    tag.TextColor3 = Theme.textDim
+    b.MouseEnter:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade, { BackgroundColor3 = Theme.bg3 }):Play()
+    end)
+    b.MouseLeave:Connect(function()
+        TweenService:Create(b, SilenceAPI._twFade, { BackgroundColor3 = Theme.bg2 }):Play()
+    end)
+    b.MouseButton1Click:Connect(function()
+        if vetted[e[2]] == false then
+            notify("Sounds", e[1] .. " is blocked in this game.", 3); return
+        end
+        playSoundFor(LocalPlayer, e[2])
+    end)
+    rowById[e[2]] = { tag = tag, btn = b }
+end
+
+-- custom id
+local idBox = Instance.new("TextBox", SW)
+idBox.Size = UDim2.new(1, -150, 0, 30); idBox.Position = UDim2.new(0, 20, 0, 54)
+idBox.BorderSizePixel = 0; idBox.Text = ""
+idBox.PlaceholderText = "paste an audio id you own..."
+idBox.Font = Enum.Font.Gotham; idBox.TextSize = 12
+idBox.TextXAlignment = Enum.TextXAlignment.Left; idBox.ClearTextOnFocus = false
+idBox.ZIndex = 400
+corner(idBox, 8); padding(idBox, 0, 0, 12, 12)
+SilenceAPI._theme(idBox, "BackgroundColor3", "bg2")
+SilenceAPI._theme(idBox, "TextColor3", "text")
+SilenceAPI._theme(idBox, "PlaceholderColor3", "textDim")
+do
+    local pb = Instance.new("TextButton", SW)
+    pb.Size = UDim2.new(0, 120, 0, 30); pb.Position = UDim2.new(1, -140, 0, 54)
+    pb.BorderSizePixel = 0; pb.Text = "PLAY ID"
+    pb.Font = Enum.Font.GothamBold; pb.TextSize = 11
+    pb.AutoButtonColor = false; pb.ZIndex = 400; corner(pb, 8)
+    SilenceAPI._theme(pb, "BackgroundColor3", "bg2")
+    SilenceAPI._theme(pb, "TextColor3", "text")
+    pb.MouseButton1Click:Connect(function()
+        local id = tostring(idBox.Text):match("%d+")
+        if not id then notify("Sounds", "Put an audio id in the box.", 3) return end
+        task.spawn(function()
+            if canPlaySound(id) then playSoundFor(LocalPlayer, id)
+            else notify("Sounds", "That id will not play in this game.", 4) end
+        end)
+    end)
+end
+
+local foot = Instance.new("TextLabel", SW)
+foot.Size = UDim2.new(1, -40, 0, 44); foot.Position = UDim2.new(0, 20, 1, -54)
+foot.BackgroundTransparency = 1
+foot.Text = "  Roblox blocks most audio outside the game that owns it, so grey"
+         .. " rows will not play here - it is not a bug, it is Roblox.\n  The"
+         .. " volume card over the head is per-listener; drop someone loud"
+         .. " without touching anyone else."
+foot.Font = Enum.Font.Gotham; foot.TextSize = 10
+foot.TextWrapped = true
+foot.TextXAlignment = Enum.TextXAlignment.Left
+foot.TextYAlignment = Enum.TextYAlignment.Top
+foot.ZIndex = 400
+SilenceAPI._theme(foot, "TextColor3", "textDim")
+
+-- vet the list the first time the window opens, once, off the main flow
+local vetStarted = false
+local function vetAll()
+    if vetStarted then return end
+    vetStarted = true
+    task.spawn(function()
+        for _, e in ipairs(SOUNDS) do
+            local ok = canPlaySound(e[2])
+            vetted[e[2]] = ok
+            local row = rowById[e[2]]
+            if row and row.tag and row.tag.Parent then
+                row.tag.Text = ok and "ready" or "blocked"
+                row.tag.TextColor3 = ok and Color3.fromRGB(120,220,140)
+                                        or Color3.fromRGB(235,90,90)
+                if not ok then row.btn.BackgroundColor3 = Color3.fromRGB(30,30,32) end
+            end
+        end
+    end)
+end
+
+SilenceAPI._openEmoteSounds = function()
+    SW.Visible = not SW.Visible
+    if SW.Visible then vetAll() end
+end
+
+------------------------------------------------------------------ THE TAB
+sectionLabel(pSnd, "EMOTE SOUNDS")
+buttonRow(pSnd, "Open Sound Board", function()
+    SilenceAPI._openEmoteSounds()
+end)
+buttonRow(pSnd, "Stop Sound", function()
+    stopSound(); notify("Sounds", "Stopped.", 2)
+end)
+local sHint = Instance.new("TextLabel", pSnd)
+sHint.Size = UDim2.new(1, 0, 0, 46)
+sHint.BackgroundTransparency = 1
+sHint.Text = "  Sound effects that play on your character, with a volume card"
+          .. " over your head.\n  Other Silence users will hear them once the"
+          .. " worker relay is on. Normal players never do - a client cannot"
+          .. " send audio."
+sHint.Font = Enum.Font.Gotham; sHint.TextSize = 10
+sHint.TextWrapped = true
+sHint.TextXAlignment = Enum.TextXAlignment.Left
+sHint.TextYAlignment = Enum.TextYAlignment.Top
+sHint.TextColor3 = Theme.textDim
+end)()
+
+----------------------------------------------------------------
 -- TAB: LOGS  -  chat, remote traffic and notification history
 ----------------------------------------------------------------
 ;(function()
@@ -20599,6 +20889,7 @@ function SilenceAPI.cleanup()
     if SilenceAPI._setVoiceOverlay then
         pcall(SilenceAPI._setVoiceOverlay, false)
     end
+    if SilenceAPI._stopEmoteSound then pcall(SilenceAPI._stopEmoteSound) end
     if SilenceAPI._larpCleanup     then pcall(SilenceAPI._larpCleanup)     end
     if SilenceAPI._worldCleanup    then pcall(SilenceAPI._worldCleanup)    end
     if SilenceAPI._setPlayerLog    then pcall(SilenceAPI._setPlayerLog, false) end
