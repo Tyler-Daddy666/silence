@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v159"
+SilenceAPI._version = "v162"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -562,7 +562,7 @@ end
 ----------------------------------------------------------------
 do
     local PFILE = "silence_profiles.json"
-    local P = { cfg = {}, tag = {}, sky = {}, pairs = {} }
+    local P = { cfg = {}, tag = {}, sky = {}, aura = {}, pairs = {} }
     SilenceAPI._P = P
     SilenceAPI._profWatchers = {}
 
@@ -597,7 +597,7 @@ do
         local list = P[kind]
         local i = SilenceAPI._profFind(kind, name)
         -- cfg and sky both carry a data table; tag carries a code string
-        local dataKind = (kind == "cfg" or kind == "sky")
+        local dataKind = (kind == "cfg" or kind == "sky" or kind == "aura")
         if i then
             if dataKind then list[i].data = payload else list[i].code = payload end
         else
@@ -860,7 +860,7 @@ local State = {
     -- one key per game menu, set from the gear on its card
     gameKeys = {},
     aura = { on = false, style = "sparkle", gradient = true, rainbow = false,
-             size = 1, rate = 1,
+             size = 1, rate = 1, place = "body", voice = false,
              color  = Color3.fromRGB(255, 60, 60),
              color2 = Color3.fromRGB(60, 60, 255) },
     jumpSound = "",           -- optional rbxassetid, only if you have no mp3
@@ -13359,6 +13359,21 @@ local AURA_STYLES = {
     { key = "storm",   label = "Storm",
       tex = "rbxasset://textures/particles/sparkles_main.dds",
       rate = 70, speed = 8.0, size = 0.8, life = 0.6, spread = 110 },
+    { key = "embers",  label = "Embers",
+      tex = "rbxasset://textures/particles/fire_main.dds",
+      rate = 14, speed = 1.2, size = 1.0, life = 1.8, spread = 20 },
+    { key = "halo",    label = "Halo",
+      tex = "rbxasset://textures/particles/sparkles_main.dds",
+      rate = 34, speed = 0.6, size = 1.6, life = 1.6, spread = 8 },
+    { key = "fireflies", label = "Fireflies",
+      tex = "rbxasset://textures/particles/sparkles_main.dds",
+      rate = 10, speed = 1.0, size = 0.7, life = 2.4, spread = 70 },
+    { key = "blizzard", label = "Blizzard",
+      tex = "rbxasset://textures/particles/smoke_main.dds",
+      rate = 55, speed = 6.0, size = 1.4, life = 0.8, spread = 90 },
+    { key = "inferno", label = "Inferno",
+      tex = "rbxasset://textures/particles/fire_main.dds",
+      rate = 90, speed = 6.0, size = 2.6, life = 0.7, spread = 30 },
 }
 local AURAMAP = {}
 for _, a in ipairs(AURA_STYLES) do AURAMAP[a.key] = a end
@@ -13405,9 +13420,21 @@ local function buildAura(player, cfg)
     if auraHidden[player] then return end
     local char = player.Character
     if not char then return end
-    local root = char:FindFirstChild("HumanoidRootPart")
-                 or char:FindFirstChild("Torso")
-                 or char:FindFirstChildWhichIsA("BasePart")
+    -- where the aura sits. Just a choice of parent part, so it costs nothing
+    -- per frame; a missing part falls back to the body so it can never end up
+    -- with nowhere to attach.
+    local place = cfg.place or "body"
+    local root
+    if place == "head" then
+        root = char:FindFirstChild("Head")
+    elseif place == "feet" then
+        root = char:FindFirstChild("LeftFoot") or char:FindFirstChild("RightFoot")
+            or char:FindFirstChild("LeftLowerLeg") or char:FindFirstChild("RightLowerLeg")
+            or char:FindFirstChild("Left Leg") or char:FindFirstChild("Right Leg")
+    end
+    root = root or char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChildWhichIsA("BasePart")
     if not root then return end
 
     local st = AURAMAP[cfg.style] or AURA_STYLES[1]
@@ -13435,6 +13462,7 @@ local function buildAura(player, cfg)
         NumberSequenceKeypoint.new(0.18, 0.15),
         NumberSequenceKeypoint.new(1,    1),
     })
+    pe:SetAttribute("SilBaseRate", pe.Rate)   -- for the voice-react loop
     pe.Parent = root
     set[#set+1] = pe
 
@@ -13443,6 +13471,7 @@ local function buildAura(player, cfg)
     lt.Color = c1
     lt.Range = 10 * sz
     lt.Brightness = 2
+    lt:SetAttribute("SilBaseBright", lt.Brightness)
     lt.Parent = root
     set[#set+1] = lt
 
@@ -13493,11 +13522,38 @@ do
         local v = g and tonumber(g.SilenceAuraDistance)
         if v then AURA_FAR = v end
     end)
+    -- One AudioAnalyzer on the local mic, rewired only when the input device
+    -- is replaced (respawn / voice restart). Read is a single property; it
+    -- runs at most 20 times a second and only while a voice-react aura is on.
+    local micAn, micDev
+    local function micLevel()
+        local d = LocalPlayer:FindFirstChildOfClass("AudioDeviceInput")
+        if not d then return 0 end
+        if d ~= micDev then
+            if micAn then pcall(function() micAn:Destroy() end) end
+            micDev = d
+            local ok, an = pcall(function()
+                local a = Instance.new("AudioAnalyzer")
+                a.Name = "__SIL_MicLvl"
+                local w = Instance.new("Wire")
+                w.SourceInstance = d; w.TargetInstance = a; w.Parent = a
+                a.Parent = d
+                return a
+            end)
+            micAn = ok and an or nil
+        end
+        if not micAn then return 0 end
+        local ok, v = pcall(function() return micAn.PeakLevel or micAn.RmsLevel end)
+        return (ok and type(v) == "number") and math.clamp(v, 0, 1) or 0
+    end
+
     track(RunService.Heartbeat:Connect(function(dt)
         acc = acc + dt
         if acc < 0.05 then return end
         acc = 0
         local camPos = Camera.CFrame.Position
+        -- computed once per tick, only when the local aura reacts to voice
+        local lvl = (State.aura.voice and State.aura.on) and micLevel() or 0
         local hue = (tick() * 0.25) % 1
         local col = Color3.fromHSV(hue, 0.9, 1)
         local colSeq   -- built at most once per tick, shared across emitters
@@ -13513,13 +13569,25 @@ do
             local want = (player == LocalPlayer) and State.aura
                          or (SilenceAPI._auraOf and SilenceAPI._auraOf(player))
             local rainbow = want and want.rainbow
+            -- your own aura swells with your voice. Local only - the live
+            -- level is not worth streaming to everyone; they still see the
+            -- base aura through the endpoint.
+            local vmul = (player == LocalPlayer and State.aura.voice) and (1 + lvl * 3) or nil
             for _, o in ipairs(set) do
                 if o:IsA("ParticleEmitter") then
                     if o.Enabled ~= near then o.Enabled = near end
                     if near and rainbow then colSeq = colSeq or ColorSequence.new(col); o.Color = colSeq end
+                    if vmul then
+                        local base = o:GetAttribute("SilBaseRate") or o.Rate
+                        o.Rate = base * vmul
+                    end
                 elseif o:IsA("PointLight") then
                     if o.Enabled ~= near then o.Enabled = near end
                     if near and rainbow then o.Color = col end
+                    if vmul then
+                        local base = o:GetAttribute("SilBaseBright") or o.Brightness
+                        o.Brightness = base * (1 + (vmul - 1) * 1.4)
+                    end
                 end
             end
         end
@@ -13548,7 +13616,7 @@ local styleLay = Instance.new("UIGridLayout", styleBox)
 styleLay.CellSize = UDim2.new(0, 120, 0, 30)
 styleLay.CellPadding = UDim2.new(0, 6, 0, 6)
 styleLay.SortOrder = Enum.SortOrder.LayoutOrder
-SilenceAPI._registerRow(styleBox, "aura style sparkle flame smoke storm")
+SilenceAPI._registerRow(styleBox, "aura style sparkle flame smoke storm embers halo fireflies blizzard inferno")
 
 for i, a in ipairs(AURA_STYLES) do
     local b = Instance.new("TextButton", styleBox)
@@ -13614,6 +13682,201 @@ inputRow(pGV, "Density", State.aura.rate, function(v)
     refreshOwnAura()
     if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
 end, { min = 0.1, max = 4 })
+
+------------------------------------------------------------ PLACEMENT
+sectionLabel(pGV, "PLACEMENT")
+do
+    local box = Instance.new("Frame", pGV)
+    box.Size = UDim2.new(1, 0, 0, 34); box.BackgroundTransparency = 1
+    local paints = {}
+    local function pbtn(label, key, x)
+        local b = Instance.new("TextButton", box)
+        b.Size = UDim2.new(0, 118, 0, 30); b.Position = UDim2.new(0, x, 0, 0)
+        b.BorderSizePixel = 0; b.Text = label
+        b.Font = Enum.Font.GothamMedium; b.TextSize = 12
+        b.AutoButtonColor = false; corner(b, 8)
+        local bs = stroke(b, Theme.bg4, 1, 0.6, "bg4")
+        local function paint()
+            local on = (State.aura.place or "body") == key
+            b.BackgroundColor3 = on and Theme.accent or Theme.bg2
+            b.TextColor3       = on and Theme.bg     or Theme.text
+            bs.Transparency    = on and 0 or 0.6
+        end
+        paint(); paints[#paints+1] = paint
+        table.insert(SilenceAPI._toggleRefreshers, paint)
+        b.MouseButton1Click:Connect(function()
+            State.aura.place = key
+            refreshOwnAura()
+            for _, fn in ipairs(paints) do pcall(fn) end
+            if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+        end)
+    end
+    pbtn("Body", "body", 0)
+    pbtn("Head", "head", 124)
+    pbtn("Feet", "feet", 248)
+end
+
+------------------------------------------------------------ VOICE REACT
+sectionLabel(pGV, "VOICE")
+toggleRow(pGV, "Aura reacts to my voice  (local only)",
+    function() return State.aura.voice end,
+    function(v)
+        State.aura.voice = v and true or false
+        refreshOwnAura()   -- reset the emitter to its base rate at once
+    end)
+local vrHint = Instance.new("TextLabel", pGV)
+vrHint.Size = UDim2.new(1, 0, 0, 28); vrHint.BackgroundTransparency = 1
+vrHint.Text = "  Your aura swells while you speak. Only you see the live pulse;"
+           .. " everyone else sees the aura you set."
+vrHint.Font = Enum.Font.Gotham; vrHint.TextSize = 10
+vrHint.TextWrapped = true
+vrHint.TextXAlignment = Enum.TextXAlignment.Left
+vrHint.TextColor3 = Theme.textDim
+
+------------------------------------------------------------ KEYBIND
+sectionLabel(pGV, "KEYBIND")
+do
+    local arming = false
+    local keyLbl = buttonRow(pGV, "Set aura on/off key", function() end)
+    local function keyName()
+        local k = State.aura.key
+        return k and tostring(k):gsub("Enum%.KeyCode%.", "") or "none"
+    end
+    local function repaint()
+        keyLbl.Text = arming and "  press any key, or Escape to clear"
+                             or ("  Aura key: " .. keyName())
+    end
+    repaint()
+    keyLbl.MouseButton1Click:Connect(function()
+        arming = true; repaint()
+    end)
+    track(UserInputService.InputBegan:Connect(function(i, gp)
+        if arming then
+            if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            arming = false
+            State.aura.key = (i.KeyCode ~= Enum.KeyCode.Escape)
+                             and tostring(i.KeyCode) or nil
+            repaint()
+            return
+        end
+        if gp then return end
+        if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
+        local want = State.aura.key
+        if want and tostring(i.KeyCode) == want then
+            State.aura.on = not State.aura.on
+            refreshOwnAura()
+            for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+            if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+            notify("Aura", State.aura.on and "Aura on" or "Aura off", 2)
+        end
+    end))
+end
+
+------------------------------------------------------------ PRESETS
+-- The whole aura as one serialisable table, saved in the shared profile
+-- store beside configs, tag designs and skies.
+local function auraCol(c) return { math.floor(c.R*255+0.5), math.floor(c.G*255+0.5), math.floor(c.B*255+0.5) } end
+local function auraColIn(t)
+    if type(t) ~= "table" or #t < 3 then return nil end
+    return Color3.fromRGB(t[1], t[2], t[3])
+end
+local function captureAura()
+    local a = State.aura
+    return {
+        on = a.on and true or false, style = a.style, gradient = a.gradient and true or false,
+        rainbow = a.rainbow and true or false, size = a.size, rate = a.rate,
+        place = a.place or "body", voice = a.voice and true or false,
+        c1 = auraCol(a.color), c2 = auraCol(a.color2),
+    }
+end
+local function applyAura(d)
+    if type(d) ~= "table" then return end
+    local a = State.aura
+    a.style = tostring(d.style or a.style)
+    a.gradient = d.gradient and true or false
+    a.rainbow = d.rainbow and true or false
+    a.size = tonumber(d.size) or a.size
+    a.rate = tonumber(d.rate) or a.rate
+    a.place = tostring(d.place or "body")
+    a.voice = d.voice and true or false
+    a.color = auraColIn(d.c1) or a.color
+    a.color2 = auraColIn(d.c2) or a.color2
+    if d.on ~= nil then a.on = d.on and true or false end
+    refreshOwnAura()
+    for _, fn in ipairs(SilenceAPI._toggleRefreshers) do pcall(fn) end
+    if SilenceAPI._pushStyle then SilenceAPI._pushStyle() end
+end
+
+sectionLabel(pGV, "SAVED AURAS")
+do
+    local nameRow = Instance.new("Frame", pGV)
+    nameRow.Size = UDim2.new(1, 0, 0, 34); nameRow.BackgroundTransparency = 1
+    local nb = Instance.new("TextBox", nameRow)
+    nb.Size = UDim2.new(1, -110, 0, 30); nb.Position = UDim2.new(0, 0, 0, 2)
+    nb.BorderSizePixel = 0; nb.Text = ""; nb.PlaceholderText = "name this aura..."
+    nb.Font = Enum.Font.Gotham; nb.TextSize = 12
+    nb.TextXAlignment = Enum.TextXAlignment.Left; nb.ClearTextOnFocus = false
+    corner(nb, 8); padding(nb, 0, 0, 12, 12)
+    SilenceAPI._theme(nb, "BackgroundColor3", "bg2")
+    SilenceAPI._theme(nb, "TextColor3", "text")
+    SilenceAPI._theme(nb, "PlaceholderColor3", "textDim")
+    local sv = Instance.new("TextButton", nameRow)
+    sv.Size = UDim2.new(0, 100, 0, 30); sv.Position = UDim2.new(1, -100, 0, 2)
+    sv.BorderSizePixel = 0; sv.Text = "SAVE"
+    sv.Font = Enum.Font.GothamBold; sv.TextSize = 11
+    sv.AutoButtonColor = false; corner(sv, 8)
+    sv.BackgroundColor3 = Theme.bg3; sv.TextColor3 = Theme.textDim
+    sv.MouseEnter:Connect(function() sv.BackgroundColor3 = Theme.accent; sv.TextColor3 = Theme.bg end)
+    sv.MouseLeave:Connect(function() sv.BackgroundColor3 = Theme.bg3; sv.TextColor3 = Theme.textDim end)
+
+    local list = Instance.new("Frame", pGV)
+    list.Size = UDim2.new(1, 0, 0, 0); list.BackgroundTransparency = 1
+    list.AutomaticSize = Enum.AutomaticSize.Y
+    local ly = Instance.new("UIListLayout", list)
+    ly.Padding = UDim.new(0, 5); ly.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local function draw()
+        for _, ch in ipairs(list:GetChildren()) do
+            if not ch:IsA("UIListLayout") then ch:Destroy() end
+        end
+        local L = (SilenceAPI._P and SilenceAPI._P.aura) or {}
+        for i, en in ipairs(L) do
+            local r = Instance.new("Frame", list)
+            r.Size = UDim2.new(1, 0, 0, 32); r.BorderSizePixel = 0; corner(r, 8)
+            SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+            local nl = Instance.new("TextLabel", r)
+            nl.Size = UDim2.new(1, -130, 1, 0); nl.Position = UDim2.new(0, 12, 0, 0)
+            nl.BackgroundTransparency = 1; nl.Text = en.name
+            nl.Font = Enum.Font.GothamMedium; nl.TextSize = 12
+            nl.TextXAlignment = Enum.TextXAlignment.Left
+            nl.TextTruncate = Enum.TextTruncate.AtEnd
+            SilenceAPI._theme(nl, "TextColor3", "text")
+            local function mini(txt, xoff, cb)
+                local b = Instance.new("TextButton", r)
+                b.Size = UDim2.new(0, 50, 0, 24); b.Position = UDim2.new(1, xoff, 0.5, -12)
+                b.BorderSizePixel = 0; b.Text = txt
+                b.Font = Enum.Font.GothamBold; b.TextSize = 10
+                b.AutoButtonColor = false; corner(b, 6)
+                b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim
+                b.MouseEnter:Connect(function() b.BackgroundColor3 = Theme.accent; b.TextColor3 = Theme.bg end)
+                b.MouseLeave:Connect(function() b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim end)
+                b.MouseButton1Click:Connect(cb)
+            end
+            mini("LOAD", -110, function() applyAura(en.data); notify("Aura", en.name .. " loaded", 3) end)
+            mini("DEL",  -56,  function() SilenceAPI._profDelete("aura", i) end)
+        end
+    end
+    table.insert(SilenceAPI._profWatchers, draw)
+    draw()
+
+    sv.MouseButton1Click:Connect(function()
+        local nm = tostring(nb.Text):match("^%s*(.-)%s*$") or ""
+        if #nm < 1 then notify("Aura", "Give it a name first.", 3) return end
+        local ok, why = SilenceAPI._profSave("aura", nm, captureAura())
+        if ok then nb.Text = ""; notify("Aura", nm .. " saved", 3)
+        else notify("Aura", why or "could not save", 4) end
+    end)
+end
 
 sectionLabel(pGV, "WHO SEES THIS")
 local gvHint = Instance.new("TextLabel", pGV)
@@ -13989,6 +14252,7 @@ local _tagOk, _tagErr = pcall(function()
                 rainbow  = au.rb and true or false,
                 size     = tonumber(au.sz) or 1,
                 rate     = tonumber(au.rt) or 1,
+                place    = tostring(au.pl or "body"),
                 color    = col(au.c1) or Color3.fromRGB(255, 60, 60),
                 color2   = col(au.c2) or Color3.fromRGB(60, 60, 255),
             }
@@ -15760,6 +16024,7 @@ local _tagOk, _tagErr = pcall(function()
                 rb = State.aura.rainbow and true or false,
                 sz = tonumber(State.aura.size) or 1,
                 rt = tonumber(State.aura.rate) or 1,
+                pl = tostring(State.aura.place or "body"),
                 c1 = c3(State.aura.color),
                 c2 = c3(State.aura.color2),
             },
