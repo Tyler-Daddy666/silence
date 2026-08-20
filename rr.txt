@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v148"
+SilenceAPI._version = "v150"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -875,7 +875,8 @@ local State = {
     -- a screenshot and is a nuisance in play - you still want to see what is
     -- happening while the panel is open. The switch is in Settings for
     -- anyone who wants it back.
-    menuBlur = false,         -- blur the world behind the panel while it is up
+    menuBlur = false,         -- world blur behind the panel; off, and no
+                              -- longer saved, so a stale config cannot revive it
     -- Hotkey overrides (user-customizable)
     hotkeys = {
         toggleGUI = Enum.KeyCode.RightShift,
@@ -13232,79 +13233,331 @@ local function applyPreset(ps)
 end
 
 ------------------------------------------------------------ UI
-sectionLabel(pSky, "TIME OF DAY")
-inputRow(pSky, "Clock  (0 = midnight, 12 = noon)", 14, function(v)
-    remember()
-    local n = math.clamp(tonumber(v) or 14, 0, 24)
-    pcall(function() Lighting.ClockTime = n end)
-end, { min = 0, max = 24 })
-buttonRow(pSky, "Force Day", function()
-    remember(); pcall(function() Lighting.ClockTime = 14 end)
-end)
-buttonRow(pSky, "Force Night", function()
-    remember(); pcall(function() Lighting.ClockTime = 0 end)
-end)
+-- The Sky tab is one button now; everything lives in its own window with
+-- tabs. Each control writes Lighting or the Sky/Atmosphere/Clouds instances
+-- directly and remembers the original first, so BACK TO NORMAL is always a
+-- clean revert no matter how far you took it.
+local function L3(r,g,b) return Color3.fromRGB(r,g,b) end
 
-sectionLabel(pSky, "LIGHTING")
-toggleRow(pSky, "Fullbright",
-    function() return State.fullbright end,
-    function(v) remember(); SilenceAPI._setFullbright(v) end)
-toggleRow(pSky, "Disco Mode",
-    function() return State.disco end,
-    function(v) remember(); SilenceAPI._setDisco(v) end)
-
-sectionLabel(pSky, "PRESETS")
-do
-    local grid = Instance.new("Frame", pSky)
-    grid.Size = UDim2.new(1, 0, 0, 0)
-    grid.AutomaticSize = Enum.AutomaticSize.Y
-    grid.BackgroundTransparency = 1
-    local lay = Instance.new("UIGridLayout", grid)
-    lay.CellSize = UDim2.new(0, 150, 0, 34)
-    lay.CellPadding = UDim2.new(0, 6, 0, 6)
-    lay.SortOrder = Enum.SortOrder.LayoutOrder
-    SilenceAPI._registerRow(grid, "sky preset blood moon night storm hell winter")
-
-    for i, ps in ipairs(PRESETS) do
-        local b = Instance.new("TextButton", grid)
-        b.BorderSizePixel = 0
-        b.Text = ps.label
-        b.Font = Enum.Font.GothamMedium
-        b.TextSize = 12
-        b.AutoButtonColor = false
-        b.LayoutOrder = i
-        corner(b, 8)
-        local bs = stroke(b, Theme.bg4, 1, 0.6, "bg4")
-        SilenceAPI._theme(b, "BackgroundColor3", "bg2")
-        SilenceAPI._theme(b, "TextColor3", "text")
-        b.MouseEnter:Connect(function()
-            TweenService:Create(bs, SilenceAPI._twFade,
-                { Color = Theme.accent, Transparency = 0.2 }):Play()
-        end)
-        b.MouseLeave:Connect(function()
-            TweenService:Create(bs, SilenceAPI._twFade,
-                { Color = Theme.bg4, Transparency = 0.6 }):Play()
-        end)
-        b.MouseButton1Click:Connect(function() applyPreset(ps) end)
+-- make sure an Atmosphere and a Clouds exist to drive, tracked for cleanup
+local function ownAtmos()
+    local a = Lighting:FindFirstChildOfClass("Atmosphere")
+    if not a then
+        a = Instance.new("Atmosphere"); a.Name = "__SIL_Atmos"; a.Parent = Lighting
+        made[#made+1] = a
     end
+    return a
+end
+local function ownClouds()
+    local terrain = Workspace:FindFirstChildOfClass("Terrain")
+    if not terrain then return nil end
+    local c = terrain:FindFirstChildOfClass("Clouds")
+    if not c then
+        c = Instance.new("Clouds"); c.Name = "__SIL_Clouds"; c.Parent = terrain
+        made[#made+1] = c
+    end
+    return c
 end
 
-sectionLabel(pSky, "BACK TO NORMAL")
-buttonRow(pSky, "RESET SKY", resetSky)
-local skyHint = Instance.new("TextLabel", pSky)
-skyHint.Size = UDim2.new(1, 0, 0, 46)
-skyHint.BackgroundTransparency = 1
-skyHint.Text = "  Local only - nobody else sees your sky. Everything is written"
-            .. " down before the first change, so RESET puts the game's own"
-            .. " lighting back exactly as it was."
-skyHint.Font = Enum.Font.Gotham
-skyHint.TextSize = 10
-skyHint.TextXAlignment = Enum.TextXAlignment.Left
-skyHint.TextYAlignment = Enum.TextYAlignment.Top
-skyHint.TextWrapped = true
-skyHint.TextColor3 = Theme.textDim
+local SKW = SilenceAPI._gameWindow("SKY EDITOR",
+    "time, sun, moon, atmosphere, clouds and presets")
+SKW.Size = UDim2.new(0, 640, 0, 600)
+SKW.Position = UDim2.new(0.5, -320, 0.5, -300)
 
-SilenceAPI._skyCleanup = resetSky
+local skPages, skTabs = {}, {}
+local function skShow(name)
+    for n, fr in pairs(skPages) do fr.Visible = (n == name) end
+    for n, b in pairs(skTabs) do
+        b.BackgroundColor3 = (n == name) and Theme.accent or Theme.bg2
+        b.TextColor3       = (n == name) and Theme.bg     or Theme.textDim
+    end
+end
+local SKTABS = { "TIME", "SUN", "MOON", "SKY", "CLOUDS", "PRESETS" }
+for i, name in ipairs(SKTABS) do
+    local b = Instance.new("TextButton", SKW)
+    b.Size = UDim2.new(0, 96, 0, 26)
+    b.Position = UDim2.new(0, 20 + (i - 1) * 100, 0, 54)
+    b.BorderSizePixel = 0
+    b.Text = name
+    b.Font = Enum.Font.GothamBold; b.TextSize = 10
+    b.AutoButtonColor = false
+    b.ZIndex = 400
+    corner(b, 7)
+    b.MouseButton1Click:Connect(function() skShow(name) end)
+    skTabs[name] = b
+
+    local fr = Instance.new("ScrollingFrame", SKW)
+    fr.Size = UDim2.new(1, -40, 1, -100)
+    fr.Position = UDim2.new(0, 20, 0, 88)
+    fr.BackgroundTransparency = 1
+    fr.BorderSizePixel = 0
+    fr.ScrollBarThickness = 4
+    fr.CanvasSize = UDim2.new(0, 0, 0, 0)
+    fr.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    fr.Visible = false
+    fr.ZIndex = 400
+    local ly = Instance.new("UIListLayout", fr)
+    ly.Padding = UDim.new(0, 6); ly.SortOrder = Enum.SortOrder.LayoutOrder
+    skPages[name] = fr
+end
+
+-- row helpers that write onto the scroll pages. These reuse the existing
+-- slider inputRow and colour picker, only re-parented into the window.
+local function skSlider(page, label, mn, mx, get, set)
+    remember()
+    local r = inputRow(page, label, tostring(get()), function(v)
+        remember()
+        local n = tonumber(tostring(v):match("[%-%d%.]+")) or mn
+        n = math.clamp(n, mn, mx)
+        pcall(function() set(n) end)
+    end, { min = mn, max = mx })
+    return r
+end
+local function skColor(page, label, get, set)
+    remember()
+    hexColorPickerRow(page, label, get(), function(c)
+        remember(); pcall(function() set(c) end)
+    end)
+end
+local function skBtn(page, label, cb)
+    buttonRow(page, label, function() remember(); pcall(cb) end)
+end
+local function skCap(page, txt)
+    sectionLabel(page, txt)
+end
+
+------------------------------------------------------------ TIME
+do local p = skPages.TIME
+skCap(p, "TIME OF DAY")
+skSlider(p, "Clock  (0 = midnight, 12 = noon, 24 = midnight)", 0, 24,
+    function() return Lighting.ClockTime end,
+    function(n) Lighting.ClockTime = n end)
+skSlider(p, "Geographic latitude  (sun's arc)", -90, 90,
+    function() return Lighting.GeographicLatitude end,
+    function(n) Lighting.GeographicLatitude = n end)
+skBtn(p, "Sunrise  (06:00)", function() Lighting.ClockTime = 6 end)
+skBtn(p, "Noon  (12:00)",    function() Lighting.ClockTime = 12 end)
+skBtn(p, "Sunset  (18:00)",  function() Lighting.ClockTime = 18 end)
+skBtn(p, "Midnight  (00:00)",function() Lighting.ClockTime = 0 end)
+skCap(p, "EXPOSURE")
+skSlider(p, "Overall brightness", 0, 10,
+    function() return Lighting.Brightness end,
+    function(n) Lighting.Brightness = n end)
+skSlider(p, "Exposure compensation", -5, 5,
+    function() return Lighting.ExposureCompensation end,
+    function(n) Lighting.ExposureCompensation = n end)
+end
+
+------------------------------------------------------------ SUN
+do local p = skPages.SUN
+skCap(p, "THE SUN")
+skSlider(p, "Sun size", 0, 60,
+    function() return Lighting.SunAngularSize end,
+    function(n) Lighting.SunAngularSize = n end)
+skSlider(p, "Sun rays  (brightness of the glare)", 0, 1,
+    function()
+        local sr = Lighting:FindFirstChildOfClass("SunRaysEffect")
+        return sr and sr.Intensity or 0
+    end,
+    function(n)
+        local sr = Lighting:FindFirstChildOfClass("SunRaysEffect")
+        if not sr then
+            sr = Instance.new("SunRaysEffect"); sr.Name = "__SIL_SunRays"
+            sr.Parent = Lighting; made[#made+1] = sr
+        end
+        sr.Intensity = n
+    end)
+skSlider(p, "Sun rays spread", 0, 1,
+    function()
+        local sr = Lighting:FindFirstChildOfClass("SunRaysEffect")
+        return sr and sr.Spread or 0
+    end,
+    function(n)
+        local sr = Lighting:FindFirstChildOfClass("SunRaysEffect")
+        if sr then sr.Spread = n end
+    end)
+skColor(p, "Ambient light (shadowed side)",
+    function() return Lighting.Ambient end,
+    function(c) Lighting.Ambient = c end)
+skColor(p, "Outdoor ambient (sky-lit side)",
+    function() return Lighting.OutdoorAmbient end,
+    function(c) Lighting.OutdoorAmbient = c end)
+skColor(p, "Colour shift, top  (sunlit tint)",
+    function() return Lighting.ColorShift_Top end,
+    function(c) Lighting.ColorShift_Top = c end)
+skColor(p, "Colour shift, bottom  (shadow tint)",
+    function() return Lighting.ColorShift_Bottom end,
+    function(c) Lighting.ColorShift_Bottom = c end)
+skBtn(p, "Custom sun texture", function()
+    local sk = ownSky()
+    sk.SunTextureId = "rbxassetid://0"
+    notify("Sky", "Paste a sun texture id in SKY tab.", 4)
+end)
+end
+
+------------------------------------------------------------ MOON
+do local p = skPages.MOON
+skCap(p, "THE MOON")
+skSlider(p, "Moon size", 0, 60,
+    function() return Lighting.MoonAngularSize end,
+    function(n) Lighting.MoonAngularSize = n end)
+skSlider(p, "Star count", 0, 8000,
+    function() local sk = ownSky() return sk.StarCount end,
+    function(n) ownSky().StarCount = n end)
+skBtn(p, "Blood moon texture", function()
+    ownSky().MoonTextureId =
+        "rbxassetid://8560829399"
+    notify("Sky", "Blood moon set.", 3)
+end)
+skBtn(p, "Default moon", function()
+    ownSky().MoonTextureId =
+        "rbxasset://sky/moon.jpg"
+    notify("Sky", "Moon reset.", 3)
+end)
+skBtn(p, "Hide sun and moon", function()
+    ownSky().CelestialBodiesShown = false
+end)
+skBtn(p, "Show sun and moon", function()
+    ownSky().CelestialBodiesShown = true
+end)
+local mt = Instance.new("TextBox", p)
+mt.Size = UDim2.new(1, -6, 0, 32)
+mt.BorderSizePixel = 0
+mt.PlaceholderText = "moon texture id..."
+mt.Text = ""
+mt.Font = Enum.Font.Code; mt.TextSize = 11
+mt.ClearTextOnFocus = false
+mt.ZIndex = 401
+corner(mt, 8); padding(mt, 0, 0, 12, 12)
+SilenceAPI._theme(mt, "BackgroundColor3", "bg2")
+SilenceAPI._theme(mt, "TextColor3", "text")
+SilenceAPI._theme(mt, "PlaceholderColor3", "textDim")
+mt.FocusLost:Connect(function()
+    local id = tostring(mt.Text):match("%d+")
+    if id then
+        remember()
+        ownSky().MoonTextureId = "rbxassetid://" .. id
+        notify("Sky", "Moon texture set.", 3)
+    end
+end)
+end
+
+------------------------------------------------------------ SKY (atmosphere + skybox)
+do local p = skPages.SKY
+skCap(p, "ATMOSPHERE")
+skSlider(p, "Density  (thickness of the haze)", 0, 1,
+    function() return ownAtmos().Density end,
+    function(n) ownAtmos().Density = n end)
+skSlider(p, "Offset", -1, 1,
+    function() return ownAtmos().Offset end,
+    function(n) ownAtmos().Offset = n end)
+skColor(p, "Atmosphere colour",
+    function() return ownAtmos().Color end,
+    function(c) ownAtmos().Color = c end)
+skColor(p, "Haze / decay colour",
+    function() return ownAtmos().Decay end,
+    function(c) ownAtmos().Decay = c end)
+skSlider(p, "Glare", 0, 10,
+    function() return ownAtmos().Glare end,
+    function(n) ownAtmos().Glare = n end)
+skSlider(p, "Haze", 0, 10,
+    function() return ownAtmos().Haze end,
+    function(n) ownAtmos().Haze = n end)
+skCap(p, "FOG")
+skColor(p, "Fog colour",
+    function() return Lighting.FogColor end,
+    function(c) Lighting.FogColor = c end)
+skSlider(p, "Fog start", 0, 5000,
+    function() return Lighting.FogStart end,
+    function(n) Lighting.FogStart = n end)
+skSlider(p, "Fog end", 0, 100000,
+    function() return Lighting.FogEnd end,
+    function(n) Lighting.FogEnd = n end)
+skCap(p, "SKYBOX TEXTURE")
+skBtn(p, "Clear skybox (single colour)", function()
+    local sk = ownSky()
+    for _, f in ipairs({ "SkyboxUp","SkyboxDn","SkyboxLf","SkyboxRt","SkyboxFt","SkyboxBk" }) do
+        sk[f] = "rbxassetid://0"
+    end
+end)
+skBtn(p, "Default skybox", function()
+    local sk = ownSky()
+    sk.SkyboxUp = "rbxasset://sky/null_plainsky512_up.tex"
+    sk.SkyboxDn = "rbxasset://sky/null_plainsky512_dn.tex"
+    sk.SkyboxLf = "rbxasset://sky/null_plainsky512_lf.tex"
+    sk.SkyboxRt = "rbxasset://sky/null_plainsky512_rt.tex"
+    sk.SkyboxFt = "rbxasset://sky/null_plainsky512_ft.tex"
+    sk.SkyboxBk = "rbxasset://sky/null_plainsky512_bk.tex"
+end)
+end
+
+------------------------------------------------------------ CLOUDS
+do local p = skPages.CLOUDS
+skCap(p, "CLOUDS")
+skBtn(p, "Enable clouds", function()
+    local c = ownClouds()
+    if c then c.Enabled = true else notify("Sky", "This place has no terrain for clouds.", 4) end
+end)
+skBtn(p, "Disable clouds", function()
+    local c = ownClouds() if c then c.Enabled = false end
+end)
+skSlider(p, "Cover  (how much sky is filled)", 0, 1,
+    function() local c = ownClouds() return c and c.Cover or 0 end,
+    function(n) local c = ownClouds() if c then c.Cover = n end end)
+skSlider(p, "Density  (how solid they look)", 0, 1,
+    function() local c = ownClouds() return c and c.Density or 0 end,
+    function(n) local c = ownClouds() if c then c.Density = n end end)
+skColor(p, "Cloud colour",
+    function() local c = ownClouds() return c and c.Color or L3(255,255,255) end,
+    function(col) local c = ownClouds() if c then c.Color = col end end)
+skCap(p, "WEATHER")
+skBtn(p, "Rain",  function() weather("rain",  L3(150,170,220), 220, 90, 0.4, false) end)
+skBtn(p, "Snow",  function() weather("snow",  L3(240,245,255), 120, 22, 0.6, false) end)
+skBtn(p, "Storm", function()
+    weather("rain", L3(90,100,140), 400, 130, 0.35, false)
+    Lighting.Brightness = 1; Lighting.FogEnd = 1400
+    Lighting.FogColor = L3(40,44,58)
+end)
+skBtn(p, "Blood rain", function() weather("rain", L3(180,20,20), 260, 95, 0.45, false) end)
+skBtn(p, "Clear weather", function() clearMade() end)
+end
+
+------------------------------------------------------------ PRESETS
+do local p = skPages.PRESETS
+skCap(p, "PRESETS")
+for _, ps in ipairs(PRESETS) do
+    buttonRow(p, ps.label, function() applyPreset(ps) end)
+end
+skCap(p, "RESET")
+buttonRow(p, "BACK TO NORMAL  (undo everything)", function()
+    resetSky()
+    notify("Sky", "Sky restored.", 3)
+end)
+end
+
+skShow("TIME")
+SilenceAPI._openSkyEditor = function() SKW.Visible = not SKW.Visible end
+
+------------------------------------------------------------ THE TAB
+sectionLabel(pSky, "SKY")
+buttonRow(pSky, "Open Sky Editor", function()
+    SilenceAPI._openSkyEditor()
+end)
+buttonRow(pSky, "Back To Normal", function()
+    resetSky(); notify("Sky", "Sky restored.", 3)
+end)
+local skHint = Instance.new("TextLabel", pSky)
+skHint.Size = UDim2.new(1, 0, 0, 46)
+skHint.BackgroundTransparency = 1
+skHint.Text = "  Time, sun, moon, atmosphere, fog, clouds and weather - each"
+           .. " on its own tab, every value a slider or a colour.\n "
+           .. " Everything is remembered before it changes, so Back To Normal"
+           .. " is always a clean undo."
+skHint.Font = Enum.Font.Gotham; skHint.TextSize = 10
+skHint.TextWrapped = true
+skHint.TextXAlignment = Enum.TextXAlignment.Left
+skHint.TextYAlignment = Enum.TextYAlignment.Top
+skHint.TextColor3 = Theme.textDim
 end)()
 
 ----------------------------------------------------------------
@@ -19285,10 +19538,6 @@ local APPLY = {
     autoRejoin   = function(v) SilenceAPI._setAutoRejoin(v) end,
     itemEsp      = function(v) SilenceAPI._setItemEsp(v) end,
     streamerMode = function(v) State.streamerMode = v end,
-    menuBlur     = function(v)
-        State.menuBlur = v
-        if SilenceAPI._setMenuBlur then SilenceAPI._setMenuBlur() end
-    end,
     chatLog      = function(v) SilenceAPI._setChatLog(v) end,
     animPack     = function(v)
         if SilenceAPI._setAnimPack then SilenceAPI._setAnimPack(v) end
