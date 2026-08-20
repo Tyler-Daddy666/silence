@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v163"
+SilenceAPI._version = "v164"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -19197,16 +19197,18 @@ local vetted = {}   -- [id] = true/false/nil(unknown)
 local function canPlaySound(id)
     local snd = Instance.new("Sound")
     snd.SoundId = "rbxassetid://" .. tostring(id)
-    local status = Enum.AssetFetchStatus.None
-    pcall(function()
-        ContentProvider:PreloadAsync({ snd }, function(_, st) status = st end)
-    end)
+    snd.Parent = SoundService   -- parented so the engine actually loads it
+    -- PreloadAsync yields until the asset resolves on real Roblox; on an
+    -- executor whose PreloadAsync does nothing, the poll below still settles
+    -- it. The old code trusted a callback status that many executors never
+    -- fire, so it declared everything blocked.
+    pcall(function() ContentProvider:PreloadAsync({ snd }) end)
     local t0 = os.clock()
-    while snd.IsLoaded and snd.TimeLength == 0 and (os.clock() - t0) < 4 do
-        task.wait()
+    while (os.clock() - t0) < 4 do
+        if snd.IsLoaded and snd.TimeLength > 0 then break end
+        task.wait(0.1)
     end
-    local ok = status == Enum.AssetFetchStatus.Success
-               and snd.IsLoaded and snd.TimeLength > 0
+    local ok = snd.IsLoaded and snd.TimeLength > 0
     pcall(function() snd:Destroy() end)
     return ok
 end
@@ -19344,9 +19346,8 @@ for i, e in ipairs(SOUNDS) do
         TweenService:Create(b, SilenceAPI._twFade, { BackgroundColor3 = Theme.bg2 }):Play()
     end)
     b.MouseButton1Click:Connect(function()
-        if vetted[e[2]] == false then
-            notify("Sounds", e[1] .. " is blocked in this game.", 3); return
-        end
+        -- play regardless of the vet: the check can be wrong, and the play
+        -- path reports a genuinely dead id on its own after 0.6s
         playSoundFor(LocalPlayer, e[2])
     end)
     rowById[e[2]] = { tag = tag, btn = b }
