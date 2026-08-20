@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v158"
+SilenceAPI._version = "v159"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -10394,6 +10394,49 @@ do
         catTabs[c] = b
         cx = cx + w + 4
     end
+end
+
+-- Headless belongs under BODY, next to Korblox - a headless head is body
+-- work. It is not a slot (no id, no target part), so it cannot ride the slot
+-- loop below; it is its own row, filed under BODY so the category tabs show
+-- and hide it with everything else there.
+order = order + 1
+do
+    local r = Instance.new("Frame", left)
+    r.Size = UDim2.new(1, -6, 0, 40)
+    r.BorderSizePixel = 0
+    r.LayoutOrder = order
+    r.ZIndex = 192
+    corner(r, 9)
+    SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+    slotRows[#slotRows + 1] = { frame = r, cat = "BODY" }
+
+    local l = Instance.new("TextLabel", r)
+    l.Size = UDim2.new(1, -80, 1, 0); l.Position = UDim2.new(0, 14, 0, 0)
+    l.BackgroundTransparency = 1
+    l.Text = "Headless"
+    l.Font = Enum.Font.GothamMedium; l.TextSize = 12
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.ZIndex = 193
+    SilenceAPI._theme(l, "TextColor3", "text")
+
+    local hb = flatBtn(r, "OFF", 250, 9, 62, function()
+        SilenceAPI._setHeadless(not State.headless)
+    end)
+    local function paintHl()
+        local on = State.headless and true or false
+        hb.Text = on and "ON" or "OFF"
+        hb:SetAttribute("SilOn", on)
+        SilenceAPI._flatRest(hb)
+    end
+    hb.MouseButton1Click:Connect(function()
+        -- the click above already flipped it; repaint on the next frame once
+        -- _setHeadless has settled State
+        task.defer(paintHl)
+    end)
+    slotPaints[#slotPaints + 1] = paintHl
+    table.insert(SilenceAPI._toggleRefreshers, paintHl)
+    paintHl()
 end
 
 for i, sl in ipairs(State.accSlots) do
