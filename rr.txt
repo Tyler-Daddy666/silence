@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v152"
+SilenceAPI._version = "v153"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -13310,7 +13310,8 @@ end
 -- slider inputRow and colour picker, only re-parented into the window.
 local function skSlider(page, label, mn, mx, get, set)
     remember()
-    local r = inputRow(page, label, tostring(get()), function(v)
+    local ok0, cur = pcall(get)
+    local r = inputRow(page, label, tostring(ok0 and cur or mn), function(v)
         remember()
         local n = tonumber(tostring(v):match("[%-%d%.]+")) or mn
         n = math.clamp(n, mn, mx)
@@ -13320,7 +13321,8 @@ local function skSlider(page, label, mn, mx, get, set)
 end
 local function skColor(page, label, get, set)
     remember()
-    hexColorPickerRow(page, label, get(), function(c)
+    local ok0, cur = pcall(get)
+    hexColorPickerRow(page, label, (ok0 and cur) or L3(255,255,255), function(c)
         remember(); pcall(function() set(c) end)
     end)
 end
@@ -13357,8 +13359,8 @@ end
 do local p = skPages.SUN
 skCap(p, "THE SUN")
 skSlider(p, "Sun size", 0, 60,
-    function() return Lighting.SunAngularSize end,
-    function(n) Lighting.SunAngularSize = n end)
+    function() return ownSky().SunAngularSize end,
+    function(n) ownSky().SunAngularSize = n end)
 skSlider(p, "Sun rays  (brightness of the glare)", 0, 1,
     function()
         local sr = Lighting:FindFirstChildOfClass("SunRaysEffect")
@@ -13404,8 +13406,8 @@ end
 do local p = skPages.MOON
 skCap(p, "THE MOON")
 skSlider(p, "Moon size", 0, 60,
-    function() return Lighting.MoonAngularSize end,
-    function(n) Lighting.MoonAngularSize = n end)
+    function() return ownSky().MoonAngularSize end,
+    function(n) ownSky().MoonAngularSize = n end)
 skSlider(p, "Star count", 0, 8000,
     function() local sk = ownSky() return sk.StarCount end,
     function(n) ownSky().StarCount = n end)
