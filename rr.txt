@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v157"
+SilenceAPI._version = "v158"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -19404,7 +19404,7 @@ local function buildConfig()
     return cfg
 end
 
-local function applyConfig(cfg)
+local function applyConfig(cfg, skipToggles)
     if type(cfg) ~= "table" then return false end
     if cfg.autoLoad ~= nil then autoLoad = cfg.autoLoad and true or false end
 
@@ -19524,7 +19524,11 @@ local function applyConfig(cfg)
     if SilenceAPI._setFace      then pcall(SilenceAPI._setFace,      State.faceId)    end
     if SilenceAPI._setWalkAnimId then pcall(SilenceAPI._setWalkAnimId, State.walkAnimId) end
 
-    if type(cfg.toggles) == "table" then
+    -- The feature toggles are the expensive half: each one that comes back
+    -- on starts its own per-frame loop. On inject they stay OFF (skipToggles)
+    -- so nothing runs until you switch it on yourself - no stutter, clean
+    -- slate. A manual LOAD restores them fully.
+    if not skipToggles and type(cfg.toggles) == "table" then
         for name, fn in pairs(APPLY) do
             local want = cfg.toggles[name]
             if want ~= nil then pcall(fn, want and true or false) end
@@ -19770,8 +19774,16 @@ task.spawn(function()
     local ok2, data = pcall(function() return HS:JSONDecode(content) end)
     if not ok2 or type(data) ~= "table" then return end
     if data.autoLoad == false then autoLoad = false; return end
-    pcall(applyConfig, data)
-    notify("Config", "Saved config restored.", 3)
+    -- inject clean: cosmetics come back, features stay off. Opt into a full
+    -- restore with  getgenv().SilenceAutoLoadFeatures = true
+    local full = false
+    pcall(function()
+        local g = getgenv()
+        if g and g.SilenceAutoLoadFeatures then full = true end
+    end)
+    pcall(applyConfig, data, not full)
+    notify("Config", full and "Saved config fully restored."
+                          or "Look & keybinds restored - features start off.", 4)
 end)
 end)()
 
