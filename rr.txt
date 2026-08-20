@@ -458,7 +458,7 @@ env.__SilenceAdminPanel = SilenceAPI
 -- and what you expect means the upload did not happen.
 -- Lives on SilenceAPI rather than in a local: the main chunk is at 198 of
 -- Luau's 200 locals.
-SilenceAPI._version = "v153"
+SilenceAPI._version = "v156"
 SilenceAPI._built   = "2026-08-20"
 
 -- The admin command lives here rather than in the panel, so reading the
@@ -562,7 +562,7 @@ end
 ----------------------------------------------------------------
 do
     local PFILE = "silence_profiles.json"
-    local P = { cfg = {}, tag = {}, pairs = {} }
+    local P = { cfg = {}, tag = {}, sky = {}, pairs = {} }
     SilenceAPI._P = P
     SilenceAPI._profWatchers = {}
 
@@ -596,11 +596,13 @@ do
         name = name:sub(1, 22)
         local list = P[kind]
         local i = SilenceAPI._profFind(kind, name)
+        -- cfg and sky both carry a data table; tag carries a code string
+        local dataKind = (kind == "cfg" or kind == "sky")
         if i then
-            if kind == "cfg" then list[i].data = payload else list[i].code = payload end
+            if dataKind then list[i].data = payload else list[i].code = payload end
         else
             if limit and #list >= limit then return false, "list is full" end
-            if kind == "cfg" then list[#list + 1] = { name = name, data = payload }
+            if dataKind then list[#list + 1] = { name = name, data = payload }
             else list[#list + 1] = { name = name, code = payload } end
         end
         SilenceAPI._profChanged()
@@ -2417,6 +2419,12 @@ local function setNoclip(on)
     end
     noclipConn = RunService.Stepped:Connect(function()
         local c = getChar(); if not c then return end
+        -- GetDescendants allocates a table and walks the whole costume every
+        -- physics frame; ten times a second is plenty to stay phased and
+        -- costs six times less as the larp accessories pile up.
+        local now = tick()
+        if now - (SilenceAPI._noclipAt or 0) < 0.1 then return end
+        SilenceAPI._noclipAt = now
         for _, part in ipairs(c:GetDescendants()) do
             if part:IsA("BasePart") and part.CanCollide then
                 part.CanCollide = false
@@ -4260,7 +4268,10 @@ do
         -- tags, closed popups) leave the list; it used to only ever grow
         for i = #glowGradients, 1, -1 do
             local g = glowGradients[i]
-            if g and g.Parent then g.Rotation = rot
+            if g and g.Parent then
+                -- a disabled stroke draws nothing, so rotating its gradient
+                -- only dirties the GUI for a re-render that changes nothing
+                if g.Parent.Enabled ~= false then g.Rotation = rot end
             else table.remove(glowGradients, i) end
         end
     end))
@@ -13277,7 +13288,7 @@ local function skShow(name)
         b.TextColor3       = (n == name) and Theme.bg     or Theme.textDim
     end
 end
-local SKTABS = { "TIME", "SUN", "MOON", "SKY", "CLOUDS", "PRESETS" }
+local SKTABS = { "TIME", "SUN", "MOON", "SKY", "CLOUDS", "PRESETS", "SAVES" }
 for i, name in ipairs(SKTABS) do
     local b = Instance.new("TextButton", SKW)
     b.Size = UDim2.new(0, 96, 0, 26)
@@ -13357,6 +13368,19 @@ end
 
 ------------------------------------------------------------ SUN
 do local p = skPages.SUN
+skCap(p, "SUN COLOUR")
+skColor(p, "Sun colour  (the light it casts)",
+    function() return Lighting.ColorShift_Top end,
+    function(c) Lighting.ColorShift_Top = c end)
+local sunNote = Instance.new("TextLabel", p)
+sunNote.Size = UDim2.new(1, -6, 0, 26); sunNote.BackgroundTransparency = 1
+sunNote.Text = "  Roblox has no colour on the sun disc itself - this tints"
+            .. " the light it throws, which is what reads as its colour."
+sunNote.Font = Enum.Font.Gotham; sunNote.TextSize = 10
+sunNote.TextWrapped = true
+sunNote.TextXAlignment = Enum.TextXAlignment.Left
+sunNote.ZIndex = 401
+sunNote.TextColor3 = Theme.textDim
 skCap(p, "THE SUN")
 skSlider(p, "Sun size", 0, 60,
     function() return ownSky().SunAngularSize end,
@@ -13404,6 +13428,19 @@ end
 
 ------------------------------------------------------------ MOON
 do local p = skPages.MOON
+skCap(p, "MOON COLOUR")
+skColor(p, "Moon / night colour",
+    function() return Lighting.OutdoorAmbient end,
+    function(c) Lighting.OutdoorAmbient = c end)
+local moonNote = Instance.new("TextLabel", p)
+moonNote.Size = UDim2.new(1, -6, 0, 26); moonNote.BackgroundTransparency = 1
+moonNote.Text = "  The moon disc has no colour property either, so this"
+             .. " tints the night light - the cast that reads as its glow."
+moonNote.Font = Enum.Font.Gotham; moonNote.TextSize = 10
+moonNote.TextWrapped = true
+moonNote.TextXAlignment = Enum.TextXAlignment.Left
+moonNote.ZIndex = 401
+moonNote.TextColor3 = Theme.textDim
 skCap(p, "THE MOON")
 skSlider(p, "Moon size", 0, 60,
     function() return ownSky().MoonAngularSize end,
@@ -13530,6 +13567,167 @@ skBtn(p, "Clear weather", function() clearMade() end)
 end
 
 ------------------------------------------------------------ PRESETS
+-- The current sky as one serialisable table. Colours go out as {r,g,b}, so
+-- a saved sky survives being written to disk and read back.
+local function skColOut(c) return { math.floor(c.R*255+0.5), math.floor(c.G*255+0.5), math.floor(c.B*255+0.5) } end
+local function skColIn(t)
+    if type(t) ~= "table" or #t < 3 then return nil end
+    return Color3.fromRGB(t[1], t[2], t[3])
+end
+local function captureSky()
+    local d = { n = {}, c = {}, sky = {}, atm = {}, cld = {} }
+    for _, k in ipairs({ "ClockTime","Brightness","ExposureCompensation",
+                         "GeographicLatitude","FogStart","FogEnd" }) do
+        local ok, v = pcall(function() return Lighting[k] end)
+        if ok and type(v) == "number" then d.n[k] = v end
+    end
+    for _, k in ipairs({ "Ambient","OutdoorAmbient","ColorShift_Top",
+                         "ColorShift_Bottom","FogColor" }) do
+        local ok, v = pcall(function() return Lighting[k] end)
+        if ok and typeof(v) == "Color3" then d.c[k] = skColOut(v) end
+    end
+    local sk = ownSky()
+    for _, k in ipairs({ "SunAngularSize","MoonAngularSize","StarCount" }) do
+        local ok, v = pcall(function() return sk[k] end)
+        if ok and type(v) == "number" then d.sky[k] = v end
+    end
+    d.sky.MoonTextureId = sk.MoonTextureId
+    d.sky.CelestialBodiesShown = sk.CelestialBodiesShown and true or false
+    local a = ownAtmos()
+    for _, k in ipairs({ "Density","Offset","Glare","Haze" }) do
+        local ok, v = pcall(function() return a[k] end)
+        if ok and type(v) == "number" then d.atm[k] = v end
+    end
+    d.atm.Color = skColOut(a.Color); d.atm.Decay = skColOut(a.Decay)
+    local c = ownClouds()
+    if c then
+        d.cld.on = c.Enabled and true or false
+        d.cld.Cover = c.Cover; d.cld.Density = c.Density
+        d.cld.Color = skColOut(c.Color)
+    end
+    return d
+end
+
+local function applySky(d)
+    if type(d) ~= "table" then return end
+    remember()
+    for k, v in pairs(d.n or {}) do pcall(function() Lighting[k] = v end) end
+    for k, t in pairs(d.c or {}) do
+        local col = skColIn(t)
+        if col then pcall(function() Lighting[k] = col end) end
+    end
+    local sk = ownSky()
+    for k, v in pairs(d.sky or {}) do pcall(function() sk[k] = v end) end
+    local a = ownAtmos()
+    for k, v in pairs(d.atm or {}) do
+        if k == "Color" or k == "Decay" then
+            local col = skColIn(v); if col then pcall(function() a[k] = col end) end
+        else pcall(function() a[k] = v end) end
+    end
+    if d.cld and next(d.cld) then
+        local c = ownClouds()
+        if c then
+            pcall(function() c.Enabled = d.cld.on end)
+            pcall(function() c.Cover = d.cld.Cover end)
+            pcall(function() c.Density = d.cld.Density end)
+            local col = skColIn(d.cld.Color)
+            if col then pcall(function() c.Color = col end) end
+        end
+    end
+end
+SilenceAPI._applySkyConfig = applySky
+
+do local p = skPages.SAVES
+skCap(p, "SAVE THIS SKY")
+local nameRow = Instance.new("Frame", p)
+nameRow.Size = UDim2.new(1, -6, 0, 34); nameRow.BorderSizePixel = 0
+nameRow.BackgroundTransparency = 1; nameRow.ZIndex = 401
+local nb = Instance.new("TextBox", nameRow)
+nb.Size = UDim2.new(1, -110, 0, 30); nb.Position = UDim2.new(0, 0, 0, 2)
+nb.BorderSizePixel = 0
+nb.Text = ""; nb.PlaceholderText = "name this sky..."
+nb.Font = Enum.Font.Gotham; nb.TextSize = 12
+nb.TextXAlignment = Enum.TextXAlignment.Left
+nb.ClearTextOnFocus = false; nb.ZIndex = 402
+corner(nb, 8); padding(nb, 0, 0, 12, 12)
+SilenceAPI._theme(nb, "BackgroundColor3", "bg2")
+SilenceAPI._theme(nb, "TextColor3", "text")
+SilenceAPI._theme(nb, "PlaceholderColor3", "textDim")
+local sv = Instance.new("TextButton", nameRow)
+sv.Size = UDim2.new(0, 100, 0, 30); sv.Position = UDim2.new(1, -100, 0, 2)
+sv.BorderSizePixel = 0
+sv.Text = "SAVE"; sv.Font = Enum.Font.GothamBold; sv.TextSize = 11
+sv.AutoButtonColor = false; sv.ZIndex = 402
+corner(sv, 8)
+sv.BackgroundColor3 = Theme.bg3; sv.TextColor3 = Theme.textDim
+sv.MouseEnter:Connect(function() sv.BackgroundColor3 = Theme.accent; sv.TextColor3 = Theme.bg end)
+sv.MouseLeave:Connect(function() sv.BackgroundColor3 = Theme.bg3; sv.TextColor3 = Theme.textDim end)
+
+skCap(p, "SAVED SKIES")
+local savedList = Instance.new("Frame", p)
+savedList.Size = UDim2.new(1, -6, 0, 0); savedList.BackgroundTransparency = 1
+savedList.AutomaticSize = Enum.AutomaticSize.Y; savedList.ZIndex = 401
+local sly = Instance.new("UIListLayout", savedList)
+sly.Padding = UDim.new(0, 5); sly.SortOrder = Enum.SortOrder.LayoutOrder
+
+local function drawSaves()
+    for _, ch in ipairs(savedList:GetChildren()) do
+        if not ch:IsA("UIListLayout") then ch:Destroy() end
+    end
+    local list = (SilenceAPI._P and SilenceAPI._P.sky) or {}
+    if #list == 0 then
+        local e = Instance.new("TextLabel", savedList)
+        e.Size = UDim2.new(1, 0, 0, 28); e.BackgroundTransparency = 1
+        e.Text = "  nothing saved yet"
+        e.Font = Enum.Font.Gotham; e.TextSize = 11
+        e.TextXAlignment = Enum.TextXAlignment.Left
+        e.ZIndex = 402; e.TextColor3 = Theme.textDim
+        return
+    end
+    for i, en in ipairs(list) do
+        local r = Instance.new("Frame", savedList)
+        r.Size = UDim2.new(1, 0, 0, 34); r.BorderSizePixel = 0
+        r.ZIndex = 402; corner(r, 8)
+        SilenceAPI._theme(r, "BackgroundColor3", "bg2")
+        local nl = Instance.new("TextLabel", r)
+        nl.Size = UDim2.new(1, -180, 1, 0); nl.Position = UDim2.new(0, 12, 0, 0)
+        nl.BackgroundTransparency = 1; nl.Text = en.name
+        nl.Font = Enum.Font.GothamMedium; nl.TextSize = 12
+        nl.TextXAlignment = Enum.TextXAlignment.Left; nl.ZIndex = 403
+        nl.TextTruncate = Enum.TextTruncate.AtEnd
+        SilenceAPI._theme(nl, "TextColor3", "text")
+        local function mini(txt, xoff, cb)
+            local b = Instance.new("TextButton", r)
+            b.Size = UDim2.new(0, 52, 0, 24); b.Position = UDim2.new(1, xoff, 0.5, -12)
+            b.BorderSizePixel = 0; b.Text = txt
+            b.Font = Enum.Font.GothamBold; b.TextSize = 10
+            b.AutoButtonColor = false; b.ZIndex = 403; corner(b, 6)
+            b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim
+            b.MouseEnter:Connect(function() b.BackgroundColor3 = Theme.accent; b.TextColor3 = Theme.bg end)
+            b.MouseLeave:Connect(function() b.BackgroundColor3 = Theme.bg3; b.TextColor3 = Theme.textDim end)
+            b.MouseButton1Click:Connect(cb)
+            return b
+        end
+        mini("LOAD", -116, function()
+            applySky(en.data); notify("Sky", en.name .. " loaded", 3)
+        end)
+        mini("DEL", -60, function()
+            SilenceAPI._profDelete("sky", i)
+        end)
+    end
+end
+table.insert(SilenceAPI._profWatchers, drawSaves)
+drawSaves()
+
+sv.MouseButton1Click:Connect(function()
+    local nm = tostring(nb.Text):match("^%s*(.-)%s*$") or ""
+    if #nm < 1 then notify("Sky", "Give it a name first.", 3) return end
+    local ok, why = SilenceAPI._profSave("sky", nm, captureSky())
+    if ok then nb.Text = ""; notify("Sky", nm .. " saved", 3)
+    else notify("Sky", why or "could not save", 4) end
+end)
+end
+
 do local p = skPages.PRESETS
 skCap(p, "PRESETS")
 for _, ps in ipairs(PRESETS) do
@@ -13718,23 +13916,60 @@ SilenceAPI._refreshAura = refreshOwnAura
 
 -- One shared cycle for every rainbow aura in the server, so twenty of them
 -- cost one loop rather than twenty.
-track(RunService.Heartbeat:Connect(function()
-    local hue = (tick() * 0.25) % 1
-    local col = Color3.fromHSV(hue, 0.9, 1)
-    for player, set in pairs(auraFor) do
-        local want = (player == LocalPlayer) and State.aura
-                     or (SilenceAPI._auraOf and SilenceAPI._auraOf(player))
-        if want and want.rainbow then
+--
+-- The two frame-time guards below live here because this is the only place
+-- that already walks every aura in the server, so they cost no extra loop:
+--
+--   * Throttle. Colours step ~20x a second, not once per frame. Assigning
+--     ParticleEmitter.Color rebuilds the emitter's whole colour ramp, so a
+--     room full of rainbow auras was doing that hundreds of times a second
+--     for a cycle the eye reads identically at 20Hz.
+--   * Distance cull. A ParticleEmitter is fill-rate overdraw and a PointLight
+--     is a per-frame dynamic light whether or not anyone is near it. Past
+--     AURA_FAR studs both switch off (particles already in the air fade on
+--     their own) and switch back on when you close the gap - so a server full
+--     of Larp auras only renders the handful actually in front of you. Set
+--     getgenv().SilenceAuraDistance to change the radius; 0 disables culling.
+do
+    local acc = 0
+    local AURA_FAR = 140
+    pcall(function()
+        local g = getgenv and getgenv()
+        local v = g and tonumber(g.SilenceAuraDistance)
+        if v then AURA_FAR = v end
+    end)
+    track(RunService.Heartbeat:Connect(function(dt)
+        acc = acc + dt
+        if acc < 0.05 then return end
+        acc = 0
+        local camPos = Camera.CFrame.Position
+        local hue = (tick() * 0.25) % 1
+        local col = Color3.fromHSV(hue, 0.9, 1)
+        local colSeq   -- built at most once per tick, shared across emitters
+        for player, set in pairs(auraFor) do
+            -- set[1] is the emitter; its Parent is the root part we ride on
+            local near = true
+            if AURA_FAR > 0 then
+                local host = set[1] and set[1].Parent
+                if host and host:IsA("BasePart") then
+                    near = (host.Position - camPos).Magnitude <= AURA_FAR
+                end
+            end
+            local want = (player == LocalPlayer) and State.aura
+                         or (SilenceAPI._auraOf and SilenceAPI._auraOf(player))
+            local rainbow = want and want.rainbow
             for _, o in ipairs(set) do
                 if o:IsA("ParticleEmitter") then
-                    o.Color = ColorSequence.new(col)
+                    if o.Enabled ~= near then o.Enabled = near end
+                    if near and rainbow then colSeq = colSeq or ColorSequence.new(col); o.Color = colSeq end
                 elseif o:IsA("PointLight") then
-                    o.Color = col
+                    if o.Enabled ~= near then o.Enabled = near end
+                    if near and rainbow then o.Color = col end
                 end
             end
         end
-    end
-end))
+    end))
+end
 
 track(LocalPlayer.CharacterAdded:Connect(function()
     task.wait(1)
@@ -14706,6 +14941,16 @@ local _tagOk, _tagErr = pcall(function()
         local fovTan = math.tan(math.rad(Camera.FieldOfView/2))
         -- computed once per frame, not once per tag
         local now = tick()
+        -- Rainbow/pulse recolour steps at ~20Hz, not once per frame. The
+        -- HSV build and the GetChildren walk below are exactly the cost the
+        -- aura loop already throttles for the same reason - the eye reads a
+        -- colour cycle identically at 20Hz, and a room full of rainbow tags
+        -- was rebuilding every card's stroke colour 60+ times a second. The
+        -- billboard SIZE still tracks every frame further down; only the
+        -- decorative recolour is stepped. Held on SilenceAPI so this adds no
+        -- main-chunk local (the file sits at Luau's 199/200 ceiling).
+        SilenceAPI._tagDoFx = (now - (SilenceAPI._tagFxAt or 0)) >= 0.05
+        if SilenceAPI._tagDoFx then SilenceAPI._tagFxAt = now end
 
         -- Every tag in the server steps aside while any of our windows or
         -- the main panel is on screen. A BillboardGui lives in the world,
@@ -14719,12 +14964,21 @@ local _tagOk, _tagErr = pcall(function()
             -- well is what made every tag in the server blink whenever a
             -- window opened or closed.
             --   getgenv().SilenceHideTagsInGui = true   brings it back
-            local hideAll = false
-            pcall(function()
-                local g = getgenv()
-                if g and g.SilenceHideTagsInGui then hideAll = true end
-            end)
-            local want = (not blocked) or (not hideAll)
+            -- This read used to allocate a closure and run a pcall EVERY
+            -- frame just to sample a debug flag that changes ~never. Sample
+            -- it at most twice a second and cache it; the Enabled reconcile
+            -- below still reads the cached value every frame, so behaviour is
+            -- unchanged while the per-frame closure/pcall churn is gone.
+            if (now - (SilenceAPI._tagHideChk or 0)) > 0.5 then
+                SilenceAPI._tagHideChk = now
+                local hideAll = false
+                pcall(function()
+                    local g = getgenv()
+                    if g and g.SilenceHideTagsInGui then hideAll = true end
+                end)
+                SilenceAPI._tagHideAll = hideAll
+            end
+            local want = (not blocked) or (not SilenceAPI._tagHideAll)
             SilenceAPI._tagsShown = want
             -- Reconciled against the current value every frame instead of on
             -- the _tagsShown transition, exactly as the click area below has
@@ -14759,6 +15013,20 @@ local _tagOk, _tagErr = pcall(function()
             end
         end
 
+        -- Distance / rainbow / pulse are recomputed here off camera distance
+        -- and a clock; both change slowly enough that a ~30Hz refresh is
+        -- indistinguishable from per-frame, while halving the per-tag UDim2 /
+        -- Color3 / Vector3 churn on a 60fps client and cutting it far more on
+        -- a high-refresh monitor. This size pass is the last statement in the
+        -- callback, so returning early just skips it; the Enabled / click
+        -- reconcile above has already run this frame, so click-blocking stays
+        -- instant. Cost scales with tag count - the case the larp/FPS report
+        -- describes, since every silenced player wearing a costume still owns
+        -- exactly one tag walked here.
+        if (now - (SilenceAPI._tagSizeAt or 0)) < 0.032 then return end
+        SilenceAPI._tagSizeAt = now
+
+        local camPos = Camera.CFrame.Position   -- constant per tick
         for player, bb in pairs(activeTags) do
             if bb and bb.Parent and player.Character then
                 local head = player.Character:FindFirstChild("Head")
@@ -14767,7 +15035,7 @@ local _tagOk, _tagErr = pcall(function()
                     -- every tag in the server with YOUR width and YOUR line
                     -- count undid half of what createTag had just built.
                     local pLook = lookFor(player)
-                    local d = (Camera.CFrame.Position - head.Position).Magnitude
+                    local d = (camPos - head.Position).Magnitude
                     -- Sizing off the real distance gives a constant pixel
                     -- size at any range. Sizing off a compressed distance
                     -- gives partial compensation instead: close up it is
@@ -14782,17 +15050,24 @@ local _tagOk, _tagErr = pcall(function()
                         dEff = LOCK * (d / LOCK) ^ g
                     end
                     local px2stud = dEff * 2 * fovTan / viewSize.Y
-                    bb.SizeOffset = Vector2.new(0, 0)
+                    -- SizeOffset is left at its (0,0) default - nothing else
+                    -- in the file ever writes it, so the per-frame per-tag
+                    -- Vector2.new(0,0) that used to sit here was a pure
+                    -- allocation that changed nothing.
                     bb.Size = UDim2.new((tonumber(pLook.width) or 170) * px2stud, 0,
                                         lookH(pLook) * px2stud, 0)
-                    local pulseAt
-                    if pLook.pulse then
-                        pulseAt = 1 + math.sin(now * 3) * 0.05
-                    end
-                    local rainbowCol
-                    if pLook.rainbow then
-                        local hue = (now * (tonumber(pLook.rainbowSpeed) or 0.2)) % 1
-                        rainbowCol = Color3.fromHSV(hue, 0.85, 1)
+                    local pulseAt, rainbowCol
+                    -- only on the ~20Hz fx step: on a skipped frame the
+                    -- stroke and scale keep their last value, which is what
+                    -- makes this free rather than merely cheaper
+                    if SilenceAPI._tagDoFx then
+                        if pLook.pulse then
+                            pulseAt = 1 + math.sin(now * 3) * 0.05
+                        end
+                        if pLook.rainbow then
+                            local hue = (now * (tonumber(pLook.rainbowSpeed) or 0.2)) % 1
+                            rainbowCol = Color3.fromHSV(hue, 0.85, 1)
+                        end
                     end
                     if rainbowCol or pulseAt then
                         local fr = bb:FindFirstChildOfClass("Frame")
@@ -17096,15 +17371,20 @@ local _tagOk, _tagErr = pcall(function()
         -- writes. So the pull runs every few seconds and the heartbeat only
         -- every few minutes, and quitting sends one explicit goodbye rather
         -- than waiting for the presence entry to time out.
-        --   getgenv().SilenceSyncInterval = 5   seconds between pulls
-        --   getgenv().SilenceBeatMinutes  = 5   minutes between heartbeats
-        local pullEvery, beatEvery = 5, 300
+        -- 60s, not 5s. Reading /all every five seconds cost 17,280 reads a
+        -- day per client and a few people running all day hit the free
+        -- tier's 100,000/day read ceiling. Every 60s it is 1,440 - a tag
+        -- still shows inside a minute and the limit stops being reachable.
+        -- Drop it lower only if you know your read budget can take it.
+        --   getgenv().SilenceSyncInterval = 60   seconds between pulls
+        --   getgenv().SilenceBeatMinutes  = 5    minutes between heartbeats
+        local pullEvery, beatEvery = 60, 300
         pcall(function()
             local g = getgenv()
             if g then
                 local a = tonumber(g.SilenceSyncInterval)
                 local b = tonumber(g.SilenceBeatMinutes)
-                if a and a >= 2 then pullEvery = a end
+                if a and a >= 5 then pullEvery = a end
                 if b and b >= 1 then beatEvery = b * 60 end
             end
         end)
